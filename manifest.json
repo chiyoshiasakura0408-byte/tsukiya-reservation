@@ -1,0 +1,11 @@
+{
+  "name": "西天満 つきや｜前受け管理",
+  "short_name": "つきや前受け",
+  "description": "西天満つきや 予約・前受け管理システム",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f5f3ee",
+  "theme_color": "#0f2742",
+  "orientation": "any",
+  "lang": "ja"
+}
