@@ -1,27 +1,21 @@
-<!doctype html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>西天満 つきや｜予約・前受け管理</title>
-<style>
-body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif;margin:0;background:#f6f4ef;color:#171717}
-main{max-width:760px;margin:auto;padding:32px 20px}
-h1{font-size:28px;margin-bottom:6px}
-p{color:#666}
-.card{background:#fff;border-radius:18px;padding:22px;margin-top:22px;box-shadow:0 3px 18px #0000000d}
-.status{display:inline-block;padding:7px 12px;border-radius:20px;background:#edf5ee;color:#285c32;font-weight:600}
-</style>
-</head>
-<body>
-<main>
-<h1>西天満 つきや</h1>
-<p>予約・前受け管理システム</p>
-<div class="card">
-<span class="status">システム稼働中</span>
-<h2>つきや予約管理</h2>
-<p>Square連携・前受け決済・予約管理システム</p>
-</div>
-</main>
-</body>
-</html>
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0f2742"><title>西天満 つきや｜予約・前受け管理</title>
+<style>:root{--bg:#f5f3ee;--panel:#fff;--navy:#0f2742;--gold:#b28a47;--text:#1d2430;--muted:#6d7480;--line:#e7e1d7;--ok:#1f7a5a;--warn:#b8751a;--danger:#a63d40}*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;color:var(--text)}header{background:var(--navy);color:white;padding:18px 22px;display:flex;justify-content:space-between;align-items:center}.brand{font-size:21px;font-weight:800}.sub{font-size:11px;opacity:.7;margin-top:3px}main{max-width:1450px;margin:auto;padding:16px}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}.kpi,.card{background:#fff;border:1px solid var(--line);border-radius:15px}.kpi{padding:14px 16px}.kpi b{display:block;font-size:25px;color:var(--navy)}.kpi span,label{font-size:11px;color:var(--muted)}.layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(340px,.8fr);gap:14px}.card{padding:16px}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}h2{font-size:17px;color:var(--navy);margin:0 0 12px}button{border:0;border-radius:10px;padding:10px 13px;font-weight:800;cursor:pointer}.primary{background:var(--navy);color:#fff}.gold{background:var(--gold);color:#fff}.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}input,select{width:100%;padding:10px;border:1px solid var(--line);border-radius:9px;font-size:14px;background:#fff}label{display:block;margin:8px 0 4px}.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.tablewrap{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:12px}table{width:100%;border-collapse:collapse;min-width:1000px}th,td{padding:10px;border-bottom:1px solid var(--line);font-size:12px;text-align:left}th{position:sticky;top:0;background:#faf9f6;color:var(--muted)}.badge{padding:5px 8px;border-radius:999px;font-weight:800}.CONFIRMED{background:#e4f4ec;color:var(--ok)}.INVOICED{background:#fff0da;color:var(--warn)}.PENDING{background:#eee}.ERROR{background:#fde7e7;color:var(--danger)}.log{font-size:12px;background:#faf9f6;border:1px solid var(--line);padding:10px;border-radius:10px;line-height:1.6;margin-top:10px}.side{display:grid;gap:14px}.token{display:flex;gap:8px}.token input{flex:1}@media(max-width:950px){.layout{grid-template-columns:1fr}.kpis{grid-template-columns:1fr 1fr}.tablewrap{max-height:none}}</style></head>
+<body><header><div><div class="brand">西天満 つきや｜予約・前受け管理</div><div class="sub">Square + Tsukiya Reservation Console</div></div><div style="font-size:12px">カウンター8席×2回転 / 個室3室</div></header>
+<main><section class="kpis"><div class="kpi"><b id="kAll">0</b><span>予約件数</span></div><div class="kpi"><b id="kPending">0</b><span>決済待ち</span></div><div class="kpi"><b id="kConfirmed">0</b><span>予約確定</span></div><div class="kpi"><b id="kAmount">¥0</b><span>確定済前受け</span></div></section>
+<section class="layout"><div class="card"><div class="toolbar"><button class="ghost" onclick="loadRows()">予約一覧を更新</button><span id="apiState" style="font-size:12px;color:var(--muted)"></span></div><h2 style="margin-top:12px">予約一覧</h2><div class="tablewrap"><table><thead><tr><th>ID</th><th>経路</th><th>お客様</th><th>日時</th><th>席</th><th>人数</th><th>金額</th><th>状態</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div></div>
+<aside class="side"><div class="card"><h2>管理接続</h2><label>管理トークン</label><div class="token"><input id="token" type="password" placeholder="RenderのADMIN_TOKEN"><button class="primary" onclick="saveToken()">接続</button></div><div class="log" id="conn">本番サーバーの管理トークンを入力してください。</div></div>
+<div class="card"><h2>電話予約入力</h2><div class="formgrid"><div><label>お客様名</label><input id="name"></div><div><label>電話番号</label><input id="phone"></div><div><label>メール</label><input id="email" type="email"></div><div><label>人数</label><input id="party" type="number" min="1" value="2"></div><div><label>席</label><select id="area" onchange="toggleRound()"><option value="COUNTER">カウンター</option><option value="PRIVATE1">個室1</option><option value="PRIVATE2">個室2</option><option value="PRIVATE3">個室3</option></select></div><div id="roundBox"><label>カウンター回転</label><select id="round"><option value="1">1部</option><option value="2">2部</option></select></div><div><label>来店日時</label><input id="visit" type="datetime-local"></div><div><label>利用時間（分）</label><input id="duration" type="number" min="30" value="150"></div><div><label>全額前受け</label><input id="amount" type="number" min="0" value="110000"></div><div><label>コース</label><input id="course" value="厳選活蟹コース"></div></div><div class="toolbar" style="margin-top:12px"><button class="primary" onclick="addReservation()">予約登録</button></div><div class="log" id="notice">登録時にカウンター残席・個室重複を自動判定します。</div></div>
+<div class="card"><h2>現在の自動化</h2><div class="log">① 予約登録 → 席数チェック<br>② Square請求書送信<br>③ 入金Webhook → 予約確定<br>④ 確定メール自動送信<br>⑤ Square booking.created / updated も受信可能</div></div></aside></section></main>
+<script>
+let data=[]; const $=id=>document.getElementById(id); const token=()=>localStorage.getItem('tsukiya_admin_token')||''; const yen=n=>'¥'+Number(n||0).toLocaleString();
+function saveToken(){localStorage.setItem('tsukiya_admin_token',$('token').value.trim());loadRows()}
+function toggleRound(){$('roundBox').style.display=$('area').value==='COUNTER'?'block':'none'}
+function labelArea(r){if(r.seating_area==='COUNTER')return `カウンター ${r.counter_round||''}部`; return ({PRIVATE1:'個室1',PRIVATE2:'個室2',PRIVATE3:'個室3',UNASSIGNED:'未割当'}[r.seating_area]||r.seating_area)}
+function state(s){return ({PENDING:'決済待ち',INVOICED:'請求済',CONFIRMED:'予約確定',CANCELLED:'キャンセル',ERROR:'エラー'}[s]||s)}
+async function api(path,opt={}){opt.headers={...(opt.headers||{}),'x-admin-token':token()};if(opt.body)opt.headers['Content-Type']='application/json';const r=await fetch(path,opt);let j={};try{j=await r.json()}catch(e){}if(!r.ok)throw new Error(j.error||`HTTP ${r.status}`);return j}
+async function loadRows(){try{data=await api('/api/reservations');$('apiState').textContent='本番サーバー接続中';$('conn').textContent='接続できました。';render()}catch(e){$('apiState').textContent='未接続';$('conn').textContent=e.message}}
+function render(){$('rows').innerHTML=data.map(r=>`<tr><td>${r.id}</td><td>${r.source}</td><td><b>${r.guest_name}</b><br><small>${r.email||r.phone||''}</small></td><td>${(r.visit_at||'').replace('T',' ')}</td><td>${labelArea(r)}</td><td>${r.party_size}名</td><td>${yen(r.amount)}</td><td><span class="badge ${r.status}">${state(r.status)}</span></td><td>${r.status==='PENDING'?`<button class="gold" onclick="invoice(${r.id})">Square請求</button>`:(r.square_invoice_url?`<a href="${r.square_invoice_url}" target="_blank">請求書</a>`:'')}</td></tr>`).join('');$('kAll').textContent=data.length;$('kPending').textContent=data.filter(r=>['PENDING','INVOICED'].includes(r.status)).length;$('kConfirmed').textContent=data.filter(r=>r.status==='CONFIRMED').length;$('kAmount').textContent=yen(data.filter(r=>r.status==='CONFIRMED').reduce((s,r)=>s+Number(r.amount||0),0))}
+async function addReservation(){try{const body={guest_name:$('name').value.trim(),phone:$('phone').value.trim(),email:$('email').value.trim(),party_size:Number($('party').value),visit_at:$('visit').value,seating_area:$('area').value,counter_round:$('area').value==='COUNTER'?Number($('round').value):null,duration_minutes:Number($('duration').value),amount:Number($('amount').value),course_name:$('course').value.trim()};const r=await api('/api/reservations/phone',{method:'POST',body:JSON.stringify(body)});$('notice').textContent=`${r.guest_name}様を登録しました。続けてSquare請求を送れます。`;await loadRows()}catch(e){$('notice').textContent=e.message}}
+async function invoice(id){try{await api(`/api/reservations/${id}/send-invoice`,{method:'POST'});$('notice').textContent='Square請求書を送信しました。';await loadRows()}catch(e){$('notice').textContent=e.message}}
+(function(){ $('token').value=token(); const d=new Date();d.setDate(d.getDate()+1);const p=n=>String(n).padStart(2,'0');$('visit').value=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T18:00`;toggleRound();if(token())loadRows();})();
+</script></body></html>
