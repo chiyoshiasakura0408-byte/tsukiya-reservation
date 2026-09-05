@@ -97,16 +97,17 @@ def square(path, method='POST', body=None):
 def make_invoice(r):
     if not r['email']:
         raise RuntimeError('Square請求書メール送信にはメールアドレスが必要です')
-    rid = str(r['id'])
+    rid = str(r['id'])   
+    ikey = f"{rid}-{r['created_at']}"
     customer = square('/v2/customers', body={
-        'idempotency_key': f'tsukiya-customer-{rid}',
+        'idempotency_key': f'tsukiya-customer-{ikey}
         'given_name': r['guest_name'],
         'email_address': r['email'],
         'phone_number': r['phone'] or None,
         'reference_id': f'tsukiya-reservation-{rid}'
     })['customer']
     order = square('/v2/orders', body={
-        'idempotency_key': f'tsukiya-order-{rid}',
+        'idempotency_key': f'tsukiya-order-{ikey}
         'order': {
             'location_id': SQUARE_LOCATION_ID,
             'reference_id': f'tsukiya-reservation-{rid}',
@@ -120,7 +121,7 @@ def make_invoice(r):
     })['order']
     due = (datetime.now(timezone.utc) + timedelta(days=1)).date().isoformat()
     inv = square('/v2/invoices', body={
-        'idempotency_key': f'tsukiya-invoice-{rid}',
+        'idempotency_key': f'tsukiya-invoice-{ikey}',
         'invoice': {
             'location_id': SQUARE_LOCATION_ID,
             'order_id': order['id'],
@@ -133,7 +134,7 @@ def make_invoice(r):
     })['invoice']
     pub = square(f'/v2/invoices/{inv["id"]}/publish', body={
         'version': inv['version'],
-        'idempotency_key': f'tsukiya-publish-{rid}'
+        'idempotency_key': f'tsukiya-publish-{ikey}'
     })['invoice']
     return customer['id'], order['id'], pub['id'], pub.get('public_url')
 
