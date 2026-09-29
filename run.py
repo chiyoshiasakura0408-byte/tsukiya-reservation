@@ -1044,7 +1044,13 @@ def process_square_event(event, raw):
                     "SELECT * FROM reservations WHERE square_invoice_id=?",
                     (invoice["id"],)
                 ).fetchone()
-                if row and row["status"] != "CANCELLED":
+                if row and row["status"] in ("PENDING", "INVOICED", "ERROR"):
+                    # Confirm against Square's current state, rather than an old
+                    # webhook snapshot. A bank-confirmed reservation stays bank-paid.
+                    current = square(f"/v2/invoices/{invoice['id']}")["invoice"]
+                    if current.get("status") != "PAID":
+                        row = None
+                if row and row["status"] in ("PENDING", "INVOICED", "ERROR"):
                     c.execute(
                         "UPDATE reservations SET status='CONFIRMED', "
                         "payment_source='SQUARE', payment_confirmed_at=?, "
@@ -1507,7 +1513,9 @@ class Handler(
             if not reference or not staff or len(reference) > 200 or len(staff) > 100:
                 return self.send_json({"error": "振込記録と確認者名が必要です"}, 400)
             c = con()
+            
             try:
+                c.execute("BEGIN IMMEDIATE")
                 row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
                 if not row:
                     return self.send_json({"error": "not found"}, 404)
@@ -1529,7 +1537,7 @@ class Handler(
                 except Exception as e:
                     return self.send_json({"error": f"Square請求書を停止できません: {e}"}, 502)
 
-                c.execute("BEGIN IMMEDIATE")
+                
                 fresh = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
                 if fresh["status"] != "INVOICED":
                     c.rollback()
