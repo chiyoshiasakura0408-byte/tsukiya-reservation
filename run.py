@@ -14,7 +14,7 @@ from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, urlencode
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 
 
@@ -88,6 +88,22 @@ ROOMS = (
     "PRIVATE3"
 )
 
+PUBLIC_COURSE_PRICE = 60000  # 税込・1名あたり
+
+
+def public_slot_allowed(day, time_text):
+    """The public course is offered annually from Nov 10 through Mar 20."""
+    if not (day.month > 11 or (day.month == 11 and day.day >= 10)
+            or day.month < 3 or (day.month == 3 and day.day <= 20)):
+        return False
+    try:
+        visit = datetime.fromisoformat(f"{day.isoformat()}T{time_text}")
+    except ValueError:
+        return False
+    if time_text not in ("18:00", "20:30"):
+        return False
+    return visit > datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
+
 
 def now_iso():
     return datetime.now(
@@ -120,6 +136,7 @@ def con():
             square_invoice_id TEXT,
             square_invoice_url TEXT,
             square_booking_id TEXT,
+            public_request_id TEXT,
             confirmation_sent_at TEXT,
             payment_source TEXT,
             payment_confirmed_at TEXT,
@@ -166,6 +183,7 @@ def con():
         "counter_round": "INTEGER",
         "duration_minutes": "INTEGER DEFAULT 150",
         "square_booking_id": "TEXT",
+        "public_request_id": "TEXT",
         "confirmation_sent_at": "TEXT",
         "payment_source": "TEXT",
         "payment_confirmed_at": "TEXT",
@@ -180,6 +198,11 @@ def con():
                 ADD COLUMN {name} {typ}
                 """
             )
+
+    c.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS public_request_id_unique "
+        "ON reservations(public_request_id)"
+    )
 
     c.commit()
     return c
@@ -1236,6 +1259,46 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        if p == "/book":
+            return self.send_html(
+                (BASE / "public" / "book.html").read_text(encoding="utf-8")
+            )
+
+        if p == "/api/public/availability":
+            q = parse_qs(u.query)
+            try:
+                start = date.fromisoformat((q.get("start") or [""])[0])
+                party = int((q.get("party_size") or ["2"])[0])
+            except (ValueError, TypeError):
+                return self.send_json({"error": "日付または人数が不正です"}, 400)
+            if not 1 <= party <= 8:
+                return self.send_json({"error": "1〜8名で選択してください"}, 400)
+            today = datetime.now(timezone(timedelta(hours=9))).date()
+            if start < today or start > today + timedelta(days=365):
+                return self.send_json({"error": "表示できる日付の範囲外です"}, 400)
+            c = con()
+            try:
+                days = []
+                for offset in range(7):
+                    day = start + timedelta(days=offset)
+                    slots = {}
+                    for area in ("COUNTER", *ROOMS):
+                        slots[area] = {}
+                        for time_text, round_number in (("18:00", 1), ("20:30", 2)):
+                            allowed = public_slot_allowed(day, time_text)
+                            available = allowed and availability_check(
+                                c, area, f"{day.isoformat()}T{time_text}", party,
+                                round_number if area == "COUNTER" else None, 150
+                            )[0]
+                            slots[area][time_text] = available
+                    days.append({"date": day.isoformat(), "slots": slots})
+            finally:
+                c.close()
+            return self.send_json({
+                "days": days, "price_per_person": PUBLIC_COURSE_PRICE,
+                "course_name": "松葉蟹おまかせコース"
+            })
+
         if p == "/":
             if not self.auth():
                 return self.redirect("/login")
@@ -1432,6 +1495,116 @@ class Handler(
         p = urlparse(
             self.path
         ).path
+
+        if p == "/api/public/reservations":
+            try:
+                body_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return self.send_json({"error": "入力形式が不正です"}, 400)
+            if body_length > 4096:
+                return self.send_json({"error": "入力が長すぎます"}, 413)
+            if not SQUARE_TOKEN or not SQUARE_LOCATION_ID:
+                return self.send_json({"error": "現在お申し込みを受け付けられません"}, 503)
+            try:
+                x = self.read_json()
+                if not isinstance(x, dict):
+                    raise ValueError("invalid booking")
+                day = date.fromisoformat(str(x.get("date", "")))
+                time_text = str(x.get("time", ""))
+                area = str(x.get("seating_area", ""))
+                party = int(x.get("party_size"))
+                request_id = str(x.get("request_id", ""))
+                name = str(x.get("guest_name", "")).strip()
+                email = str(x.get("email", "")).strip().lower()
+                phone = str(x.get("phone", "")).strip()
+            except (ValueError, TypeError, json.JSONDecodeError):
+                return self.send_json({"error": "入力内容を確認してください"}, 400)
+            today_jp = datetime.now(timezone(timedelta(hours=9))).date()
+            if (not 1 <= party <= 8 or area not in ("COUNTER", *ROOMS)
+                    or day > today_jp + timedelta(days=365)
+                    or not public_slot_allowed(day, time_text)
+                    or len(name) < 1 or len(name) > 80
+                    or len(email) > 254 or email.count("@") != 1
+                    or len(phone) < 10 or len(phone) > 20
+                    or not all(ch.isdigit() or ch in "+- ()" for ch in phone)
+                    or sum(ch.isdigit() for ch in phone) < 10
+                    or len(request_id) != 36
+                    or any(ch not in "0123456789abcdef-" for ch in request_id)):
+                return self.send_json({"error": "日付・人数・連絡先を確認してください"}, 400)
+            c = con()
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                existing = c.execute(
+                    "SELECT id,square_invoice_url,status FROM reservations "
+                    "WHERE public_request_id=?", (request_id,)
+                ).fetchone()
+                if existing:
+                    c.rollback()
+                    if existing["square_invoice_url"]:
+                        return self.send_json({
+                            "reservation_id": existing["id"],
+                            "payment_url": existing["square_invoice_url"]
+                        })
+                    return self.send_json({"error": "申し込みを処理中です"}, 409)
+                recent = c.execute(
+                    "SELECT COUNT(*) n FROM reservations WHERE source='WEB' "
+                    "AND email=? AND created_at>=?",
+                    (email, (datetime.now(timezone.utc)-timedelta(days=1)).isoformat())
+                ).fetchone()["n"]
+                if recent >= 3:
+                    c.rollback()
+                    return self.send_json({"error": "申込回数の上限です。店舗へご連絡ください"}, 429)
+                visit_at = f"{day.isoformat()}T{time_text}"
+                ok, message = availability_check(
+                    c, area, visit_at, party,
+                    1 if time_text == "18:00" else 2 if area == "COUNTER" else None,
+                    150
+                )
+                if not ok:
+                    c.rollback()
+                    return self.send_json({"error": message}, 409)
+                ts = now_iso()
+                cur = c.execute(
+                    "INSERT INTO reservations(source,guest_name,phone,email,visit_at,"
+                    "party_size,course_name,amount,seating_area,counter_round,"
+                    "duration_minutes,status,public_request_id,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("WEB", name, phone, email, visit_at, party,
+                     "松葉蟹おまかせコース", party * PUBLIC_COURSE_PRICE,
+                     area, (1 if time_text == "18:00" else 2) if area == "COUNTER" else None,
+                     150, "PENDING", request_id, ts, ts)
+                )
+                rid = cur.lastrowid
+                c.commit()
+                row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+            finally:
+                c.close()
+            try:
+                customer_id, order_id, invoice_id, payment_url = make_invoice(row)
+                c = con()
+                try:
+                    c.execute(
+                        "UPDATE reservations SET square_customer_id=?,square_order_id=?,"
+                        "square_invoice_id=?,square_invoice_url=?,status='INVOICED',"
+                        "updated_at=? WHERE id=?",
+                        (customer_id, order_id, invoice_id, payment_url, now_iso(), rid)
+                    )
+                    c.commit()
+                finally:
+                    c.close()
+                return self.send_json({"reservation_id": rid, "payment_url": payment_url})
+            except Exception as error:
+                c = con()
+                try:
+                    c.execute("UPDATE reservations SET status='ERROR',last_error=?,"
+                              "updated_at=? WHERE id=?", (str(error), now_iso(), rid))
+                    c.commit()
+                finally:
+                    c.close()
+                return self.send_json({
+                    "error": "請求書を作成できませんでした。店舗へご連絡ください",
+                    "reservation_id": rid
+                }, 503)
 
         if p == "/api/login":
             if not ADMIN_TOKEN:
