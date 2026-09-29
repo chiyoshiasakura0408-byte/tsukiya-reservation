@@ -23,6 +23,8 @@ DB = DATA_DIR / "tsukiya.sqlite"
 
 PORT = int(os.getenv("PORT", "10000"))
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+SESSION_COOKIE = "tsukiya_session"
+SESSION_SECONDS = 12 * 60 * 60
 
 SQUARE_TOKEN = os.getenv("SQUARE_ACCESS_TOKEN", "")
 SQUARE_LOCATION_ID = os.getenv("SQUARE_LOCATION_ID", "")
@@ -1008,7 +1010,8 @@ class Handler(
     def send_json(
         self,
         obj,
-        status=200
+        status=200,
+        headers=None
     ):
         b = json.dumps(
             obj,
@@ -1028,6 +1031,9 @@ class Handler(
             str(len(b))
         )
 
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+
         self.end_headers()
 
         self.wfile.write(b)
@@ -1045,6 +1051,8 @@ class Handler(
             "Content-Type",
             "text/html; charset=utf-8"
         )
+
+        self.send_header("Cache-Control", "no-store")
 
         self.send_header(
             "Content-Length",
@@ -1076,15 +1084,47 @@ class Handler(
         )
 
     def auth(self):
+        if not ADMIN_TOKEN:
+            return False
+
+        if hmac.compare_digest(
+            self.headers.get("x-admin-token", ""),
+            ADMIN_TOKEN
+        ):
+            return True
+
+        cookies = self.headers.get("Cookie", "").split(";")
+        for cookie in cookies:
+            name, _, value = cookie.strip().partition("=")
+            if name != SESSION_COOKIE:
+                continue
+            try:
+                expiry, signature = value.split(".", 1)
+                if int(expiry) <= int(datetime.now(timezone.utc).timestamp()):
+                    return False
+                expected = hmac.new(
+                    ADMIN_TOKEN.encode(), expiry.encode(), hashlib.sha256
+                ).hexdigest()
+                return hmac.compare_digest(signature, expected)
+            except (ValueError, TypeError):
+                return False
+        return False
+
+    def redirect(self, location):
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def cookie_header(self, value, max_age):
+        secure = (
+            APP_BASE_URL.startswith("https://")
+            or self.headers.get("X-Forwarded-Proto", "") == "https"
+        )
         return (
-            bool(ADMIN_TOKEN)
-            and hmac.compare_digest(
-                self.headers.get(
-                    "x-admin-token",
-                    ""
-                ),
-                ADMIN_TOKEN
-            )
+            f"{SESSION_COOKIE}={value}; HttpOnly; SameSite=Strict; "
+            f"Path=/; Max-Age={max_age}"
+            + ("; Secure" if secure else "")
         )
 
     def do_GET(self):
@@ -1092,6 +1132,9 @@ class Handler(
         p = u.path
 
         if p == "/":
+            if not self.auth():
+                return self.redirect("/login")
+
             f = (
                 BASE
                 / "public"
@@ -1114,6 +1157,12 @@ class Handler(
                     encoding="utf-8"
                 )
             )
+
+        if p == "/login":
+            if self.auth():
+                return self.redirect("/")
+            f = BASE / "public" / "login.html"
+            return self.send_html(f.read_text(encoding="utf-8"))
 
         if p == "/health":
             return self.send_json(
@@ -1250,6 +1299,35 @@ class Handler(
         p = urlparse(
             self.path
         ).path
+
+        if p == "/api/login":
+            if not ADMIN_TOKEN:
+                return self.send_json({"error": "管理者パスワードが未設定です"}, 503)
+            supplied = str(self.read_json().get("password") or "")
+            if not hmac.compare_digest(supplied, ADMIN_TOKEN):
+                return self.send_json({"error": "パスワードが違います"}, 401)
+            expiry = str(int(datetime.now(timezone.utc).timestamp()) + SESSION_SECONDS)
+            signature = hmac.new(
+                ADMIN_TOKEN.encode(), expiry.encode(), hashlib.sha256
+            ).hexdigest()
+            return self.send_json(
+                {"ok": True},
+                headers={
+                    "Set-Cookie": self.cookie_header(
+                        f"{expiry}.{signature}", SESSION_SECONDS
+                    ),
+                    "Cache-Control": "no-store"
+                }
+            )
+
+        if p == "/api/logout":
+            return self.send_json(
+                {"ok": True},
+                headers={
+                    "Set-Cookie": self.cookie_header("", 0),
+                    "Cache-Control": "no-store"
+                }
+            )
 
         if p == "/api/reservations/phone":
             if not self.auth():
