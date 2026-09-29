@@ -109,12 +109,27 @@ class WorkflowTest(unittest.TestCase):
                     availability = json.load(response)
                 self.assertTrue(availability["days"][0]["slots"]["COUNTER"]["18:00"])
                 self.assertEqual(availability["price_per_person"], 60000)
+                self.assertTrue(availability["days"][0]["slots"]["PRIVATE1"]["18:00"])
+                self.assertFalse(availability["days"][0]["slots"]["PRIVATE3"]["18:00"])
+                with urllib.request.urlopen(
+                    base + f"/api/public/availability?start={day.isoformat()}&party_size=5"
+                ) as response:
+                    larger = json.load(response)
+                self.assertFalse(larger["days"][0]["slots"]["PRIVATE1"]["18:00"])
+                self.assertTrue(larger["days"][0]["slots"]["PRIVATE3"]["18:00"])
 
                 body = {"date": day.isoformat(), "time": "18:00", "seating_area": "COUNTER",
                         "party_size": 2, "guest_name": "公開予約テスト", "phone": "09012345678",
                         "email": "public@example.com",
                         "amount": 1,
                         "request_id": "123e4567-e89b-12d3-a456-426614174000"}
+                invalid = dict(body, seating_area="PRIVATE3")
+                with self.assertRaises(urllib.error.HTTPError) as err:
+                    urllib.request.urlopen(urllib.request.Request(
+                        base + "/api/public/reservations", data=json.dumps(invalid).encode(),
+                        headers={"Content-Type": "application/json"}
+                    ))
+                self.assertEqual(err.exception.code, 400)
                 req = urllib.request.Request(
                     base + "/api/public/reservations", data=json.dumps(body).encode(),
                     headers={"Content-Type": "application/json"}
