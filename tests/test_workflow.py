@@ -51,6 +51,18 @@ class WorkflowTest(unittest.TestCase):
         c.close()
         return row
 
+    def test_two_matsuba_courses_keep_distinct_periods_and_names(self):
+        from datetime import date
+        self.assertTrue(run.public_slot_allowed(date(2026, 11, 10), "18:00", "matsuba-seko"))
+        self.assertTrue(run.public_slot_allowed(date(2026, 12, 31), "18:00", "matsuba-seko"))
+        self.assertFalse(run.public_slot_allowed(date(2027, 1, 1), "18:00", "matsuba-seko"))
+        self.assertTrue(run.public_slot_allowed(date(2027, 1, 1), "18:00", "matsuba-fukahire"))
+        self.assertTrue(run.public_slot_allowed(date(2027, 3, 20), "18:00", "matsuba-fukahire"))
+        self.assertFalse(run.public_slot_allowed(date(2026, 12, 31), "18:00", "matsuba-fukahire"))
+        self.assertFalse(run.public_slot_allowed(date(2027, 3, 21), "18:00", "matsuba-fukahire"))
+        self.assertEqual(run.PUBLIC_COURSES["matsuba-seko"][1], 60000)
+        self.assertEqual(run.PUBLIC_COURSES["matsuba-fukahire"][1], 60000)
+
     def test_public_hold_expires_after_48_hours_only_if_unpaid(self):
         old = (datetime.now(timezone.utc) - timedelta(hours=49)).isoformat()
         recent = run.now_iso()
