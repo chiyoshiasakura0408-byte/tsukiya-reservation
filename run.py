@@ -1310,6 +1310,28 @@ class Handler(
 
             return self.send_json(rows)
 
+        if p == "/api/unpaid-invoices":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            c = con()
+            try:
+                rows = [dict(x) for x in c.execute(
+                    "SELECT id,guest_name,visit_at,amount,square_invoice_id "
+                    "FROM reservations WHERE status='INVOICED' AND square_invoice_id IS NOT NULL "
+                    "ORDER BY visit_at,id"
+                )]
+            finally:
+                c.close()
+            result = []
+            for row in rows:
+                try:
+                    invoice = square(f"/v2/invoices/{row['square_invoice_id']}")["invoice"]
+                    row["square_status"] = invoice["status"]
+                except Exception:
+                    row["square_status"] = "UNKNOWN"
+                result.append(row)
+            return self.send_json(result)
+
         if p == "/api/availability":
             if not self.auth():
                 return self.send_json(
@@ -1477,13 +1499,12 @@ class Handler(
                 try:
                     invoice_id = row["square_invoice_id"]
                     current = square(f"/v2/invoices/{invoice_id}")["invoice"]
-                    if current["status"] not in ("CANCELED",):
-                        if current["status"] != "UNPAID":
-                            return self.send_json({"error": "Square請求書の状態を確認してください"}, 409)
-                        square(
-                            f"/v2/invoices/{invoice_id}/cancel",
-                            body={"version": current["version"]}
-                        )
+                    if current["status"] != "UNPAID":
+                        return self.send_json({"error": "Square請求書が未決済ではありません。状態を確認してください"}, 409)
+                    square(
+                        f"/v2/invoices/{invoice_id}/cancel",
+                        body={"version": current["version"]}
+                    )
                 except Exception as e:
                     return self.send_json({"error": f"Square請求書を停止できません: {e}"}, 502)
 
