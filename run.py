@@ -92,6 +92,16 @@ PUBLIC_COURSE_PRICE = 60000  # 税込・1名あたり
 PUBLIC_PAYMENT_HOURS = 48
 
 
+def public_party_allowed(area, party):
+    if area == "COUNTER":
+        return 2 <= party <= COUNTER_CAPACITY
+    if area in ("PRIVATE1", "PRIVATE2"):
+        return 2 <= party <= 4
+    if area == "PRIVATE3":
+        return 4 <= party <= 8
+    return False
+
+
 def public_slot_allowed(day, time_text):
     """The public course is offered annually from Nov 10 through Mar 20."""
     if not (day.month > 11 or (day.month == 11 and day.day >= 10)
@@ -1317,8 +1327,8 @@ class Handler(
                 party = int((q.get("party_size") or ["2"])[0])
             except (ValueError, TypeError):
                 return self.send_json({"error": "日付または人数が不正です"}, 400)
-            if not 1 <= party <= 8:
-                return self.send_json({"error": "1〜8名で選択してください"}, 400)
+            if not 2 <= party <= 8:
+                return self.send_json({"error": "2〜8名で選択してください"}, 400)
             today = datetime.now(timezone(timedelta(hours=9))).date()
             if start < today or start > today + timedelta(days=365):
                 return self.send_json({"error": "表示できる日付の範囲外です"}, 400)
@@ -1332,7 +1342,7 @@ class Handler(
                         slots[area] = {}
                         for time_text, round_number in (("18:00", 1), ("20:30", 2)):
                             allowed = public_slot_allowed(day, time_text)
-                            available = allowed and availability_check(
+                            available = allowed and public_party_allowed(area, party) and availability_check(
                                 c, area, f"{day.isoformat()}T{time_text}", party,
                                 round_number if area == "COUNTER" else None, 150
                             )[0]
@@ -1567,7 +1577,7 @@ class Handler(
             except (ValueError, TypeError, json.JSONDecodeError):
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
             today_jp = datetime.now(timezone(timedelta(hours=9))).date()
-            if (not 1 <= party <= 8 or area not in ("COUNTER", *ROOMS)
+            if (not public_party_allowed(area, party)
                     or day > today_jp + timedelta(days=365)
                     or not public_slot_allowed(day, time_text)
                     or len(name) < 1 or len(name) > 80
