@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f2742">
+<title>西天満 つきや｜予約管理</title>
+<style>
+:root{--navy:#0f2742;--gold:#b28a47;--line:#e7e1d7;--muted:#697484;--bg:#f5f3ee}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#1d2430;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif}
+header{background:var(--navy);color:white;padding:17px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px}.brand{font-size:20px;font-weight:800}.sub{font-size:11px;opacity:.75}
+main{max-width:1450px;margin:auto;padding:16px}.pages{display:flex;gap:8px;margin-bottom:14px}.pages a{padding:11px 18px;border-radius:10px;text-decoration:none;background:white;color:var(--navy);border:1px solid var(--line);font-weight:800}.pages a.active{background:var(--navy);color:white}
+.card{background:white;border:1px solid var(--line);border-radius:15px;padding:16px;margin-bottom:14px}h1{font-size:20px;color:var(--navy);margin:0}h2{font-size:17px;color:var(--navy);margin:0 0 12px}.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}button{border:1px solid var(--line);border-radius:9px;background:white;color:var(--navy);font-weight:800;padding:10px 13px;cursor:pointer}input[type=date]{padding:9px;border:1px solid var(--line);border-radius:9px;font-size:15px;background:white}label,.hint{font-size:12px;color:var(--muted)}.hint{margin:10px 0 0;line-height:1.5}
+.board-scroll{overflow-x:auto;padding-bottom:3px}.matrix{display:grid;gap:6px;min-width:830px}.counter{grid-template-columns:86px repeat(8,minmax(88px,1fr))}.rooms{grid-template-columns:86px repeat(3,minmax(170px,1fr));min-width:620px}.head,.time{background:#edf0f4;color:var(--navy);border-radius:8px;padding:9px;text-align:center;font-size:12px;font-weight:800}.time{display:flex;align-items:center;justify-content:center;position:sticky;left:0;z-index:1;background:var(--navy);color:white}
+.seat{min-height:106px;border:1px solid var(--line);border-radius:10px;background:#faf9f6;padding:9px;overflow-wrap:anywhere}.seat.busy{background:#fff;border-color:#cbb890}.seat .name{font-size:13px;font-weight:800;color:var(--navy);line-height:1.35}.seat .meta{font-size:11px;color:var(--muted);margin-top:5px}.badge{display:inline-block;margin-top:7px;padding:4px 6px;border-radius:7px;font-size:11px;font-weight:800;background:#eee}.badge.CONFIRMED{background:#e4f4ec;color:#1f7a5a}.badge.INVOICED{background:#fff0da;color:#9a6213}.badge.ERROR{background:#fde7e7;color:#a63d40}.empty{font-size:12px;color:#8a9098}.summary{font-size:12px;color:var(--muted);margin:0 0 12px}
+@media(max-width:550px){header{padding:13px}.brand{font-size:16px}main{padding:10px}.card{padding:12px}.pages a{flex:1;text-align:center}.counter{min-width:830px}.rooms{min-width:620px}}
+</style>
+</head>
+<body>
+<header><div><div class="brand">西天満 つきや｜予約管理</div><div class="sub">カウンター8席・個室3室 / 2部制</div></div><button onclick="logout()">ログアウト</button></header>
+<main>
+<nav class="pages" aria-label="管理画面"><a href="/">決済管理</a><a class="active" href="/reservations">予約管理</a></nav>
+<section class="card"><div class="toolbar"><h1>日別予約表</h1><label for="day">来店日</label><input id="day" type="date" onchange="render()"><button onclick="load()">予約・決済状態を更新</button></div><p class="hint" id="status">読み込み中</p></section>
+<section class="card"><h2>カウンター 8席</h2><p class="summary" id="counterSummary"></p><div class="board-scroll"><div id="counter" class="matrix counter"></div></div><p class="hint">スマートフォンでは表を横にスワイプできます。席番号は人数に応じた画面上の自動配置です。</p></section>
+<section class="card"><h2>個室 3室</h2><p class="summary" id="roomSummary"></p><div class="board-scroll"><div id="rooms" class="matrix rooms"></div></div></section>
+<p class="hint">予約登録、Square請求、銀行入金確認は「決済管理」ページで操作します。実際の席割りを確定する機能はまだありません。</p>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let reservations=[],unpaid=[];
+const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+function paymentLabel(r){if(r.status==='CONFIRMED')return r.payment_source==='BANK'?'銀行入金済':r.payment_source==='SQUARE'?'Square決済済':'予約確定';if(r.status==='INVOICED'){const invoice=unpaid.find(x=>Number(x.id)===Number(r.id));return invoice?`Square ${invoice.square_status==='UNPAID'?'未決済':escapeHtml(invoice.square_status)}`:'Square請求済'}return ({PENDING:'請求前',ERROR:'要確認'}[r.status]||escapeHtml(r.status))}
+function seat(r){if(!r)return '<div class="seat empty">空き</div>';return `<div class="seat busy"><div class="name">${escapeHtml(r.guest_name)}</div><div class="meta">${escapeHtml(r.party_size)}名 · ¥${Number(r.amount||0).toLocaleString()}</div><span class="badge ${escapeHtml(r.status)}">${paymentLabel(r)}</span></div>`}
+function slotRows(day,time,area){return reservations.filter(r=>r.status!=='CANCELLED'&&String(r.visit_at||'').slice(0,10)===day&&String(r.visit_at||'').slice(11,16)===time&&r.seating_area===area).sort((a,b)=>Number(a.id)-Number(b.id))}
+function render(){const day=$('day').value;if(!day)return;const times=['18:00','20:30'];let counter='<div class="head">時間</div>'+Array.from({length:8},(_,i)=>`<div class="head">${i+1}席</div>`).join('');let rooms='<div class="head">時間</div>'+Array.from({length:3},(_,i)=>`<div class="head">個室${i+1}</div>`).join('');const counterCounts=[],roomCounts=[];for(const time of times){const people=slotRows(day,time,'COUNTER');const seats=Array(8).fill(null);for(const r of people){let n=Math.max(1,Number(r.party_size)||1);for(let i=0;i<8&&n;i++)if(!seats[i]){seats[i]=r;n--}}counterCounts.push(seats.filter(Boolean).length);counter+=`<div class="time">${time}</div>`+seats.map(seat).join('');const roomRows=[1,2,3].map(i=>slotRows(day,time,`PRIVATE${i}`)[0]||null);roomCounts.push(roomRows.filter(Boolean).length);rooms+=`<div class="time">${time}</div>`+roomRows.map(seat).join('')}
+$('counter').innerHTML=counter;$('rooms').innerHTML=rooms;$('counterSummary').textContent=`前半 ${counterCounts[0]}/8席 · 後半 ${counterCounts[1]}/8席`;$('roomSummary').textContent=`前半 ${roomCounts[0]}/3室 · 後半 ${roomCounts[1]}/3室`}
+async function api(path){const response=await fetch(path,{credentials:'same-origin'});if(response.status===401){location.href='/login';throw Error('再ログインしてください')}if(!response.ok)throw Error(`HTTP ${response.status}`);return response.json()}
+async function load(){try{reservations=await api('/api/reservations');try{unpaid=await api('/api/unpaid-invoices');$('status').textContent='予約とSquareの決済状態を更新しました'}catch(e){unpaid=[];$('status').textContent='予約を表示中。Squareの現在状態は取得できませんでした'}render()}catch(e){$('status').textContent=`予約を取得できません：${e.message}`}}
+async function logout(){await fetch('/api/logout',{method:'POST',credentials:'same-origin'});location.href='/login'}
+const today=new Date();$('day').value=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;load();
+</script>
+</body>
+</html>
