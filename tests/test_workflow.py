@@ -20,6 +20,7 @@ class WorkflowTest(unittest.TestCase):
         self.old_token = run.ADMIN_TOKEN
         run.DB = Path(self.tmp.name) / "reservations.sqlite"
         run.ADMIN_TOKEN = "test-secret"
+        run.LOGIN_FAILURES.clear()
         run.con().close()
 
     def tearDown(self):
@@ -156,6 +157,28 @@ class WorkflowTest(unittest.TestCase):
             self.assertNotIn("test-secret", cookie)
             rows = urllib.request.Request(url + "/api/reservations", headers={"Cookie": cookie})
             self.assertEqual(urllib.request.urlopen(rows).status, 200)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_staff_login_limits_repeated_failures(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/api/login"
+            def attempt(password):
+                req = urllib.request.Request(
+                    url, data=json.dumps({"password": password}).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+                try:
+                    return urllib.request.urlopen(req).status
+                except urllib.error.HTTPError as e:
+                    return e.code
+            for _ in range(run.LOGIN_MAX_FAILURES):
+                self.assertEqual(attempt("wrong"), 401)
+            self.assertEqual(attempt("7777"), 429)
         finally:
             server.shutdown()
             server.server_close()

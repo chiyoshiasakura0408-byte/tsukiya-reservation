@@ -7,6 +7,9 @@ import base64
 import hmac
 import hashlib
 import smtplib
+import threading
+import time
+from collections import deque
 
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, urlencode
@@ -26,6 +29,10 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 STAFF_LOGIN_PIN = "7777"
 SESSION_COOKIE = "tsukiya_session"
 SESSION_SECONDS = 12 * 60 * 60
+LOGIN_WINDOW_SECONDS = 15 * 60
+LOGIN_MAX_FAILURES = 5
+LOGIN_FAILURES = {}
+LOGIN_LOCK = threading.Lock()
 
 SQUARE_TOKEN = os.getenv("SQUARE_ACCESS_TOKEN", "")
 SQUARE_LOCATION_ID = os.getenv("SQUARE_LOCATION_ID", "")
@@ -1417,9 +1424,23 @@ class Handler(
         if p == "/api/login":
             if not ADMIN_TOKEN:
                 return self.send_json({"error": "管理者パスワードが未設定です"}, 503)
+            ip = self.client_address[0]
+            with LOGIN_LOCK:
+                failures = LOGIN_FAILURES.get(ip, deque())
+                cutoff = time.monotonic() - LOGIN_WINDOW_SECONDS
+                while failures and failures[0] < cutoff:
+                    failures.popleft()
+                LOGIN_FAILURES[ip] = failures
+                limited = len(failures) >= LOGIN_MAX_FAILURES
+            if limited:
+                return self.send_json({"error": "ログイン試行が多すぎます。15分後に再試行してください"}, 429)
             supplied = str(self.read_json().get("password") or "")
             if not hmac.compare_digest(supplied, STAFF_LOGIN_PIN):
+                with LOGIN_LOCK:
+                    LOGIN_FAILURES.setdefault(ip, deque()).append(time.monotonic())
                 return self.send_json({"error": "パスワードが違います"}, 401)
+            with LOGIN_LOCK:
+                LOGIN_FAILURES.pop(ip, None)
             expiry = str(int(datetime.now(timezone.utc).timestamp()) + SESSION_SECONDS)
             signature = hmac.new(
                 ADMIN_TOKEN.encode(), expiry.encode(), hashlib.sha256
