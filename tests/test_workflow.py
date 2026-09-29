@@ -53,7 +53,8 @@ class WorkflowTest(unittest.TestCase):
     def test_partial_payment_does_not_confirm_and_paid_event_is_idempotent(self):
         rid = self.reservation()
         sent = []
-        with patch.object(run, "send_confirmation", side_effect=lambda row: (sent.append(row["id"]) or True, "")):
+        with patch.object(run, "square", return_value={"invoice": {"status": "PAID"}}), \
+             patch.object(run, "send_confirmation", side_effect=lambda row: (sent.append(row["id"]) or True, "")):
             def event(eid, status):
                 data = {"event_id": eid, "type": "invoice.payment_made",
                         "data": {"object": {"invoice": {"id": "inv-test", "status": status}}}}
@@ -67,6 +68,19 @@ class WorkflowTest(unittest.TestCase):
             self.assertTrue(self.get(rid)["confirmation_sent_at"])
             self.assertTrue(event("full", "PAID"))
             self.assertEqual(sent, [rid])
+
+    def test_bank_confirmation_is_not_overwritten_by_delayed_square_event(self):
+        rid = self.reservation()
+        c = run.con()
+        c.execute("UPDATE reservations SET status='CONFIRMED', payment_source='BANK' WHERE id=?", (rid,))
+        c.commit()
+        c.close()
+        event = {"event_id": "late", "type": "invoice.payment_made",
+                 "data": {"object": {"invoice": {"id": "inv-test", "status": "PAID"}}}}
+        with patch.object(run, "square") as lookup:
+            run.process_square_event(event, json.dumps(event).encode())
+        lookup.assert_not_called()
+        self.assertEqual(self.get(rid)["payment_source"], "BANK")
 
     def test_bank_reconciliation_cancels_invoice_before_confirmation(self):
         rid = self.reservation(email="")
