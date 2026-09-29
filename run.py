@@ -413,10 +413,7 @@ def make_invoice(r):
         + timedelta(days=1)
     ).date().isoformat()
 
-    if r["email"]:
-        delivery_method = "EMAIL"
-    else:
-        delivery_method = "SHARE_MANUALLY"
+    delivery_method = "EMAIL" if r["email"] else "SHARE_MANUALLY"
 
     invoice = square(
         "/v2/invoices",
@@ -484,15 +481,9 @@ def make_invoice(r):
         or ""
     )
 
-    if not r["email"]:
-        if not payment_url:
-            raise RuntimeError(
-                "Square請求書URLを取得できませんでした"
-            )
-
-        send_sms(
-            r["phone"],
-            payment_url
+    if not r["email"] and not payment_url:
+        raise RuntimeError(
+            "Square請求書URLを取得できませんでした"
         )
 
     return (
@@ -582,6 +573,16 @@ def availability_check(
         )
 
     visit = parse_dt(visit_at)
+
+    if seating_area == "COUNTER" or seating_area in ROOMS:
+        slot = (visit.hour, visit.minute)
+        if slot not in ((18, 0), (20, 30)):
+            return (False, "開始時刻は18:00または20:30を選択してください")
+        if duration_minutes != 150:
+            return (False, "利用時間は150分です")
+        expected_round = 1 if slot == (18, 0) else 2
+        if seating_area == "COUNTER" and counter_round != expected_round:
+            return (False, "カウンターの部と開始時刻が一致しません")
 
     active = ACTIVE_STATUSES
 
