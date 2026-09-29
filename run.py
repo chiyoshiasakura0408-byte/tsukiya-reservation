@@ -1388,7 +1388,7 @@ class Handler(
                     x["visit_at"],
                     party,
                     x.get("course_name")
-                    or "お料理代",
+                    or "松葉蟹おまかせコース",
                     amount,
                     area,
                     rnd,
