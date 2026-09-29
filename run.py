@@ -89,6 +89,7 @@ ROOMS = (
 )
 
 PUBLIC_COURSE_PRICE = 60000  # 税込・1名あたり
+PUBLIC_PAYMENT_HOURS = 48
 
 
 def public_slot_allowed(day, time_text):
@@ -462,7 +463,7 @@ def make_invoice(r):
 
     due = (
         datetime.now(timezone.utc)
-        + timedelta(days=1)
+        + timedelta(days=3)
     ).date().isoformat()
 
     delivery_method = "EMAIL" if r["email"] else "SHARE_MANUALLY"
@@ -601,6 +602,50 @@ def parse_dt(s):
             "+00:00"
         )
     )
+
+
+def expire_public_reservations():
+    """Release expired public holds only after Square confirms an invoice is unpaid."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=PUBLIC_PAYMENT_HOURS)).isoformat()
+    c = con()
+    expired = 0
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        rows = c.execute(
+            "SELECT id,square_invoice_id FROM reservations WHERE source='WEB' "
+            "AND status IN ('PENDING','INVOICED','ERROR') AND created_at<=? "
+            "ORDER BY id LIMIT 50", (cutoff,)
+        ).fetchall()
+        for row in rows:
+            iid = row["square_invoice_id"]
+            if iid:
+                try:
+                    invoice = square(f"/v2/invoices/{iid}")["invoice"]
+                    status = invoice["status"]
+                    if status == "UNPAID":
+                        square(f"/v2/invoices/{iid}/cancel",
+                               body={"version": invoice["version"]})
+                    elif status not in ("CANCELED", "CANCELLED"):
+                        continue
+                except Exception as exc:
+                    print(f"Expiry check failed for reservation {row['id']}: {exc}")
+                    continue
+            c.execute("UPDATE reservations SET status='CANCELLED',updated_at=? WHERE id=?",
+                      (now_iso(), row["id"]))
+            expired += 1
+        c.commit()
+    finally:
+        c.close()
+    return expired
+
+
+def expiry_loop():
+    while True:
+        try:
+            expire_public_reservations()
+        except Exception as exc:
+            print(f"Public reservation expiry failed: {exc}")
+        time.sleep(300)
 
 
 def availability_check(
@@ -1265,6 +1310,7 @@ class Handler(
             )
 
         if p == "/api/public/availability":
+            expire_public_reservations()
             q = parse_qs(u.query)
             try:
                 start = date.fromisoformat((q.get("start") or [""])[0])
@@ -1497,6 +1543,7 @@ class Handler(
         ).path
 
         if p == "/api/public/reservations":
+            expire_public_reservations()
             try:
                 body_length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
@@ -1540,7 +1587,7 @@ class Handler(
                 ).fetchone()
                 if existing:
                     c.rollback()
-                    if existing["square_invoice_url"]:
+                    if existing["square_invoice_url"] and existing["status"] != "CANCELLED":
                         return self.send_json({
                             "reservation_id": existing["id"],
                             "payment_url": existing["square_invoice_url"]
@@ -1751,6 +1798,38 @@ class Handler(
                 finally:
                     c.close()
             return self.send_json({"ok": True, "confirmation_email_sent": bool(confirmed["email"] and ok)})
+
+        if p.startswith("/api/reservations/") and p.endswith("/cancel"):
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            try:
+                rid = int(p.split("/")[3])
+            except ValueError:
+                return self.send_json({"error": "bad id"}, 400)
+            c = con()
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+                if not row:
+                    return self.send_json({"error": "not found"}, 404)
+                if row["status"] not in ("PENDING", "INVOICED", "ERROR"):
+                    return self.send_json({"error": "未決済の申込のみ取り消せます"}, 409)
+                if row["square_invoice_id"]:
+                    try:
+                        iid = row["square_invoice_id"]
+                        current = square(f"/v2/invoices/{iid}")["invoice"]
+                        if current["status"] != "UNPAID":
+                            return self.send_json({"error": "Squareの支払状態を確認してください"}, 409)
+                        square(f"/v2/invoices/{iid}/cancel",
+                               body={"version": current["version"]})
+                    except Exception:
+                        return self.send_json({"error": "請求書を停止できませんでした"}, 502)
+                c.execute("UPDATE reservations SET status='CANCELLED',updated_at=? WHERE id=?",
+                          (now_iso(), rid))
+                c.commit()
+                return self.send_json({"ok": True})
+            finally:
+                c.close()
 
         if p == "/api/reservations/phone":
             if not self.auth():
@@ -2117,6 +2196,7 @@ class Handler(
 if __name__ == "__main__":
     c = con()
     c.close()
+    threading.Thread(target=expiry_loop, daemon=True).start()
 
     print(
         f"Tsukiya reservation server starting on :{PORT}"
