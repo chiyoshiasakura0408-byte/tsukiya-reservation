@@ -148,6 +148,7 @@ def con():
             square_invoice_url TEXT,
             square_booking_id TEXT,
             public_request_id TEXT,
+            cancellation_policy_accepted_at TEXT,
             confirmation_sent_at TEXT,
             payment_source TEXT,
             payment_confirmed_at TEXT,
@@ -195,6 +196,7 @@ def con():
         "duration_minutes": "INTEGER DEFAULT 150",
         "square_booking_id": "TEXT",
         "public_request_id": "TEXT",
+        "cancellation_policy_accepted_at": "TEXT",
         "confirmation_sent_at": "TEXT",
         "payment_source": "TEXT",
         "payment_confirmed_at": "TEXT",
@@ -1571,12 +1573,15 @@ class Handler(
                 area = str(x.get("seating_area", ""))
                 party = int(x.get("party_size"))
                 request_id = str(x.get("request_id", ""))
+                policy_accepted = x.get("cancellation_policy_accepted") is True
                 name = str(x.get("guest_name", "")).strip()
                 email = str(x.get("email", "")).strip().lower()
                 phone = str(x.get("phone", "")).strip()
             except (ValueError, TypeError, json.JSONDecodeError):
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
             today_jp = datetime.now(timezone(timedelta(hours=9))).date()
+            if not policy_accepted:
+                return self.send_json({"error": "キャンセルポリシーへの同意が必要です"}, 400)
             if (not public_party_allowed(area, party)
                     or day > today_jp + timedelta(days=365)
                     or not public_slot_allowed(day, time_text)
@@ -1624,12 +1629,12 @@ class Handler(
                 cur = c.execute(
                     "INSERT INTO reservations(source,guest_name,phone,email,visit_at,"
                     "party_size,course_name,amount,seating_area,counter_round,"
-                    "duration_minutes,status,public_request_id,created_at,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "duration_minutes,status,public_request_id,cancellation_policy_accepted_at,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("WEB", name, phone, email, visit_at, party,
                      "松葉蟹おまかせコース", party * PUBLIC_COURSE_PRICE,
                      area, (1 if time_text == "18:00" else 2) if area == "COUNTER" else None,
-                     150, "PENDING", request_id, ts, ts)
+                     150, "PENDING", request_id, ts, ts, ts)
                 )
                 rid = cur.lastrowid
                 c.commit()
