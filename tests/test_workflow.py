@@ -51,6 +51,42 @@ class WorkflowTest(unittest.TestCase):
         c.close()
         return row
 
+    def test_public_hold_expires_after_48_hours_only_if_unpaid(self):
+        old = (datetime.now(timezone.utc) - timedelta(hours=49)).isoformat()
+        recent = run.now_iso()
+        c = run.con()
+        ids = []
+        for status, invoice, created in (("INVOICED", "unpaid", old),
+                                         ("INVOICED", "paid", old),
+                                         ("INVOICED", "unreachable", old),
+                                         ("PENDING", None, old),
+                                         ("INVOICED", "recent", recent)):
+            ids.append(c.execute(
+                "INSERT INTO reservations(source,guest_name,visit_at,party_size,amount,"
+                "status,square_invoice_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                ("WEB", "テスト", "2026-11-10T18:00", 2, 120000,
+                 status, invoice, created, created)
+            ).lastrowid)
+        c.commit()
+        c.close()
+        calls = []
+
+        def square_mock(path, body=None):
+            calls.append(path)
+            if "unreachable" in path:
+                raise RuntimeError("Square unavailable")
+            if path.endswith("/cancel"):
+                self.assertEqual(body, {"version": 3})
+                return {"invoice": {"status": "CANCELED"}}
+            return {"invoice": {"status": "PAID" if path.endswith("/paid") else "UNPAID",
+                                "version": 3}}
+
+        with patch.object(run, "square", side_effect=square_mock):
+            self.assertEqual(run.expire_public_reservations(), 2)
+        self.assertEqual([self.get(rid)["status"] for rid in ids],
+                         ["CANCELLED", "INVOICED", "INVOICED", "CANCELLED", "INVOICED"])
+        self.assertEqual(sum(path.endswith("/cancel") for path in calls), 1)
+
     def test_public_booking_uses_seasonal_price_and_holds_only_available_seats(self):
         today = datetime.now(timezone(timedelta(hours=9))).date()
         day = next(today + timedelta(days=i) for i in range(1, 365)
@@ -139,6 +175,32 @@ class WorkflowTest(unittest.TestCase):
             run.process_square_event(event, json.dumps(event).encode())
         lookup.assert_not_called()
         self.assertEqual(self.get(rid)["payment_source"], "BANK")
+
+    def test_staff_can_cancel_only_unpaid_invoice(self):
+        rid = self.reservation()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/reservations/{rid}/cancel",
+            data=b"{}", headers={"x-admin-token": "test-secret"}
+        )
+        try:
+            with patch.object(run, "square", return_value={"invoice": {"status": "PAID"}}):
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(req)
+                self.assertEqual(error.exception.code, 409)
+            self.assertEqual(self.get(rid)["status"], "INVOICED")
+            with patch.object(run, "square", side_effect=[
+                {"invoice": {"status": "UNPAID", "version": 2}},
+                {"invoice": {"status": "CANCELED"}}
+            ]) as square:
+                self.assertEqual(urllib.request.urlopen(req).status, 200)
+                self.assertEqual(square.call_args.args[0], "/v2/invoices/inv-test/cancel")
+            self.assertEqual(self.get(rid)["status"], "CANCELLED")
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_bank_reconciliation_cancels_invoice_before_confirmation(self):
         rid = self.reservation(email="")
