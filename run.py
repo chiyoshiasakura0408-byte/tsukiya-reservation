@@ -90,6 +90,10 @@ ROOMS = (
 
 PUBLIC_COURSE_PRICE = 60000  # 税込・1名あたり
 PUBLIC_PAYMENT_HOURS = 48
+PUBLIC_COURSES = {
+    "matsuba-seko": ("松葉蟹、せこ蟹おまかせコース", PUBLIC_COURSE_PRICE),
+    "matsuba-fukahire": ("松葉蟹と名物ふかひれあんかけおまかせコース", PUBLIC_COURSE_PRICE),
+}
 
 
 def public_party_allowed(area, party):
@@ -102,10 +106,16 @@ def public_party_allowed(area, party):
     return False
 
 
-def public_slot_allowed(day, time_text):
+def public_slot_allowed(day, time_text, course=None):
     """The public course is offered annually from Nov 10 through Mar 20."""
     if not (day.month > 11 or (day.month == 11 and day.day >= 10)
             or day.month < 3 or (day.month == 3 and day.day <= 20)):
+        return False
+    if course == "matsuba-seko" and day.month not in (11, 12):
+        return False
+    if course == "matsuba-fukahire" and day.month not in (1, 2, 3):
+        return False
+    if course is not None and course not in PUBLIC_COURSES:
         return False
     try:
         visit = datetime.fromisoformat(f"{day.isoformat()}T{time_text}")
@@ -1324,6 +1334,9 @@ class Handler(
         if p == "/api/public/availability":
             expire_public_reservations()
             q = parse_qs(u.query)
+            course = (q.get("course") or [None])[0]
+            if course is not None and course not in PUBLIC_COURSES:
+                return self.send_json({"error": "コースを選び直してください"}, 400)
             try:
                 start = date.fromisoformat((q.get("start") or [""])[0])
                 party = int((q.get("party_size") or ["2"])[0])
@@ -1343,7 +1356,7 @@ class Handler(
                     for area in ("COUNTER", *ROOMS):
                         slots[area] = {}
                         for time_text, round_number in (("18:00", 1), ("20:30", 2)):
-                            allowed = public_slot_allowed(day, time_text)
+                            allowed = public_slot_allowed(day, time_text, course)
                             available = allowed and public_party_allowed(area, party) and availability_check(
                                 c, area, f"{day.isoformat()}T{time_text}", party,
                                 round_number if area == "COUNTER" else None, 150
@@ -1354,7 +1367,7 @@ class Handler(
                 c.close()
             return self.send_json({
                 "days": days, "price_per_person": PUBLIC_COURSE_PRICE,
-                "course_name": "松葉蟹おまかせコース"
+                "course_name": PUBLIC_COURSES[course][0] if course else "松葉蟹おまかせコース"
             })
 
         if p == "/":
@@ -1574,6 +1587,7 @@ class Handler(
                 party = int(x.get("party_size"))
                 request_id = str(x.get("request_id", ""))
                 policy_accepted = x.get("cancellation_policy_accepted") is True
+                course = x.get("course")
                 name = str(x.get("guest_name", "")).strip()
                 email = str(x.get("email", "")).strip().lower()
                 phone = str(x.get("phone", "")).strip()
@@ -1582,9 +1596,11 @@ class Handler(
             today_jp = datetime.now(timezone(timedelta(hours=9))).date()
             if not policy_accepted:
                 return self.send_json({"error": "キャンセルポリシーへの同意が必要です"}, 400)
+            if course is not None and course not in PUBLIC_COURSES:
+                return self.send_json({"error": "コースを選び直してください"}, 400)
             if (not public_party_allowed(area, party)
                     or day > today_jp + timedelta(days=365)
-                    or not public_slot_allowed(day, time_text)
+                    or not public_slot_allowed(day, time_text, course)
                     or len(name) < 1 or len(name) > 80
                     or len(email) > 254 or email.count("@") != 1
                     or len(phone) < 10 or len(phone) > 20
@@ -1632,7 +1648,7 @@ class Handler(
                     "duration_minutes,status,public_request_id,cancellation_policy_accepted_at,created_at,updated_at) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("WEB", name, phone, email, visit_at, party,
-                     "松葉蟹おまかせコース", party * PUBLIC_COURSE_PRICE,
+                     PUBLIC_COURSES[course][0] if course else "松葉蟹おまかせコース", party * PUBLIC_COURSE_PRICE,
                      area, (1 if time_text == "18:00" else 2) if area == "COUNTER" else None,
                      150, "PENDING", request_id, ts, ts, ts)
                 )
