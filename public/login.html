@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>従業員ログイン｜西天満 つきや</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f3ee;color:#0f2742;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;padding:20px}
+    main{width:min(100%,420px);background:#fff;border:1px solid #e7e1d7;border-radius:16px;padding:30px;box-shadow:0 12px 32px #0f27420d}
+    h1{font-size:24px;margin:0 0 6px}p{color:#6d7480;margin:0 0 25px;font-size:14px}label{display:block;font-size:14px;margin-bottom:8px}input{width:100%;padding:13px;border:1px solid #d8d1c5;border-radius:9px;font-size:16px}button{margin-top:18px;width:100%;border:0;border-radius:10px;background:#0f2742;color:#fff;padding:13px;font-size:16px;font-weight:700}#error{color:#a63d40;margin-top:13px;min-height:20px;font-size:14px}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>西天満 つきや</h1>
+    <p>従業員用・予約管理画面</p>
+    <form id="login">
+      <label for="password">管理パスワード</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button type="submit">ログイン</button>
+      <div id="error" role="alert"></div>
+    </form>
+  </main>
+  <script>
+    localStorage.removeItem('tsukiya_admin_token');
+    document.getElementById('login').addEventListener('submit',async event=>{
+      event.preventDefault();
+      const password=document.getElementById('password');
+      const error=document.getElementById('error');
+      error.textContent='';
+      try{
+        const response=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({password:password.value})});
+        const result=await response.json();
+        if(!response.ok)throw new Error(result.error||'ログインできませんでした');
+        password.value='';
+        location.href='/';
+      }catch(e){error.textContent=e.message}
+    });
+  </script>
+</body>
+</html>
