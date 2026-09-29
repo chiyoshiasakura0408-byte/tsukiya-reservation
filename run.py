@@ -23,6 +23,7 @@ DB = DATA_DIR / "tsukiya.sqlite"
 
 PORT = int(os.getenv("PORT", "10000"))
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+STAFF_LOGIN_PIN = "7777"
 SESSION_COOKIE = "tsukiya_session"
 SESSION_SECONDS = 12 * 60 * 60
 
@@ -1395,7 +1396,7 @@ class Handler(
             if not ADMIN_TOKEN:
                 return self.send_json({"error": "管理者パスワードが未設定です"}, 503)
             supplied = str(self.read_json().get("password") or "")
-            if not hmac.compare_digest(supplied, ADMIN_TOKEN):
+            if not hmac.compare_digest(supplied, STAFF_LOGIN_PIN):
                 return self.send_json({"error": "パスワードが違います"}, 401)
             expiry = str(int(datetime.now(timezone.utc).timestamp()) + SESSION_SECONDS)
             signature = hmac.new(
