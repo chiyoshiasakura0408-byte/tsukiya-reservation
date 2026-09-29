@@ -1263,6 +1263,12 @@ class Handler(
                 )
             )
 
+        if p == "/reservations":
+            if not self.auth():
+                return self.redirect("/login")
+            f = BASE / "public" / "reservations.html"
+            return self.send_html(f.read_text(encoding="utf-8"))
+
         if p == "/login":
             if self.auth():
                 return self.redirect("/")
