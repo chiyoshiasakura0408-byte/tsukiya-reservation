@@ -112,6 +112,29 @@ class WorkflowTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("残り6席", message)
 
+    def test_staff_pin_logs_in_without_exposing_admin_token(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}"
+            def login(password):
+                return urllib.request.Request(
+                    url + "/api/login", data=json.dumps({"password": password}).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+            with self.assertRaises(urllib.error.HTTPError) as wrong:
+                urllib.request.urlopen(login("test-secret"))
+            self.assertEqual(wrong.exception.code, 401)
+            response = urllib.request.urlopen(login("7777"))
+            cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+            self.assertNotIn("test-secret", cookie)
+            rows = urllib.request.Request(url + "/api/reservations", headers={"Cookie": cookie})
+            self.assertEqual(urllib.request.urlopen(rows).status, 200)
+        finally:
+            server.shutdown()
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()
