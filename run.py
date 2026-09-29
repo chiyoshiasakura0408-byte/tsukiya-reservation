@@ -70,7 +70,8 @@ TWILIO_FROM_NUMBER = os.getenv(
 ACTIVE_STATUSES = (
     "PENDING",
     "INVOICED",
-    "CONFIRMED"
+    "CONFIRMED",
+    "ERROR"
 )
 
 ROOMS = (
@@ -87,7 +88,7 @@ def now_iso():
 
 
 def con():
-    c = sqlite3.connect(DB)
+    c = sqlite3.connect(DB, timeout=30)
     c.row_factory = sqlite3.Row
 
     c.execute(
@@ -112,6 +113,8 @@ def con():
             square_invoice_url TEXT,
             square_booking_id TEXT,
             confirmation_sent_at TEXT,
+            payment_source TEXT,
+            payment_confirmed_at TEXT,
             last_error TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -129,6 +132,20 @@ def con():
         """
     )
 
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS payment_audit(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reservation_id INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            amount INTEGER NOT NULL,
+            reference TEXT NOT NULL,
+            confirmed_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
     cols = {
         r["name"]
         for r in c.execute(
@@ -142,6 +159,8 @@ def con():
         "duration_minutes": "INTEGER DEFAULT 150",
         "square_booking_id": "TEXT",
         "confirmation_sent_at": "TEXT",
+        "payment_source": "TEXT",
+        "payment_confirmed_at": "TEXT",
         "last_error": "TEXT",
     }
 
@@ -612,7 +631,7 @@ def availability_check(
                 substr(visit_at,1,10)=?
             AND seating_area='COUNTER'
             AND counter_round=?
-            AND status IN (?,?,?)
+            AND status IN (?,?,?,?)
         """
 
         if exclude_id is not None:
@@ -660,7 +679,7 @@ def availability_check(
                 duration_minutes
             FROM reservations
             WHERE seating_area=?
-            AND status IN (?,?,?)
+            AND status IN (?,?,?,?)
             """,
             (
                 seating_area,
@@ -987,6 +1006,78 @@ def import_booking(event):
 
     c.commit()
     c.close()
+
+
+def process_square_event(event, raw):
+    event_id = event.get("event_id") or event.get("id") or hashlib.sha256(raw).hexdigest()
+    event_type = event.get("type") or ""
+
+    # Import first so a failed Square lookup can be retried by the webhook sender.
+    if event_type in ("booking.created", "booking.updated"):
+        import_booking(event)
+
+    c = con()
+    confirmed = None
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        if c.execute(
+            "SELECT 1 FROM webhook_events WHERE event_id=?", (event_id,)
+        ).fetchone():
+            c.rollback()
+            return True
+
+        if event_type == "invoice.payment_made":
+            obj = (event.get("data") or {}).get("object") or {}
+            invoice = obj.get("invoice") or obj
+            # A payment event can also represent an installment. Confirm only
+            # when Square reports the invoice itself paid in full.
+            if invoice.get("status") == "PAID" and invoice.get("id"):
+                row = c.execute(
+                    "SELECT * FROM reservations WHERE square_invoice_id=?",
+                    (invoice["id"],)
+                ).fetchone()
+                if row and row["status"] != "CANCELLED":
+                    c.execute(
+                        "UPDATE reservations SET status='CONFIRMED', "
+                        "payment_source='SQUARE', payment_confirmed_at=?, "
+                        "last_error=NULL, updated_at=? WHERE id=?",
+                        (now_iso(), now_iso(), row["id"])
+                    )
+                    confirmed = dict(c.execute(
+                        "SELECT * FROM reservations WHERE id=?", (row["id"],)
+                    ).fetchone())
+
+        c.execute(
+            "INSERT INTO webhook_events(event_id,event_type,received_at) VALUES(?,?,?)",
+            (event_id, event_type, now_iso())
+        )
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+    if confirmed and confirmed["email"] and not confirmed["confirmation_sent_at"]:
+        ok, error = send_confirmation(confirmed)
+        c = con()
+        try:
+            if ok:
+                c.execute(
+                    "UPDATE reservations SET confirmation_sent_at=?, last_error=NULL, "
+                    "updated_at=? WHERE id=? AND confirmation_sent_at IS NULL",
+                    (now_iso(), now_iso(), confirmed["id"])
+                )
+            else:
+                c.execute(
+                    "UPDATE reservations SET last_error=?, updated_at=? WHERE id=?",
+                    (error, now_iso(), confirmed["id"])
+                )
+            c.commit()
+        finally:
+            c.close()
+
+    return False
 
 
 class Handler(
@@ -1329,6 +1420,108 @@ class Handler(
                 }
             )
 
+        if p.startswith("/api/reservations/") and p.endswith("/send-confirmation"):
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            try:
+                rid = int(p.split("/")[3])
+            except ValueError:
+                return self.send_json({"error": "bad id"}, 400)
+            c = con()
+            try:
+                row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+                if not row:
+                    return self.send_json({"error": "not found"}, 404)
+                if row["status"] != "CONFIRMED" or not row["email"]:
+                    return self.send_json({"error": "確定済みのメール予約のみ送信できます"}, 409)
+                if row["confirmation_sent_at"]:
+                    return self.send_json({"error": "確定メールは送信済みです"}, 409)
+                ok, error = send_confirmation(row)
+                c.execute(
+                    "UPDATE reservations SET confirmation_sent_at=?,last_error=?,updated_at=? "
+                    "WHERE id=?",
+                    (now_iso() if ok else None, None if ok else error, now_iso(), rid)
+                )
+                c.commit()
+                if not ok:
+                    return self.send_json({"error": error}, 503)
+                return self.send_json({"ok": True})
+            finally:
+                c.close()
+
+        if p.startswith("/api/reservations/") and p.endswith("/confirm-bank-payment"):
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            try:
+                rid = int(p.split("/")[3])
+                details = self.read_json()
+                amount = int(details.get("amount"))
+                reference = str(details.get("reference") or "").strip()
+                staff = str(details.get("confirmed_by") or "").strip()
+            except (ValueError, TypeError):
+                return self.send_json({"error": "金額と振込記録を入力してください"}, 400)
+            if not reference or not staff or len(reference) > 200 or len(staff) > 100:
+                return self.send_json({"error": "振込記録と確認者名が必要です"}, 400)
+            c = con()
+            try:
+                row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+                if not row:
+                    return self.send_json({"error": "not found"}, 404)
+                if row["status"] != "INVOICED" or not row["square_invoice_id"]:
+                    return self.send_json({"error": "請求済みの予約のみ確認できます"}, 409)
+                if amount != row["amount"]:
+                    return self.send_json({"error": "振込金額が前受け金額と一致しません"}, 409)
+
+                # Stop card collection before recording a direct bank transfer.
+                try:
+                    invoice_id = row["square_invoice_id"]
+                    current = square(f"/v2/invoices/{invoice_id}")["invoice"]
+                    if current["status"] not in ("CANCELED",):
+                        if current["status"] != "UNPAID":
+                            return self.send_json({"error": "Square請求書の状態を確認してください"}, 409)
+                        square(
+                            f"/v2/invoices/{invoice_id}/cancel",
+                            body={"version": current["version"]}
+                        )
+                except Exception as e:
+                    return self.send_json({"error": f"Square請求書を停止できません: {e}"}, 502)
+
+                c.execute("BEGIN IMMEDIATE")
+                fresh = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+                if fresh["status"] != "INVOICED":
+                    c.rollback()
+                    return self.send_json({"error": "予約の状態が変わりました。再確認してください"}, 409)
+                ts = now_iso()
+                c.execute(
+                    "UPDATE reservations SET status='CONFIRMED', payment_source='BANK', "
+                    "payment_confirmed_at=?, last_error=NULL, updated_at=? WHERE id=?",
+                    (ts, ts, rid)
+                )
+                c.execute(
+                    "INSERT INTO payment_audit(reservation_id,source,amount,reference,confirmed_by,created_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (rid, "BANK", amount, reference, staff, ts)
+                )
+                c.commit()
+                confirmed = dict(c.execute(
+                    "SELECT * FROM reservations WHERE id=?", (rid,)
+                ).fetchone())
+            finally:
+                c.close()
+
+            if confirmed["email"]:
+                ok, error = send_confirmation(confirmed)
+                c = con()
+                try:
+                    c.execute(
+                        "UPDATE reservations SET confirmation_sent_at=?,last_error=?,updated_at=? WHERE id=?",
+                        (now_iso() if ok else None, None if ok else error, now_iso(), rid)
+                    )
+                    c.commit()
+                finally:
+                    c.close()
+            return self.send_json({"ok": True, "confirmation_email_sent": bool(confirmed["email"] and ok)})
+
         if p == "/api/reservations/phone":
             if not self.auth():
                 return self.send_json(
@@ -1400,9 +1593,13 @@ class Handler(
                 x["amount"]
             )
 
+            if amount <= 0:
+                return self.send_json({"error": "前受け金額は1円以上にしてください"}, 400)
+
             c = con()
 
             try:
+                c.execute("BEGIN IMMEDIATE")
                 ok, msg = availability_check(
                     c,
                     area,
@@ -1413,6 +1610,7 @@ class Handler(
                 )
 
             except Exception as e:
+                c.rollback()
                 c.close()
 
                 return self.send_json(
@@ -1424,6 +1622,7 @@ class Handler(
                 )
 
             if not ok:
+                c.rollback()
                 c.close()
 
                 return self.send_json(
@@ -1674,198 +1873,13 @@ class Handler(
                     400
                 )
 
-            event_id = (
-                event.get("event_id")
-                or event.get("id")
-                or hashlib.sha256(
-                    raw
-                ).hexdigest()
-            )
+            try:
+                duplicate = process_square_event(event, raw)
+            except Exception as e:
+                print("Square webhook processing error:", e)
+                return self.send_json({"error": "processing failed"}, 500)
 
-            event_type = (
-                event.get("type")
-                or ""
-            )
-
-            c = con()
-
-            seen = c.execute(
-                """
-                SELECT 1
-                FROM webhook_events
-                WHERE event_id=?
-                """,
-                (
-                    event_id,
-                )
-            ).fetchone()
-
-            if seen:
-                c.close()
-
-                return self.send_json(
-                    {
-                        "ok":
-                            True,
-
-                        "duplicate":
-                            True
-                    }
-                )
-
-            c.execute(
-                """
-                INSERT INTO webhook_events(
-                    event_id,
-                    event_type,
-                    received_at
-                )
-                VALUES(
-                    ?,?,?
-                )
-                """,
-                (
-                    event_id,
-                    event_type,
-                    now_iso()
-                )
-            )
-
-            c.commit()
-
-            if event_type == "invoice.payment_made":
-                data = (
-                    event.get("data")
-                    or {}
-                )
-
-                obj = (
-                    data.get("object")
-                    or {}
-                )
-
-                invoice = (
-                    obj.get("invoice")
-                    or obj
-                )
-
-                invoice_id = invoice.get(
-                    "id"
-                )
-
-                if invoice_id:
-                    r = c.execute(
-                        """
-                        SELECT *
-                        FROM reservations
-                        WHERE square_invoice_id=?
-                        """,
-                        (
-                            invoice_id,
-                        )
-                    ).fetchone()
-
-                    if r:
-                        ts = now_iso()
-
-                        c.execute(
-                            """
-                            UPDATE reservations
-                            SET
-                                status='CONFIRMED',
-                                last_error=NULL,
-                                updated_at=?
-                            WHERE id=?
-                            """,
-                            (
-                                ts,
-                                r["id"]
-                            )
-                        )
-
-                        c.commit()
-
-                        r = c.execute(
-                            """
-                            SELECT *
-                            FROM reservations
-                            WHERE id=?
-                            """,
-                            (
-                                r["id"],
-                            )
-                        ).fetchone()
-
-                        if not r[
-                            "confirmation_sent_at"
-                        ]:
-                            ok, err = send_confirmation(r)
-
-                            if ok:
-                                c.execute(
-                                    """
-                                    UPDATE reservations
-                                    SET
-                                        confirmation_sent_at=?,
-                                        last_error=NULL,
-                                        updated_at=?
-                                    WHERE id=?
-                                    """,
-                                    (
-                                        now_iso(),
-                                        now_iso(),
-                                        r["id"]
-                                    )
-                                )
-
-                            else:
-                                c.execute(
-                                    """
-                                    UPDATE reservations
-                                    SET
-                                        last_error=?,
-                                        updated_at=?
-                                    WHERE id=?
-                                    """,
-                                    (
-                                        err,
-                                        now_iso(),
-                                        r["id"]
-                                    )
-                                )
-
-                            c.commit()
-
-                c.close()
-
-                return self.send_json(
-                    {
-                        "ok":
-                            True
-                    }
-                )
-
-            c.close()
-
-            if event_type in (
-                "booking.created",
-                "booking.updated"
-            ):
-                try:
-                    import_booking(event)
-
-                except Exception as e:
-                    print(
-                        "booking import error:",
-                        e
-                    )
-
-            return self.send_json(
-                {
-                    "ok":
-                        True
-                }
-            )
+            return self.send_json({"ok": True, "duplicate": duplicate})
 
         self.send_error(404)
 
