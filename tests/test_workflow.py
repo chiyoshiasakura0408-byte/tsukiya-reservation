@@ -5,6 +5,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
@@ -49,6 +50,63 @@ class WorkflowTest(unittest.TestCase):
         row = dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
         c.close()
         return row
+
+    def test_public_booking_uses_seasonal_price_and_holds_only_available_seats(self):
+        today = datetime.now(timezone(timedelta(hours=9))).date()
+        day = next(today + timedelta(days=i) for i in range(1, 365)
+                   if run.public_slot_allowed(today + timedelta(days=i), "18:00"))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        old_token, old_location = run.SQUARE_TOKEN, run.SQUARE_LOCATION_ID
+        run.SQUARE_TOKEN, run.SQUARE_LOCATION_ID = "test-token", "test-location"
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            with urllib.request.urlopen(base + "/book") as page:
+                self.assertIn("ご予約", page.read().decode())
+            with patch.object(run, "make_invoice", return_value=(
+                "cust", "order", "invoice", "https://square.example/pay"
+            )) as invoice:
+                with urllib.request.urlopen(
+                    base + f"/api/public/availability?start={day.isoformat()}&party_size=2"
+                ) as response:
+                    availability = json.load(response)
+                self.assertTrue(availability["days"][0]["slots"]["COUNTER"]["18:00"])
+                self.assertEqual(availability["price_per_person"], 60000)
+
+                body = {"date": day.isoformat(), "time": "18:00", "seating_area": "COUNTER",
+                        "party_size": 2, "guest_name": "公開予約テスト", "phone": "09012345678",
+                        "email": "public@example.com",
+                        "amount": 1,
+                        "request_id": "123e4567-e89b-12d3-a456-426614174000"}
+                req = urllib.request.Request(
+                    base + "/api/public/reservations", data=json.dumps(body).encode(),
+                    headers={"Content-Type": "application/json"}
+                )
+                first = json.load(urllib.request.urlopen(req))
+                second = json.load(urllib.request.urlopen(req))
+                self.assertEqual(first, second)
+                self.assertEqual(invoice.call_count, 1)
+                row = self.get(first["reservation_id"])
+                self.assertEqual((row["amount"], row["status"], row["source"]),
+                                 (120000, "INVOICED", "WEB"))
+                with urllib.request.urlopen(
+                    base + f"/api/public/availability?start={day.isoformat()}&party_size=7"
+                ) as response:
+                    availability = json.load(response)
+                self.assertFalse(availability["days"][0]["slots"]["COUNTER"]["18:00"])
+                self.assertNotIn("public@example.com", json.dumps(availability))
+                event = {"event_id": "public-paid", "type": "invoice.payment_made",
+                         "data": {"object": {"invoice": {"id": "invoice", "status": "PAID"}}}}
+                with patch.object(run, "square", return_value={"invoice": {"status": "PAID"}}), \
+                     patch.object(run, "send_confirmation", return_value=(True, "")):
+                    run.process_square_event(event, json.dumps(event).encode())
+                self.assertEqual(self.get(first["reservation_id"])["status"], "CONFIRMED")
+                self.assertEqual(self.get(first["reservation_id"])["payment_source"], "SQUARE")
+        finally:
+            run.SQUARE_TOKEN, run.SQUARE_LOCATION_ID = old_token, old_location
+            server.shutdown()
+            server.server_close()
 
     def test_partial_payment_does_not_confirm_and_paid_event_is_idempotent(self):
         rid = self.reservation()
