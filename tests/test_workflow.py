@@ -102,6 +102,31 @@ class WorkflowTest(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_square_unpaid_list_and_partial_payment_cannot_be_bank_confirmed(self):
+        rid = self.reservation(email="")
+        with patch.object(run, "square", return_value={"invoice": {"status": "PARTIALLY_PAID", "version": 2}}):
+            server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                url = f"http://127.0.0.1:{server.server_port}"
+                req = urllib.request.Request(url + "/api/unpaid-invoices",
+                                             headers={"x-admin-token": "test-secret"})
+                listed = json.load(urllib.request.urlopen(req))
+                self.assertEqual(listed[0]["square_status"], "PARTIALLY_PAID")
+                req = urllib.request.Request(
+                    url + f"/api/reservations/{rid}/confirm-bank-payment",
+                    data=json.dumps({"amount": 110000, "reference": "振込明細", "confirmed_by": "担当者"}).encode(),
+                    headers={"x-admin-token": "test-secret", "Content-Type": "application/json"},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as rejected:
+                    urllib.request.urlopen(req)
+                self.assertEqual(rejected.exception.code, 409)
+                self.assertEqual(self.get(rid)["status"], "INVOICED")
+            finally:
+                server.shutdown()
+                server.server_close()
+
     def test_failed_invoice_keeps_seat_held(self):
         rid = self.reservation()
         c = run.con()
