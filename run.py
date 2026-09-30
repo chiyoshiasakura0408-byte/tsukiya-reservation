@@ -1316,10 +1316,15 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
-        if p == "/book":
-            return self.send_html(
-                (BASE / "public" / "book.html").read_text(encoding="utf-8")
-            )
+        if p in ("/book", "/book-test"):
+            if p == "/book-test" and not self.auth():
+                return self.redirect("/login")
+            page = (BASE / "public" / "book.html").read_text(encoding="utf-8")
+            if p == "/book-test":
+                page = page.replace("1名様 60,000円（税込）", "決済テスト専用・1予約 1円（税込）")
+                page = page.replace("selected.party_size*60000", "1")
+                page = page.replace("/api/public/reservations", "/api/test/reservations")
+            return self.send_html(page)
 
         if p == "/api/public/availability":
             expire_public_reservations()
@@ -1557,7 +1562,10 @@ class Handler(
             self.path
         ).path
 
-        if p == "/api/public/reservations":
+        if p in ("/api/public/reservations", "/api/test/reservations"):
+            test_booking = p == "/api/test/reservations"
+            if test_booking and not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
             expire_public_reservations()
             try:
                 body_length = int(self.headers.get("Content-Length", "0"))
@@ -1635,7 +1643,8 @@ class Handler(
                     "duration_minutes,status,public_request_id,cancellation_policy_accepted_at,created_at,updated_at) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("WEB", name, phone, email, visit_at, party,
-                     "松葉蟹おまかせコース", party * PUBLIC_COURSE_PRICE,
+                     "決済テスト（お料理のご予約ではありません）" if test_booking else "松葉蟹おまかせコース",
+                     1 if test_booking else party * PUBLIC_COURSE_PRICE,
                      area, (1 if time_text == "18:00" else 2) if area == "COUNTER" else None,
                      150, "PENDING", request_id, ts, ts, ts)
                 )
