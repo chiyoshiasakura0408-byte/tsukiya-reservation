@@ -24,6 +24,10 @@ class WorkflowTest(unittest.TestCase):
                 page=response.read().decode()
             self.assertIn("/assets/crab-3.mp4",page)
             self.assertIn("/crab-loader.js",page)
+            with urllib.request.urlopen(base+"/book") as response:booking=response.read().decode()
+            self.assertNotIn('<script src="/crab-loader.js">',booking)
+            self.assertIn("data:image/jpeg;base64,",booking)
+            self.assertIn("MutationObserver",booking)
             request=urllib.request.Request(base+"/assets/crab-1.mp4",headers={"Range":"bytes=0-31"})
             with urllib.request.urlopen(request) as response:
                 self.assertEqual(response.status,206)
