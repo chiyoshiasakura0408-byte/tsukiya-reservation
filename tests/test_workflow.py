@@ -15,6 +15,37 @@ import run
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_one_yen_booking_requires_staff_and_ignores_client_amount(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        payload = {"date": "2026-11-10", "time": "18:00", "seating_area": "COUNTER",
+                   "party_size": 2, "request_id": "12345678-1234-1234-1234-123456789abc",
+                   "guest_name": "決済テスト", "email": "test@example.com", "phone": "09012345678",
+                   "cancellation_policy_accepted": True, "amount": 999999}
+        try:
+            request = urllib.request.Request(base + "/api/test/reservations",
+                data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(request)
+            self.assertEqual(error.exception.code, 401)
+            request.add_header("x-admin-token", "test-secret")
+            with patch.object(run, "SQUARE_TOKEN", "mock"), patch.object(run, "SQUARE_LOCATION_ID", "mock"), \
+                 patch.object(run, "make_invoice", return_value=("c", "o", "i", "https://example.com/pay")) as invoice:
+                with urllib.request.urlopen(request) as response:
+                    rid = json.load(response)["reservation_id"]
+                self.assertEqual(invoice.call_args.args[0]["amount"], 1)
+                self.assertEqual(self.get(rid)["amount"], 1)
+            request = urllib.request.Request(base + "/book-test", headers={"x-admin-token": "test-secret"})
+            with urllib.request.urlopen(request) as response:
+                page = response.read().decode()
+            self.assertIn("1予約 1円", page)
+            self.assertIn("/api/test/reservations", page)
+            self.assertNotIn("selected.party_size*60000", page)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_db = run.DB
