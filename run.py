@@ -34,6 +34,8 @@ LOGIN_MAX_FAILURES = 5
 LOGIN_FAILURES = {}
 LOGIN_LOCK = threading.Lock()
 SMS_LOCK = threading.Lock()
+EMAIL_LOCK = threading.Lock()
+RECONCILE_LOCK = threading.Lock()
 
 SQUARE_TOKEN = os.getenv("SQUARE_ACCESS_TOKEN", "")
 SQUARE_LOCATION_ID = os.getenv("SQUARE_LOCATION_ID", "")
@@ -192,6 +194,7 @@ def con():
     }
 
     wanted = {
+        "confirmation_email_status": "TEXT",
         "confirmation_sms_status": "TEXT",
         "confirmation_sms_sid": "TEXT",
         "confirmation_sms_sent_at": "TEXT",
@@ -738,6 +741,7 @@ def expire_public_reservations():
 def expiry_loop():
     while True:
         try:
+            reconcile_reservations()
             expire_public_reservations()
         except Exception as exc:
             print(f"Public reservation expiry failed: {exc}")
@@ -1180,6 +1184,78 @@ def import_booking(event):
     c.close()
 
 
+def deliver_confirmation(reservation):
+    result = send_confirmation_sms(reservation)
+    if not result.get("email") or result["status"] != "CONFIRMED":
+        return result
+    rid = result["id"]
+    with EMAIL_LOCK:
+        c = con()
+        try:
+            row = dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+            if row.get("confirmation_sent_at"):
+                return row
+            if not (SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_FROM):
+                c.execute("UPDATE reservations SET confirmation_email_status='NOT_CONFIGURED',last_error='SMTP未設定' WHERE id=? AND (confirmation_email_status IS NULL OR confirmation_email_status='NOT_CONFIGURED')", (rid,))
+                c.commit()
+            else:
+                claimed = c.execute("UPDATE reservations SET confirmation_email_status='SENDING' WHERE id=? AND confirmation_sent_at IS NULL AND (confirmation_email_status IS NULL OR confirmation_email_status='NOT_CONFIGURED')", (rid,)).rowcount
+                c.commit()
+                if claimed:
+                    ok, error = send_confirmation(row)
+                    c.execute("UPDATE reservations SET confirmation_email_status=?,confirmation_sent_at=?,last_error=? WHERE id=?", ("SENT" if ok else "ERROR", now_iso() if ok else None, None if ok else error, rid))
+                    c.commit()
+            return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+        finally:
+            c.close()
+
+
+def refresh_sms_delivery(row):
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
+        return
+    for prefix in ("invoice_sms", "confirmation_sms"):
+        sid = row.get(prefix + "_sid")
+        if not sid or row.get(prefix + "_status") != "QUEUED":
+            continue
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages/{sid}.json"
+        auth = base64.b64encode(f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()).decode()
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Authorization": "Basic " + auth}), timeout=30) as response:
+            result = json.load(response)
+        if result.get("status") in ("failed", "undelivered", "canceled"):
+            c = con()
+            c.execute(f"UPDATE reservations SET {prefix}_status='ERROR',{prefix}_error=? WHERE id=?", ("SMS配信失敗。Twilioの送信履歴を確認してください", row["id"]))
+            c.commit(); c.close()
+
+
+def reconcile_reservations():
+    """Repair missed payment events and unclaimed notifications without duplicate sends."""
+    if not RECONCILE_LOCK.acquire(blocking=False):
+        return
+    try:
+        c = con()
+        rows = [dict(r) for r in c.execute("SELECT * FROM reservations WHERE status IN ('INVOICED','CONFIRMED') ORDER BY id")]
+        c.close()
+        for row in rows:
+            try:
+                refresh_sms_delivery(row)
+            except Exception as exc:
+                print(f"SMS delivery check failed for reservation {row['id']}: {type(exc).__name__}")
+            try:
+                if row["status"] == "INVOICED" and row.get("square_invoice_id"):
+                    invoice = square(f"/v2/invoices/{row['square_invoice_id']}")["invoice"]
+                    if invoice.get("status") == "PAID":
+                        event = {"event_id": "reconcile-paid-" + invoice["id"], "type": "invoice.payment_made", "data": {"object": {"invoice": invoice}}}
+                        process_square_event(event, json.dumps(event).encode())
+                    else:
+                        send_invoice_sms(row)
+                elif row["status"] == "CONFIRMED":
+                    deliver_confirmation(row)
+            except Exception as exc:
+                print(f"Reconciliation failed for reservation {row['id']}: {type(exc).__name__}")
+    finally:
+        RECONCILE_LOCK.release()
+
+
 def process_square_event(event, raw):
     event_id = event.get("event_id") or event.get("id") or hashlib.sha256(raw).hexdigest()
     event_type = event.get("type") or ""
@@ -1237,26 +1313,7 @@ def process_square_event(event, raw):
         c.close()
 
     if confirmed:
-        send_confirmation_sms(confirmed)
-
-    if confirmed and confirmed["email"] and not confirmed["confirmation_sent_at"]:
-        ok, error = send_confirmation(confirmed)
-        c = con()
-        try:
-            if ok:
-                c.execute(
-                    "UPDATE reservations SET confirmation_sent_at=?, last_error=NULL, "
-                    "updated_at=? WHERE id=? AND confirmation_sent_at IS NULL",
-                    (now_iso(), now_iso(), confirmed["id"])
-                )
-            else:
-                c.execute(
-                    "UPDATE reservations SET last_error=?, updated_at=? WHERE id=?",
-                    (error, now_iso(), confirmed["id"])
-                )
-            c.commit()
-        finally:
-            c.close()
+        deliver_confirmation(confirmed)
 
     return False
 
@@ -1767,6 +1824,12 @@ class Handler(
                     "reservation_id": rid
                 }, 503)
 
+        if p == "/api/reconcile":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            reconcile_reservations()
+            return self.send_json({"ok": True})
+
         if p == "/api/login":
             if not ADMIN_TOKEN:
                 return self.send_json({"error": "管理者パスワードが未設定です"}, 503)
@@ -1822,29 +1885,14 @@ class Handler(
                 row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
                 if not row:
                     return self.send_json({"error": "not found"}, 404)
-                if row["status"] == "CONFIRMED" and row["phone"] and not row["email"]:
-                    phone_row = dict(row)
-                    c.close()
-                    result = send_confirmation_sms(phone_row)
-                    return self.send_json({"ok": result.get("confirmation_sms_status") == "QUEUED",
-                                           "confirmation_sms_status": result.get("confirmation_sms_status"),
-                                           "error": result.get("confirmation_sms_error")})
-                if row["status"] != "CONFIRMED" or not row["email"]:
-                    return self.send_json({"error": "確定済みのメール予約のみ送信できます"}, 409)
-                if row["confirmation_sent_at"]:
-                    return self.send_json({"error": "確定メールは送信済みです"}, 409)
-                ok, error = send_confirmation(row)
-                c.execute(
-                    "UPDATE reservations SET confirmation_sent_at=?,last_error=?,updated_at=? "
-                    "WHERE id=?",
-                    (now_iso() if ok else None, None if ok else error, now_iso(), rid)
-                )
-                c.commit()
-                if not ok:
-                    return self.send_json({"error": error}, 503)
-                return self.send_json({"ok": True})
+                if row["status"] != "CONFIRMED":
+                    return self.send_json({"error": "確定済みの予約のみ送信できます"}, 409)
+                saved = dict(row)
             finally:
                 c.close()
+            result = deliver_confirmation(saved)
+            ok = bool(result.get("confirmation_sent_at") if result.get("email") else result.get("confirmation_sms_status") == "QUEUED")
+            return self.send_json({"ok": ok, "error": result.get("last_error") if result.get("email") else result.get("confirmation_sms_error")})
 
         if p.startswith("/api/reservations/") and p.endswith("/confirm-bank-payment"):
             if not self.auth():
@@ -1907,19 +1955,8 @@ class Handler(
             finally:
                 c.close()
 
-            confirmed = send_confirmation_sms(confirmed)
-            if confirmed["email"]:
-                ok, error = send_confirmation(confirmed)
-                c = con()
-                try:
-                    c.execute(
-                        "UPDATE reservations SET confirmation_sent_at=?,last_error=?,updated_at=? WHERE id=?",
-                        (now_iso() if ok else None, None if ok else error, now_iso(), rid)
-                    )
-                    c.commit()
-                finally:
-                    c.close()
-            return self.send_json({"ok": True, "confirmation_email_sent": bool(confirmed["email"] and ok)})
+            confirmed = deliver_confirmation(confirmed)
+            return self.send_json({"ok": True, "confirmation_email_sent": bool(confirmed.get("confirmation_sent_at"))})
 
         if p.startswith("/api/reservations/") and p.endswith("/cancel"):
             if not self.auth():
