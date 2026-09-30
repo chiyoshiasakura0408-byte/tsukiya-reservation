@@ -33,6 +33,7 @@ LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_FAILURES = 5
 LOGIN_FAILURES = {}
 LOGIN_LOCK = threading.Lock()
+SMS_LOCK = threading.Lock()
 
 SQUARE_TOKEN = os.getenv("SQUARE_ACCESS_TOKEN", "")
 SQUARE_LOCATION_ID = os.getenv("SQUARE_LOCATION_ID", "")
@@ -191,6 +192,10 @@ def con():
     }
 
     wanted = {
+        "invoice_sms_status": "TEXT",
+        "invoice_sms_sid": "TEXT",
+        "invoice_sms_sent_at": "TEXT",
+        "invoice_sms_error": "TEXT",
         "seating_area": "TEXT",
         "counter_round": "INTEGER",
         "duration_minutes": "INTEGER DEFAULT 150",
@@ -388,6 +393,41 @@ def send_sms(phone, payment_url):
         raise RuntimeError(
             e.read().decode("utf-8")
         )
+
+
+def send_invoice_sms(reservation):
+    """Submit a phone-only invoice once; retain ambiguous failures for manual review."""
+    if reservation.get("email") or not reservation.get("phone"):
+        return reservation
+    rid = reservation["id"]
+    with SMS_LOCK:
+        c = con()
+        try:
+            row = dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+            if row["status"] != "INVOICED" or not row.get("square_invoice_url"):
+                return row
+            if row.get("invoice_sms_status") in ("QUEUED", "SENDING", "ERROR"):
+                return row
+            if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER):
+                c.execute("UPDATE reservations SET invoice_sms_status='NOT_CONFIGURED',"
+                          "invoice_sms_error=? WHERE id=?", ("TwilioのSMS送信設定が未完了です", rid))
+                c.commit()
+            else:
+                c.execute("UPDATE reservations SET invoice_sms_status='SENDING',invoice_sms_error=NULL WHERE id=?", (rid,))
+                c.commit()
+                try:
+                    result = send_sms(row["phone"], row["square_invoice_url"])
+                    if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
+                        raise RuntimeError("SMS送信を受け付けられませんでした")
+                    c.execute("UPDATE reservations SET invoice_sms_status='QUEUED',invoice_sms_sid=?,"
+                              "invoice_sms_sent_at=? WHERE id=?", (result["sid"], now_iso(), rid))
+                except Exception:
+                    c.execute("UPDATE reservations SET invoice_sms_status='ERROR',invoice_sms_error=? WHERE id=?",
+                              ("SMS送信を確認できません。Twilioの送信履歴を確認してください", rid))
+                c.commit()
+            return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+        finally:
+            c.close()
 
 
 def make_invoice(r):
@@ -2090,7 +2130,7 @@ class Handler(
                 out = dict(r)
                 c.close()
 
-                return self.send_json(out)
+                return self.send_json(send_invoice_sms(out))
 
             try:
                 (
@@ -2142,7 +2182,7 @@ class Handler(
 
                 c.close()
 
-                return self.send_json(out)
+                return self.send_json(send_invoice_sms(out))
 
             except Exception as e:
                 ts = now_iso()
