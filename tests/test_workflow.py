@@ -15,6 +15,28 @@ import run
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_confirmation_sms_only_confirmed_and_once(self):
+        rid = self.reservation(email="")
+        with patch.object(run, "TWILIO_ACCOUNT_SID", "account"), patch.object(run, "TWILIO_AUTH_TOKEN", "secret"), patch.object(run, "TWILIO_FROM_NUMBER", "TSUKIYA"), patch.object(run, "send_sms", return_value={"sid":"SM-confirm","status":"queued"}) as sms:
+            run.send_confirmation_sms(self.get(rid))
+            sms.assert_not_called()
+            c=run.con(); c.execute("UPDATE reservations SET status='CONFIRMED' WHERE id=?", (rid,)); c.commit(); c.close()
+            run.send_confirmation_sms(self.get(rid))
+            result=run.send_confirmation_sms(self.get(rid))
+            self.assertEqual(sms.call_count,1)
+            self.assertEqual(result["confirmation_sms_status"],"QUEUED")
+            self.assertIn("ご予約を確定",sms.call_args.kwargs["body"])
+
+    def test_confirmation_sms_failure_preserves_confirmation_and_no_duplicate(self):
+        rid=self.reservation(email="")
+        c=run.con(); c.execute("UPDATE reservations SET status='CONFIRMED' WHERE id=?",(rid,)); c.commit(); c.close()
+        with patch.object(run,"TWILIO_ACCOUNT_SID","account"), patch.object(run,"TWILIO_AUTH_TOKEN","secret"), patch.object(run,"TWILIO_FROM_NUMBER","TSUKIYA"), patch.object(run,"send_sms",side_effect=TimeoutError()) as sms:
+            run.send_confirmation_sms(self.get(rid))
+            result=run.send_confirmation_sms(self.get(rid))
+            self.assertEqual(sms.call_count,1)
+            self.assertEqual(result["status"],"CONFIRMED")
+            self.assertEqual(result["confirmation_sms_status"],"ERROR")
+
     def test_invoice_sms_records_submission_once_and_keeps_payment_status(self):
         rid = self.reservation(email="")
         c = run.con()
