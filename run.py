@@ -1,4 +1,6 @@
 import os
+import re
+from functools import lru_cache
 import json
 import sqlite3
 import urllib.request
@@ -1318,6 +1320,11 @@ def process_square_event(event, raw):
     return False
 
 
+@lru_cache(maxsize=3)
+def crab_video(number):
+    return base64.b64decode((BASE / "public" / "assets" / f"crab-{number}.mp4.b64").read_text(), validate=True)
+
+
 class Handler(
     BaseHTTPRequestHandler
 ):
@@ -1372,6 +1379,8 @@ class Handler(
         text,
         status=200
     ):
+        if "</head>" in text and "/crab-loader.js" not in text:
+            text = text.replace("</head>", '<script src="/crab-loader.js"></script></head>', 1)
         b = text.encode("utf-8")
 
         self.send_response(status)
@@ -1459,6 +1468,37 @@ class Handler(
     def do_GET(self):
         u = urlparse(self.path)
         p = u.path
+
+        if p == "/loading-test":
+            return self.send_html((BASE / "public" / "loading-test.html").read_text())
+        if p == "/crab-loader.js":
+            b = (BASE / "public" / "crab-loader.js").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers(); self.wfile.write(b)
+            return
+        if p in ("/assets/crab-1.mp4", "/assets/crab-2.mp4", "/assets/crab-3.mp4"):
+            b = crab_video(int(p[-5])); total = len(b); start = 0; end = total - 1
+            requested = self.headers.get("Range")
+            if requested:
+                match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested)
+                if not match or not any(match.groups()):
+                    self.send_response(416); self.send_header("Content-Range", f"bytes */{total}"); self.end_headers(); return
+                if match[1]:
+                    start = int(match[1]); end = min(int(match[2]) if match[2] else total - 1, total - 1)
+                else:
+                    start = max(0, total - int(match[2]))
+                if start > end or start >= total:
+                    self.send_response(416); self.send_header("Content-Range", f"bytes */{total}"); self.end_headers(); return
+            self.send_response(206 if requested else 200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Content-Length", str(end - start + 1))
+            if requested: self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+            self.end_headers(); self.wfile.write(b[start:end+1]); return
 
         if p in ("/book", "/book-test"):
             if p == "/book-test" and not self.auth():
