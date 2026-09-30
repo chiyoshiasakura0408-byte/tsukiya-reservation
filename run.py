@@ -1414,6 +1414,9 @@ class Handler(
                             and APP_BASE_URL
                         ),
 
+                    "email_configured":
+                        bool(SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_FROM),
+
                     "sms_configured":
                         bool(
                             TWILIO_ACCOUNT_SID
