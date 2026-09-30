@@ -1380,7 +1380,7 @@ class Handler(
         status=200
     ):
         if "</head>" in text and "/crab-loader.js" not in text:
-            text = text.replace("</head>", '<script src="/crab-loader.js"></script></head>', 1)
+            text = text.replace("</head>", "<script>" + (BASE / "public" / "crab-loader.js").read_text() + "</script></head>", 1)
         b = text.encode("utf-8")
 
         self.send_response(status)
