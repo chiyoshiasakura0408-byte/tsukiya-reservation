@@ -15,6 +15,25 @@ import run
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_crab_preview_and_mobile_video_ranges(self):
+        server=ThreadingHTTPServer(("127.0.0.1",0),run.Handler)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        base=f"http://127.0.0.1:{server.server_port}"
+        try:
+            with urllib.request.urlopen(base+"/loading-test") as response:
+                page=response.read().decode()
+            self.assertIn("/assets/crab-3.mp4",page)
+            self.assertIn("/crab-loader.js",page)
+            request=urllib.request.Request(base+"/assets/crab-1.mp4",headers={"Range":"bytes=0-31"})
+            with urllib.request.urlopen(request) as response:
+                self.assertEqual(response.status,206)
+                self.assertEqual(len(response.read()),32)
+                self.assertTrue(response.headers["Content-Range"].startswith("bytes 0-31/"))
+            request=urllib.request.Request(base+"/assets/crab-1.mp4",headers={"Range":"bytes=999999999-"})
+            with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(request)
+            self.assertEqual(error.exception.code,416)
+        finally:server.shutdown();server.server_close()
+
     def test_reconcile_recovers_missing_payment_event(self):
         rid=self.reservation(email="")
         with patch.object(run,"square",return_value={"invoice":{"id":"inv-test","status":"PAID"}}), patch.object(run,"send_confirmation_sms",side_effect=lambda r:r):
