@@ -192,6 +192,10 @@ def con():
     }
 
     wanted = {
+        "confirmation_sms_status": "TEXT",
+        "confirmation_sms_sid": "TEXT",
+        "confirmation_sms_sent_at": "TEXT",
+        "confirmation_sms_error": "TEXT",
         "invoice_sms_status": "TEXT",
         "invoice_sms_sid": "TEXT",
         "invoice_sms_sent_at": "TEXT",
@@ -305,7 +309,7 @@ def normalize_jp_phone(phone):
     return p
 
 
-def send_sms(phone, payment_url):
+def send_sms(phone, payment_url=None, *, body=None):
     if not TWILIO_ACCOUNT_SID:
         raise RuntimeError(
             "TWILIO_ACCOUNT_SID が未設定です"
@@ -328,7 +332,7 @@ def send_sms(phone, payment_url):
 
     to_number = normalize_jp_phone(phone)
 
-    message_body = (
+    message_body = body if body is not None else (
         "西天満つきやです。\n"
         "ご予約いただき誠にありがとうございます。\n\n"
         "下記よりお料理代のお支払いをお願いいたします。\n"
@@ -425,6 +429,46 @@ def send_invoice_sms(reservation):
                     c.execute("UPDATE reservations SET invoice_sms_status='ERROR',invoice_sms_error=? WHERE id=?",
                               ("SMS送信を確認できません。Twilioの送信履歴を確認してください", rid))
                 c.commit()
+            return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+        finally:
+            c.close()
+
+
+def send_confirmation_sms(reservation):
+    """Claim a confirmed phone-only notification before contacting Twilio."""
+    if reservation.get("email") or not reservation.get("phone"):
+        return reservation
+    rid = reservation["id"]
+    with SMS_LOCK:
+        c = con()
+        try:
+            row = dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+            if row["status"] != "CONFIRMED":
+                return row
+            if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER):
+                c.execute("UPDATE reservations SET confirmation_sms_status='NOT_CONFIGURED',confirmation_sms_error=? "
+                          "WHERE id=? AND (confirmation_sms_status IS NULL OR confirmation_sms_status='NOT_CONFIGURED')",
+                          ("TwilioのSMS送信設定が未完了です", rid))
+                c.commit()
+            else:
+                claimed = c.execute("UPDATE reservations SET confirmation_sms_status='SENDING',confirmation_sms_error=NULL "
+                                    "WHERE id=? AND status='CONFIRMED' AND "
+                                    "(confirmation_sms_status IS NULL OR confirmation_sms_status='NOT_CONFIGURED')", (rid,)).rowcount
+                c.commit()
+                if claimed:
+                    body = (f"西天満つきやです。{row['guest_name']}様\nご入金を確認し、ご予約を確定いたしました。\n"
+                            f"日時：{row['visit_at'].replace('T', ' ')}\nお席：{seating_label(row)}\n"
+                            f"人数：{row['party_size']}名様\n当日は心を尽くしてお迎えいたします。")
+                    try:
+                        result = send_sms(row["phone"], body=body)
+                        if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
+                            raise RuntimeError("SMS送信を受け付けられませんでした")
+                        c.execute("UPDATE reservations SET confirmation_sms_status='QUEUED',confirmation_sms_sid=?,"
+                                  "confirmation_sms_sent_at=? WHERE id=?", (result["sid"], now_iso(), rid))
+                    except Exception:
+                        c.execute("UPDATE reservations SET confirmation_sms_status='ERROR',confirmation_sms_error=? WHERE id=?",
+                                  ("SMS送信を確認できません。Twilioの送信履歴を確認してください", rid))
+                    c.commit()
             return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
         finally:
             c.close()
@@ -1192,6 +1236,9 @@ def process_square_event(event, raw):
     finally:
         c.close()
 
+    if confirmed:
+        send_confirmation_sms(confirmed)
+
     if confirmed and confirmed["email"] and not confirmed["confirmation_sent_at"]:
         ok, error = send_confirmation(confirmed)
         c = con()
@@ -1775,6 +1822,13 @@ class Handler(
                 row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
                 if not row:
                     return self.send_json({"error": "not found"}, 404)
+                if row["status"] == "CONFIRMED" and row["phone"] and not row["email"]:
+                    phone_row = dict(row)
+                    c.close()
+                    result = send_confirmation_sms(phone_row)
+                    return self.send_json({"ok": result.get("confirmation_sms_status") == "QUEUED",
+                                           "confirmation_sms_status": result.get("confirmation_sms_status"),
+                                           "error": result.get("confirmation_sms_error")})
                 if row["status"] != "CONFIRMED" or not row["email"]:
                     return self.send_json({"error": "確定済みのメール予約のみ送信できます"}, 409)
                 if row["confirmation_sent_at"]:
@@ -1853,6 +1907,7 @@ class Handler(
             finally:
                 c.close()
 
+            confirmed = send_confirmation_sms(confirmed)
             if confirmed["email"]:
                 ok, error = send_confirmation(confirmed)
                 c = con()
