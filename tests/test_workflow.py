@@ -15,6 +15,39 @@ import run
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_invoice_sms_records_submission_once_and_keeps_payment_status(self):
+        rid = self.reservation(email="")
+        c = run.con()
+        c.execute("UPDATE reservations SET square_invoice_url=? WHERE id=?", ("https://example.com/pay", rid))
+        c.commit()
+        c.close()
+        with patch.object(run, "TWILIO_ACCOUNT_SID", "account"), patch.object(run, "TWILIO_AUTH_TOKEN", "secret"), \
+             patch.object(run, "TWILIO_FROM_NUMBER", "+1234567890"), \
+             patch.object(run, "send_sms", return_value={"sid": "SM-test", "status": "queued"}) as sms:
+            first = run.send_invoice_sms(self.get(rid))
+            second = run.send_invoice_sms(self.get(rid))
+            self.assertEqual(first["invoice_sms_status"], "QUEUED")
+            self.assertEqual(second["status"], "INVOICED")
+            self.assertEqual(sms.call_count, 1)
+            self.assertTrue(second["invoice_sms_sent_at"])
+
+    def test_invoice_sms_missing_settings_and_failure_are_visible(self):
+        rid = self.reservation(email="")
+        c = run.con()
+        c.execute("UPDATE reservations SET square_invoice_url=? WHERE id=?", ("https://example.com/pay", rid))
+        c.commit()
+        c.close()
+        with patch.object(run, "TWILIO_ACCOUNT_SID", ""):
+            self.assertEqual(run.send_invoice_sms(self.get(rid))["invoice_sms_status"], "NOT_CONFIGURED")
+        with patch.object(run, "TWILIO_ACCOUNT_SID", "account"), patch.object(run, "TWILIO_AUTH_TOKEN", "secret"), \
+             patch.object(run, "TWILIO_FROM_NUMBER", "+1234567890"), \
+             patch.object(run, "send_sms", side_effect=TimeoutError) as sms:
+            failed = run.send_invoice_sms(self.get(rid))
+            run.send_invoice_sms(self.get(rid))
+            self.assertEqual(failed["invoice_sms_status"], "ERROR")
+            self.assertEqual(failed["status"], "INVOICED")
+            self.assertEqual(sms.call_count, 1)
+
     def test_one_yen_booking_requires_staff_and_ignores_client_amount(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
