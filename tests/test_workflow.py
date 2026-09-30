@@ -15,6 +15,28 @@ import run
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_reconcile_recovers_missing_payment_event(self):
+        rid=self.reservation(email="")
+        with patch.object(run,"square",return_value={"invoice":{"id":"inv-test","status":"PAID"}}), patch.object(run,"send_confirmation_sms",side_effect=lambda r:r):
+            run.reconcile_reservations()
+            run.reconcile_reservations()
+        self.assertEqual(self.get(rid)["status"],"CONFIRMED")
+        self.assertEqual(self.get(rid)["payment_source"],"SQUARE")
+
+    def test_reconcile_does_not_confirm_when_square_is_unavailable(self):
+        rid=self.reservation(email="")
+        with patch.object(run,"square",side_effect=TimeoutError()):
+            run.reconcile_reservations()
+        self.assertEqual(self.get(rid)["status"],"INVOICED")
+
+    def test_email_ambiguous_failure_is_not_sent_twice(self):
+        rid=self.reservation()
+        c=run.con();c.execute("UPDATE reservations SET status='CONFIRMED' WHERE id=?",(rid,));c.commit();c.close()
+        with patch.multiple(run,SMTP_HOST="mock",SMTP_USER="mock",SMTP_PASS="mock",MAIL_FROM="test@example.com"),patch.object(run,"send_confirmation",return_value=(False,"timeout")) as mail:
+            run.deliver_confirmation(self.get(rid));run.deliver_confirmation(self.get(rid))
+            self.assertEqual(mail.call_count,1)
+            self.assertEqual(self.get(rid)["confirmation_email_status"],"ERROR")
+
     def test_confirmation_sms_only_confirmed_and_once(self):
         rid = self.reservation(email="")
         with patch.object(run, "TWILIO_ACCOUNT_SID", "account"), patch.object(run, "TWILIO_AUTH_TOKEN", "secret"), patch.object(run, "TWILIO_FROM_NUMBER", "TSUKIYA"), patch.object(run, "send_sms", return_value={"sid":"SM-confirm","status":"queued"}) as sms:
@@ -245,7 +267,8 @@ class WorkflowTest(unittest.TestCase):
                 event = {"event_id": "public-paid", "type": "invoice.payment_made",
                          "data": {"object": {"invoice": {"id": "invoice", "status": "PAID"}}}}
                 with patch.object(run, "square", return_value={"invoice": {"status": "PAID"}}), \
-                     patch.object(run, "send_confirmation", return_value=(True, "")):
+                     patch.multiple(run, SMTP_HOST="mock", SMTP_USER="mock", SMTP_PASS="mock", MAIL_FROM="test@example.com"), \
+             patch.object(run, "send_confirmation", return_value=(True, "")):
                     run.process_square_event(event, json.dumps(event).encode())
                 self.assertEqual(self.get(first["reservation_id"])["status"], "CONFIRMED")
                 self.assertEqual(self.get(first["reservation_id"])["payment_source"], "SQUARE")
@@ -258,6 +281,7 @@ class WorkflowTest(unittest.TestCase):
         rid = self.reservation()
         sent = []
         with patch.object(run, "square", return_value={"invoice": {"status": "PAID"}}), \
+             patch.multiple(run, SMTP_HOST="mock", SMTP_USER="mock", SMTP_PASS="mock", MAIL_FROM="test@example.com"), \
              patch.object(run, "send_confirmation", side_effect=lambda row: (sent.append(row["id"]) or True, "")):
             def event(eid, status):
                 data = {"event_id": eid, "type": "invoice.payment_made",
