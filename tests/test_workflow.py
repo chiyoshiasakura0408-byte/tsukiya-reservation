@@ -36,9 +36,11 @@ class WorkflowTest(unittest.TestCase):
             c.close()
             body = {"guest_name": "電話のお客様", "phone": "09012345678",
                     "visit_at": day+"T18:00", "party_size": 4,
-                    "seating_area": "PRIVATE"}
+                    "seating_area": "PRIVATE", "guest_note": "誕生日のお祝い",
+                    "celebration_items": ["ホールケーキ"], "plate_message": "おめでとう"}
             first = post("/api/reservations/phone", body)
             self.assertEqual(self.get(first["id"])["seating_area"], "PRIVATE1")
+            self.assertEqual(self.get(first["id"])["plate_message"], "おめでとう")
             second = post("/api/reservations/phone", body)
             self.assertEqual(self.get(second["id"])["seating_area"], "PRIVATE2")
             with self.assertRaises(urllib.error.HTTPError) as rejected:
@@ -419,6 +421,7 @@ class WorkflowTest(unittest.TestCase):
                 body = {"date": day.isoformat(), "time": "18:00", "seating_area": "COUNTER",
                         "party_size": 2, "guest_name": "公開予約テスト", "phone": "09012345678",
                         "email": "public@example.com",
+                        "guest_note": "花束の予算は1万円", "celebration_items": ["花束"],
                         "amount": 1,
                         "request_id": "123e4567-e89b-12d3-a456-426614174000",
                         "cancellation_policy_accepted": True}
@@ -447,6 +450,8 @@ class WorkflowTest(unittest.TestCase):
                 row = self.get(first["reservation_id"])
                 self.assertEqual((row["amount"], row["status"], row["source"]),
                                  (120000, "INVOICED", "WEB"))
+                self.assertEqual((row["guest_note"], row["celebration_items"]),
+                                 ("花束の予算は1万円", "花束"))
                 self.assertIsNotNone(row["cancellation_policy_accepted_at"])
                 with urllib.request.urlopen(
                     base + f"/api/public/availability?start={day.isoformat()}&party_size=7"

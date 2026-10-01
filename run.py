@@ -113,6 +113,23 @@ def public_party_allowed(area, party):
     return False
 
 
+def guest_requests(x):
+    """Validate optional staff notes and celebration requests without changing course price."""
+    note = x.get("guest_note", "")
+    plate = x.get("plate_message", "")
+    items = x.get("celebration_items", [])
+    if not isinstance(note, str) or not isinstance(plate, str) or not isinstance(items, list):
+        raise ValueError("備考の入力形式が不正です")
+    allowed = {"花束", "ホールケーキ", "カットケーキ"}
+    if len(items) > 3 or any(item not in allowed for item in items):
+        raise ValueError("お祝い項目を確認してください")
+    if len(note) > 1000 or len(plate) > 120:
+        raise ValueError("備考またはプレートの文字数が長すぎます")
+    if plate.strip() and not any("ケーキ" in item for item in items):
+        raise ValueError("プレートはケーキ選択時に入力してください")
+    return note.strip(), ",".join(dict.fromkeys(items)), plate.strip()
+
+
 def public_slot_allowed(day, time_text, course=None):
     """The public course is offered annually from Nov 10 through Mar 20."""
     if not (day.month > 11 or (day.month == 11 and day.day >= 10)
@@ -253,6 +270,9 @@ def con():
         "reminder_status": "TEXT",
         "reminder_sent_at": "TEXT",
         "reminder_error": "TEXT",
+        "guest_note": "TEXT",
+        "celebration_items": "TEXT",
+        "plate_message": "TEXT",
     }
 
     migrate_seen = "staff_seen_at" not in cols
@@ -509,7 +529,7 @@ def send_confirmation_sms(reservation):
                 if claimed:
                     body = (f"西天満つきやです。{row['guest_name']}様\nご入金を確認し、ご予約を確定いたしました。\n"
                             f"日時：{row['visit_at'].replace('T', ' ')}\nお席：{seating_label(row)}\n"
-                            f"人数：{row['party_size']}名様\n当日は心を尽くしてお迎えいたします。")
+                            f"人数：{row['party_size']}名様\n当店は一斉スタートでお料理をご提供します。ご来店時間をお守りください。\n当日は心を尽くしてお迎えいたします。")
                     try:
                         result = send_sms(row["phone"], body=body)
                         if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
@@ -1174,6 +1194,9 @@ Nishitenma Tsukiya
 お席：{seating_label(r)}
 人数：{r['party_size']}名様
 お料理代：{r['amount']:,}円
+
+当店では皆様一斉にお料理のご提供を開始いたします。
+ご来店時間をお守りくださいますようお願い申し上げます。
 
 当日は心を尽くしてお迎えいたします。
 どうぞお気をつけてお越しくださいませ。
@@ -2080,6 +2103,7 @@ class Handler(
                 name = str(x.get("guest_name", "")).strip()
                 email = str(x.get("email", "")).strip().lower()
                 phone = str(x.get("phone", "")).strip()
+                guest_note, celebration_items, plate_message = guest_requests(x)
             except (ValueError, TypeError, json.JSONDecodeError):
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
             today_jp = datetime.now(timezone(timedelta(hours=9))).date()
@@ -2136,15 +2160,15 @@ class Handler(
                 cur = c.execute(
                     "INSERT INTO reservations(source,guest_name,phone,email,visit_at,"
                     "party_size,course_name,booking_language,amount,seating_area,counter_round,"
-                    "duration_minutes,status,public_request_id,cancellation_policy_accepted_at,created_at,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "duration_minutes,status,public_request_id,cancellation_policy_accepted_at,created_at,updated_at,guest_note,celebration_items,plate_message) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("WEB", name, phone, email, visit_at, party,
                      "決済テスト（お料理のご予約ではありません）" if test_booking else (
                          PUBLIC_COURSES[course][0] if course else "松葉蟹おまかせコース"),
                      booking_language,
                      1 if test_booking else party * PUBLIC_COURSE_PRICE,
                      area, (1 if time_text == "18:00" else 2) if area == "COUNTER" else None,
-                     150, "PENDING", request_id, ts, ts, ts)
+                     150, "PENDING", request_id, ts, ts, ts, guest_note, celebration_items, plate_message)
                 )
                 rid = cur.lastrowid
                 c.commit()
@@ -2356,6 +2380,11 @@ class Handler(
 
             x = self.read_json()
 
+            try:
+                guest_note, celebration_items, plate_message = guest_requests(x)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+
             required = (
                 "guest_name",
                 "visit_at",
@@ -2478,9 +2507,10 @@ class Handler(
                     status,
                     created_at,
                     updated_at
+                    ,guest_note,celebration_items,plate_message
                 )
                 VALUES(
-                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
                 )
                 """,
                 (
@@ -2497,7 +2527,10 @@ class Handler(
                     dur,
                     "PENDING",
                     ts,
-                    ts
+                    ts,
+                    guest_note,
+                    celebration_items,
+                    plate_message
                 )
             )
 
