@@ -312,6 +312,48 @@ class WorkflowTest(unittest.TestCase):
         c.close()
         return row
 
+    def test_customer_profiles_link_bookings_and_keep_visit_notes_scoped(self):
+        first = self.reservation()
+        second = self.reservation()
+        c = run.con()
+        ts = run.now_iso()
+        other = c.execute("""INSERT INTO reservations(source,guest_name,phone,email,visit_at,party_size,
+            amount,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            ("PHONE", "別のお客様", "09012345678", "", "2026-11-10T18:00", 2, 120000,
+             "CONFIRMED", ts, ts)).lastrowid
+        past = (datetime.now(timezone(timedelta(hours=9))) - timedelta(days=1)).strftime("%Y-%m-%dT18:00")
+        c.execute("UPDATE reservations SET status='CONFIRMED',visit_at=? WHERE id=?", (past, first))
+        c.commit(); c.close()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = {"x-admin-token": "test-secret", "Content-Type": "application/json"}
+        def get(path):
+            return json.load(urllib.request.urlopen(urllib.request.Request(base + path, headers=headers)))
+        def post(path, body):
+            req = urllib.request.Request(base + path, data=json.dumps(body).encode(), headers=headers)
+            return json.load(urllib.request.urlopen(req))
+        try:
+            listing = get("/api/customers")
+            self.assertEqual(len(listing), 2)
+            customer_id = self.get(first)["customer_id"]
+            self.assertEqual(next(x for x in listing if x["id"] == customer_id)["visit_count"], 1)
+            self.assertEqual(customer_id, self.get(second)["customer_id"])
+            self.assertNotEqual(customer_id, self.get(other)["customer_id"])
+            self.assertEqual(len(get(f"/api/customers/{customer_id}")["visits"]), 2)
+            post(f"/api/customers/{customer_id}", {"company_name": "株式会社つきや", "receipt_name": "つきや"})
+            post(f"/api/customers/{customer_id}/visits/{first}",
+                 {"visit_note": "蟹みそを好む", "companions": "佐藤様"})
+            profile = get(f"/api/customers/{customer_id}")
+            self.assertEqual(profile["customer"]["company_name"], "株式会社つきや")
+            self.assertEqual(next(v for v in profile["visits"] if v["id"] == first)["companions"], "佐藤様")
+            self.assertFalse(next(v for v in profile["visits"] if v["id"] == second)["visit_note"])
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                post(f"/api/customers/{customer_id}/visits/{other}", {"visit_note": "不正な編集"})
+            self.assertEqual(error.exception.code, 404)
+        finally:
+            server.shutdown(); server.server_close()
+
     def test_two_matsuba_courses_keep_distinct_periods_and_names(self):
         from datetime import date
         self.assertTrue(run.public_slot_allowed(date(2026, 11, 10), "18:00", "matsuba-seko"))

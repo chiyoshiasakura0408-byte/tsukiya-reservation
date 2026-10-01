@@ -273,6 +273,9 @@ def con():
         "guest_note": "TEXT",
         "celebration_items": "TEXT",
         "plate_message": "TEXT",
+        "customer_id": "INTEGER",
+        "visit_note": "TEXT",
+        "companions": "TEXT",
     }
 
     migrate_seen = "staff_seen_at" not in cols
@@ -296,9 +299,52 @@ def con():
         "CREATE UNIQUE INDEX IF NOT EXISTS public_request_id_unique "
         "ON reservations(public_request_id)"
     )
+    c.execute("""CREATE TABLE IF NOT EXISTS customers(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        match_key TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        company_name TEXT NOT NULL DEFAULT '',
+        receipt_name TEXT NOT NULL DEFAULT '',
+        phone TEXT NOT NULL DEFAULT '',
+        email TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS reservations_customer_idx ON reservations(customer_id)")
 
     c.commit()
     return c
+
+
+def customer_match_key(row):
+    name = " ".join((row["guest_name"] or "").split()).casefold()
+    digits = re.sub(r"\D", "", row["phone"] or "")
+    if digits.startswith("81") and len(digits) in (12, 13):
+        digits = "0" + digits[2:]
+    email = (row["email"] or "").strip().casefold()
+    if digits:
+        return f"phone:{digits}:name:{name}"
+    if email:
+        return f"email:{email}:name:{name}"
+    return f"reservation:{row['id']}"
+
+
+def sync_customers(c):
+    """Link legacy and new bookings without merging people on a shared phone alone."""
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        for row in c.execute("SELECT id,guest_name,phone,email FROM reservations WHERE customer_id IS NULL ORDER BY id").fetchall():
+            key = customer_match_key(row)
+            now = now_iso()
+            c.execute("""INSERT OR IGNORE INTO customers(match_key,name,phone,email,created_at,updated_at)
+                         VALUES(?,?,?,?,?,?)""", (key, row["guest_name"], row["phone"] or "", row["email"] or "", now, now))
+            customer = c.execute("SELECT id FROM customers WHERE match_key=?", (key,)).fetchone()
+            c.execute("UPDATE reservations SET customer_id=? WHERE id=?", (customer["id"], row["id"]))
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
 
 
 def square(path, body=None, method=None):
@@ -1806,6 +1852,35 @@ class Handler(
             f = BASE / "public" / "reservations.html"
             return self.send_html(f.read_text(encoding="utf-8"))
 
+        if p == "/customers":
+            if not self.auth():
+                return self.redirect("/login")
+            return self.send_html((BASE / "public" / "customers.html").read_text(encoding="utf-8"))
+
+        if p == "/api/customers" or re.fullmatch(r"/api/customers/\d+", p):
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            c = con()
+            try:
+                sync_customers(c)
+                if p == "/api/customers":
+                    rows = [dict(row) for row in c.execute("""SELECT c.id,c.name,c.company_name,c.receipt_name,c.phone,c.email,c.note,
+                        COUNT(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN 1 END) AS visit_count,
+                        MAX(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN r.visit_at END) AS last_visit
+                        FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id
+                        GROUP BY c.id ORDER BY c.id DESC""", (datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"),)*2)]
+                    return self.send_json(rows)
+                customer_id = int(p.rsplit("/", 1)[1])
+                row = c.execute("SELECT id,name,company_name,receipt_name,phone,email,note FROM customers WHERE id=?", (customer_id,)).fetchone()
+                if not row:
+                    return self.send_json({"error": "顧客が見つかりません"}, 404)
+                visits = [dict(v) for v in c.execute("""SELECT id,visit_at,party_size,course_name,seating_area,status,
+                    amount,guest_note,celebration_items,plate_message,visit_note,companions
+                    FROM reservations WHERE customer_id=? ORDER BY visit_at DESC,id DESC""", (customer_id,))]
+                return self.send_json({"customer": dict(row), "visits": visits})
+            finally:
+                c.close()
+
         if p == "/login":
             if self.auth():
                 return self.redirect("/")
@@ -2009,6 +2084,58 @@ class Handler(
         p = urlparse(
             self.path
         ).path
+
+        customer_path = re.fullmatch(r"/api/customers/(\d+)(?:/visits/(\d+))?", p)
+        if customer_path:
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            try:
+                x = self.read_json()
+                if not isinstance(x, dict):
+                    raise ValueError("入力内容が不正です")
+                visit_id = customer_path[2]
+                fields = ({"visit_note": 2000, "companions": 500} if visit_id else
+                          {"name": 100, "company_name": 150, "receipt_name": 150,
+                           "phone": 50, "email": 254, "note": 2000})
+                if not x or any(k not in fields or not isinstance(v, str) or len(v) > fields[k]
+                                for k, v in x.items()):
+                    raise ValueError("入力項目または文字数を確認してください")
+                values = {k: v.strip() for k, v in x.items()}
+                if "name" in values and not values["name"]:
+                    raise ValueError("名前を入力してください")
+                if "email" in values and values["email"] and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", values["email"]):
+                    raise ValueError("メールアドレスを確認してください")
+            except (ValueError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            c = con()
+            try:
+                sync_customers(c)
+                if visit_id:
+                    target = c.execute("SELECT id FROM reservations WHERE id=? AND customer_id=?",
+                                       (int(visit_id), int(customer_path[1]))).fetchone()
+                    table = "reservations"
+                else:
+                    target = c.execute("SELECT * FROM customers WHERE id=?", (int(customer_path[1]),)).fetchone()
+                    table = "customers"
+                if not target:
+                    return self.send_json({"error": "対象が見つかりません"}, 404)
+                if not visit_id and any(k in values for k in ("name", "phone", "email")):
+                    merged = {"guest_name": values.get("name", target["name"]),
+                              "phone": values.get("phone", target["phone"]),
+                              "email": values.get("email", target["email"]), "id": target["id"]}
+                    values["match_key"] = customer_match_key(merged)
+                changes = ",".join(f"{key}=?" for key in values)
+                if not visit_id:
+                    changes += ",updated_at=?"
+                try:
+                    c.execute(f"UPDATE {table} SET {changes} WHERE id=?",
+                              (*values.values(), *((now_iso(),) if not visit_id else ()), target["id"]))
+                except sqlite3.IntegrityError:
+                    return self.send_json({"error": "同じ名前と連絡先の顧客が既にあります"}, 409)
+                c.commit()
+                return self.send_json({"ok": True})
+            finally:
+                c.close()
 
         if p in ("/api/seat-blocks", "/api/seat-blocks/remove"):
             if not self.auth():
