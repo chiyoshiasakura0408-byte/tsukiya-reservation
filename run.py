@@ -1643,6 +1643,9 @@ class Handler(
                             and SQUARE_LOCATION_ID
                         ),
 
+                    "english_square_location_configured":
+                        bool(SQUARE_EN_LOCATION_ID),
+
                     "webhook_configured":
                         bool(
                             SQUARE_WEBHOOK_SIGNATURE_KEY
