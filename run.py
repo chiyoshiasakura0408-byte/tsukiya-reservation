@@ -209,6 +209,16 @@ def con():
         )
         """
     )
+    c.execute("""CREATE TABLE IF NOT EXISTS seat_blocks(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        visit_date TEXT NOT NULL,
+        time_text TEXT NOT NULL,
+        seating_area TEXT NOT NULL,
+        seat_number INTEGER NOT NULL DEFAULT 0,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(visit_date,time_text,seating_area,seat_number)
+    )""")
 
     cols = {
         r["name"]
@@ -897,6 +907,16 @@ def availability_check(
 
     visit = parse_dt(visit_at)
 
+    if seating_area == "PRIVATE":
+        eligible = [area for area in ROOMS if public_party_allowed(area, party_size)]
+        if not eligible:
+            return False, "個室は2〜8名で選択してください"
+        for room in eligible:
+            ok, _ = availability_check(c, room, visit_at, party_size, None, duration_minutes, exclude_id)
+            if ok:
+                return True, f"個室{room[-1]}に空きがあります"
+        return False, "ご希望の人数で利用できる個室は満室です"
+
     if seating_area == "COUNTER" or seating_area in ROOMS:
         slot = (visit.hour, visit.minute)
         if slot not in ((18, 0), (20, 30)):
@@ -910,6 +930,8 @@ def availability_check(
     active = ACTIVE_STATUSES
 
     if seating_area == "COUNTER":
+        if party_size > COUNTER_CAPACITY:
+            return False, "カウンターの人数が席数を超えています"
         if counter_round not in (1, 2):
             return (
                 False,
@@ -949,10 +971,8 @@ def availability_check(
             ).fetchone()["n"]
         )
 
-        remain = (
-            COUNTER_CAPACITY
-            - used
-        )
+        blocked = c.execute("SELECT COUNT(*) n FROM seat_blocks WHERE visit_date=? AND time_text=? AND seating_area='COUNTER'", (visit.date().isoformat(), visit.strftime('%H:%M'))).fetchone()["n"]
+        remain = COUNTER_CAPACITY - used - blocked
 
         if party_size > remain:
             return (
@@ -966,6 +986,10 @@ def availability_check(
         )
 
     if seating_area in ROOMS:
+        if not public_party_allowed(seating_area, party_size):
+            return False, "この個室の利用人数の範囲外です"
+        if c.execute("SELECT 1 FROM seat_blocks WHERE visit_date=? AND time_text=? AND seating_area=?", (visit.date().isoformat(), visit.strftime('%H:%M'), seating_area)).fetchone():
+            return False, "この個室はブロックされています"
         end = (
             visit
             + timedelta(
@@ -1039,10 +1063,10 @@ def availability_check(
 def nearby_availability(c, visit_at, area, party_size, limit=6):
     """Offer actual free seats, prioritizing the requested day and time."""
     visit = parse_dt(visit_at)
-    if area not in ("COUNTER", *ROOMS) or party_size < 1:
+    if area not in ("COUNTER", "PRIVATE", *ROOMS) or party_size < 1:
         raise ValueError("席または人数が不正です")
     candidates = []
-    areas = [area] + [a for a in ("COUNTER", *ROOMS) if a != area]
+    areas = ([*ROOMS, "COUNTER"] if area == "PRIVATE" else [area] + [a for a in ("COUNTER", *ROOMS) if a != area])
     times = [visit.strftime("%H:%M")] + [t for t in ("18:00", "20:30") if t != visit.strftime("%H:%M")]
     for offset in [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7]:
         day = (visit + timedelta(days=offset)).date()
@@ -1927,7 +1951,7 @@ class Handler(
                 msg = str(e)
 
             try:
-                suggestions = nearby_availability(c, visit, area, party) if not ok and area in ("COUNTER", *ROOMS) and party > 0 else []
+                suggestions = nearby_availability(c, visit, area, party) if not ok and area in ("COUNTER", "PRIVATE", *ROOMS) and party > 0 else []
             except (ValueError, OverflowError):
                 suggestions = []
             c.close()
@@ -1943,12 +1967,72 @@ class Handler(
                 }
             )
 
+        if p == "/api/seat-blocks":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            try:
+                day = date.fromisoformat((parse_qs(u.query).get("date") or [""])[0]).isoformat()
+            except ValueError:
+                return self.send_json({"error": "日付が不正です"}, 400)
+            c = con()
+            try:
+                return self.send_json([dict(r) for r in c.execute("SELECT * FROM seat_blocks WHERE visit_date=? ORDER BY time_text,seating_area,seat_number", (day,))])
+            finally:
+                c.close()
+
         self.send_error(404)
 
     def do_POST(self):
         p = urlparse(
             self.path
         ).path
+
+        if p in ("/api/seat-blocks", "/api/seat-blocks/remove"):
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            x = self.read_json()
+            c = con()
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                if p.endswith("/remove"):
+                    block_id = x.get("id")
+                    if type(block_id) is not int or block_id < 1:
+                        return self.send_json({"error": "ブロックIDが不正です"}, 400)
+                    removed = c.execute("DELETE FROM seat_blocks WHERE id=?", (block_id,)).rowcount
+                    c.commit()
+                    return self.send_json({"ok": True, "removed": removed})
+                day = date.fromisoformat(x.get("date", "")).isoformat()
+                items = x.get("blocks")
+                if not isinstance(items, list) or not 1 <= len(items) <= 16:
+                    raise ValueError("1〜16席を選択してください")
+                if day < datetime.now(timezone(timedelta(hours=9))).date().isoformat():
+                    raise ValueError("過去の日付はブロックできません")
+                for item in items:
+                    time_text = item.get("time")
+                    area = item.get("seating_area")
+                    num = item.get("seat_number")
+                    if time_text not in ("18:00", "20:30") or area not in ("COUNTER", *ROOMS) or type(num) is not int or (area == "COUNTER" and not 1 <= num <= 8) or (area != "COUNTER" and num != 0):
+                        raise ValueError("席の指定が不正です")
+                    if f"{day}T{time_text}" <= datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"):
+                        raise ValueError("開始済みの時間はブロックできません")
+                    if c.execute("SELECT 1 FROM seat_blocks WHERE visit_date=? AND time_text=? AND seating_area=? AND seat_number=?", (day, time_text, area, num)).fetchone():
+                        raise ValueError("選択した席はすでにブロックされています")
+                    if area == "COUNTER":
+                        occupied = c.execute("SELECT COALESCE(SUM(party_size),0) n FROM reservations WHERE substr(visit_at,1,10)=? AND substr(visit_at,12,5)=? AND seating_area='COUNTER' AND status IN (?,?,?,?)", (day, time_text, *ACTIVE_STATUSES)).fetchone()["n"]
+                        existing = {r["seat_number"] for r in c.execute("SELECT seat_number FROM seat_blocks WHERE visit_date=? AND time_text=? AND seating_area='COUNTER'", (day, time_text))}
+                        assigned = set([n for n in range(1, 9) if n not in existing][:int(occupied)])
+                        if num in assigned:
+                            raise ValueError("予約済みの席はブロックできません")
+                    elif c.execute("SELECT 1 FROM reservations WHERE substr(visit_at,1,10)=? AND substr(visit_at,12,5)=? AND seating_area=? AND status IN (?,?,?,?)", (day, time_text, area, *ACTIVE_STATUSES)).fetchone():
+                        raise ValueError("予約済みの個室はブロックできません")
+                    c.execute("INSERT INTO seat_blocks(visit_date,time_text,seating_area,seat_number,note,created_at) VALUES(?,?,?,?,?,?)", (day,time_text,area,num,str(x.get("note") or "")[:200],now_iso()))
+                c.commit()
+                return self.send_json({"ok": True, "created": len(items)})
+            except (ValueError, TypeError, AttributeError, sqlite3.IntegrityError) as exc:
+                c.rollback()
+                return self.send_json({"error": str(exc)}, 400)
+            finally:
+                c.close()
 
         if p == "/api/reservations/mark-read":
             if not self.auth():
@@ -2340,6 +2424,8 @@ class Handler(
 
             try:
                 c.execute("BEGIN IMMEDIATE")
+                if area == "PRIVATE":
+                    area = next((room for room in ROOMS if public_party_allowed(room, party) and availability_check(c, room, x["visit_at"], party, None, dur)[0]), "PRIVATE")
                 ok, msg = availability_check(
                     c,
                     area,

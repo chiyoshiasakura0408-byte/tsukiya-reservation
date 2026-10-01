@@ -15,6 +15,49 @@ import run
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_seat_blocks_and_private_auto_assignment(self):
+        day = "2026-11-10"
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = {"x-admin-token": "test-secret", "Content-Type": "application/json"}
+        def post(path, data):
+            return json.load(urllib.request.urlopen(urllib.request.Request(
+                base + path, data=json.dumps(data).encode(), headers=headers)))
+        try:
+            block = post("/api/seat-blocks", {"date": day, "blocks": [
+                {"time": "18:00", "seating_area": "COUNTER", "seat_number": 8},
+                {"time": "18:00", "seating_area": "PRIVATE3", "seat_number": 0}]})
+            self.assertEqual(block["created"], 2)
+            c = run.con()
+            self.assertFalse(run.availability_check(c, "COUNTER", day+"T18:00", 8, 1)[0])
+            self.assertFalse(run.availability_check(c, "PRIVATE", day+"T18:00", 5)[0])
+            self.assertTrue(run.availability_check(c, "PRIVATE", day+"T18:00", 4)[0])
+            c.close()
+            body = {"guest_name": "電話のお客様", "phone": "09012345678",
+                    "visit_at": day+"T18:00", "party_size": 4,
+                    "seating_area": "PRIVATE"}
+            first = post("/api/reservations/phone", body)
+            self.assertEqual(self.get(first["id"])["seating_area"], "PRIVATE1")
+            second = post("/api/reservations/phone", body)
+            self.assertEqual(self.get(second["id"])["seating_area"], "PRIVATE2")
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                post("/api/reservations/phone", body)
+            self.assertEqual(rejected.exception.code, 409)
+            listed = json.load(urllib.request.urlopen(urllib.request.Request(
+                base + "/api/seat-blocks?date=" + day, headers=headers)))
+            room_block = next(b for b in listed if b["seating_area"] == "PRIVATE3")
+            self.assertEqual(post("/api/seat-blocks/remove", {"id": room_block["id"]})["removed"], 1)
+            body["party_size"] = 5
+            third = post("/api/reservations/phone", body)
+            self.assertEqual(self.get(third["id"])["seating_area"], "PRIVATE3")
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                post("/api/seat-blocks", {"date": day, "blocks": [
+                    {"time": "18:00", "seating_area": "PRIVATE3", "seat_number": 0}]})
+            self.assertEqual(rejected.exception.code, 400)
+        finally:
+            server.shutdown(); server.server_close()
+
     def test_phone_booking_uses_server_course_and_price(self):
         day = "2026-11-10"
         server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
