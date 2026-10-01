@@ -120,8 +120,8 @@ def guest_requests(x):
     items = x.get("celebration_items", [])
     if not isinstance(note, str) or not isinstance(plate, str) or not isinstance(items, list):
         raise ValueError("備考の入力形式が不正です")
-    allowed = {"花束", "ホールケーキ", "カットケーキ"}
-    if len(items) > 3 or any(item not in allowed for item in items):
+    allowed = {"花束", "ホールケーキ", "カットケーキ", "ホールケーキ（小）", "ホールケーキ（大）", "花束（小）", "花束（大）"}
+    if len(items) > 5 or any(not isinstance(item, str) or item not in allowed for item in items):
         raise ValueError("お祝い項目を確認してください")
     if len(note) > 1000 or len(plate) > 120:
         raise ValueError("備考またはプレートの文字数が長すぎます")
@@ -585,10 +585,10 @@ def send_confirmation_sms(reservation):
                 c.commit()
                 if claimed:
                     body = (f"西天満つきやです。{row['guest_name']}様\nご入金を確認し、ご予約を確定いたしました。\n"
-                            f"日時：{row['visit_at'].replace('T', ' ')}\nお席：{seating_label(row)}\n"
+                            f"日時：{row['visit_at'].replace('T', ' ')}\nお席：{customer_seating_label(row)}\n"
                             f"人数：{row['party_size']}名様\n当店は一斉スタートでお料理をご提供します。ご来店時間をお守りください。\n当日は心を尽くしてお迎えいたします。")
                     try:
-                        result = send_sms(row["phone"], body=body)
+                        result = send_sms(row["phone"], body=body + ("\n" + annex_message(row) if annex_message(row) else ""))
                         if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
                             raise RuntimeError("SMS送信を受け付けられませんでした")
                         c.execute("UPDATE reservations SET confirmation_sms_status='QUEUED',confirmation_sms_sid=?,"
@@ -725,12 +725,14 @@ def make_invoice(r):
                     "For bank transfers:\nSumitomo Mitsui Banking Corporation\n"
                     "Dojima Branch\nOrdinary account 0655295\n"
                     "Account name: ASAKURA CHIYOSHI"
+                    + ("\n\n" + annex_message(r, True) if annex_message(r, True) else "")
                 ) if english else (
                     "お振込みの際は下記口座までお願い致します。\n\n"
                     "三井住友銀行\n"
                     "堂島支店\n"
                     "(普)0655295\n"
                     "アサクラ　チヨシ"
+                    + ("\n\n" + annex_message(r) if annex_message(r) else "")
                 ),
 
                 "payment_requests": [
@@ -1189,6 +1191,16 @@ def seating_label(r):
     return "未割当"
 
 
+def customer_seating_label(r):
+    return "個室" if str(r["seating_area"]).startswith("PRIVATE") else seating_label(r)
+
+
+def annex_message(r, english=False):
+    if not str(r["seating_area"]).startswith("PRIVATE"):
+        return ""
+    return 'Private rooms are in a separate building from the main restaurant. Please come to Tsukiya at Nishi-Tenma, Bettei (Annex), 3-8-7 Nishitenma, Kita-ku, Osaka.' if english else '個室は本店とは別の建物でのご案内となります。西天満つきや 別邸（大阪市北区西天満3-8-7）までお越しください。'
+
+
 def send_confirmation(r):
     if (
         not SMTP_HOST
@@ -1217,9 +1229,7 @@ def send_confirmation(r):
     msg["To"] = r["email"]
 
     if english:
-        seat_en = {"カウンター": "Counter", "個室1": "Private Room 1",
-                   "個室2": "Private Room 2", "個室3": "Private Room 3"}.get(
-                       seating_label(r), seating_label(r))
+        seat_en = "Private Room" if str(r["seating_area"]).startswith("PRIVATE") else "Counter"
         msg.set_content(
             f"""Dear {r['guest_name']},
 
@@ -1230,6 +1240,8 @@ Date and time: {r['visit_at']} (Japan time)
 Seating: {seat_en}
 Guests: {r['party_size']}
 Course payment: JPY {r['amount']:,}
+
+{annex_message(r, True)}
 
 We look forward to welcoming you. Please arrive on time, as each seating begins together.
 
@@ -1248,9 +1260,11 @@ Nishitenma Tsukiya
 下記の内容にてご予約を確定いたしました。
 
 ご来店日時：{r['visit_at']}
-お席：{seating_label(r)}
+お席：{customer_seating_label(r)}
 人数：{r['party_size']}名様
 お料理代：{r['amount']:,}円
+
+{annex_message(r)}
 
 当店では皆様一斉にお料理のご提供を開始いたします。
 ご来店時間をお守りくださいますようお願い申し上げます。
