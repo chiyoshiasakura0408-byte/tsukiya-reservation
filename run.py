@@ -334,7 +334,10 @@ def sync_customers(c):
     """Link legacy and new bookings without merging people on a shared phone alone."""
     c.execute("BEGIN IMMEDIATE")
     try:
-        for row in c.execute("SELECT id,guest_name,phone,email FROM reservations WHERE customer_id IS NULL ORDER BY id").fetchall():
+        c.execute("UPDATE reservations SET customer_id=NULL WHERE customer_id IS NOT NULL AND course_name LIKE '決済テスト%'")
+        for row in c.execute("""SELECT id,guest_name,phone,email FROM reservations
+            WHERE customer_id IS NULL AND (course_name IS NULL OR course_name NOT LIKE '決済テスト%')
+            ORDER BY id""").fetchall():
             key = customer_match_key(row)
             now = now_iso()
             c.execute("""INSERT OR IGNORE INTO customers(match_key,name,phone,email,created_at,updated_at)
@@ -1868,7 +1871,7 @@ class Handler(
                         COUNT(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN 1 END) AS visit_count,
                         MAX(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN r.visit_at END) AS last_visit
                         FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id
-                        GROUP BY c.id ORDER BY c.id DESC""", (datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"),)*2)]
+                        GROUP BY c.id HAVING COUNT(r.id)>0 ORDER BY c.id DESC""", (datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"),)*2)]
                     return self.send_json(rows)
                 customer_id = int(p.rsplit("/", 1)[1])
                 row = c.execute("SELECT id,name,company_name,receipt_name,phone,email,note FROM customers WHERE id=?", (customer_id,)).fetchone()

@@ -323,6 +323,10 @@ class WorkflowTest(unittest.TestCase):
              "CONFIRMED", ts, ts)).lastrowid
         past = (datetime.now(timezone(timedelta(hours=9))) - timedelta(days=1)).strftime("%Y-%m-%dT18:00")
         c.execute("UPDATE reservations SET status='CONFIRMED',visit_at=? WHERE id=?", (past, first))
+        test_id = c.execute("""INSERT INTO reservations(source,guest_name,phone,email,visit_at,party_size,
+            course_name,amount,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            ("WEB", "決済テスト客", "09000000000", "", past, 2,
+             "決済テスト（お料理のご予約ではありません）", 1, "CONFIRMED", ts, ts)).lastrowid
         c.commit(); c.close()
         server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -340,6 +344,7 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(next(x for x in listing if x["id"] == customer_id)["visit_count"], 1)
             self.assertEqual(customer_id, self.get(second)["customer_id"])
             self.assertNotEqual(customer_id, self.get(other)["customer_id"])
+            self.assertIsNone(self.get(test_id)["customer_id"])
             self.assertEqual(len(get(f"/api/customers/{customer_id}")["visits"]), 2)
             post(f"/api/customers/{customer_id}", {"company_name": "株式会社つきや", "receipt_name": "つきや"})
             post(f"/api/customers/{customer_id}/visits/{first}",
