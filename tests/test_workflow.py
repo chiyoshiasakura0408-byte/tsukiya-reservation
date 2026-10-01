@@ -346,11 +346,18 @@ class WorkflowTest(unittest.TestCase):
             self.assertNotEqual(customer_id, self.get(other)["customer_id"])
             self.assertIsNone(self.get(test_id)["customer_id"])
             self.assertEqual(len(get(f"/api/customers/{customer_id}")["visits"]), 2)
-            post(f"/api/customers/{customer_id}", {"company_name": "株式会社つきや", "receipt_name": "つきや"})
+            post(f"/api/customers/{customer_id}", {"company_name": "株式会社つきや", "receipt_name": "つきや",
+                "allergies": "海老", "disliked_foods": "辛い料理", "preferred_seat": "カウンター右端",
+                "preferred_drinks": "日本酒"})
             post(f"/api/customers/{customer_id}/visits/{first}",
                  {"visit_note": "蟹みそを好む", "companions": "佐藤様"})
             profile = get(f"/api/customers/{customer_id}")
             self.assertEqual(profile["customer"]["company_name"], "株式会社つきや")
+            self.assertEqual(profile["customer"]["allergies"], "海老")
+            self.assertEqual(profile["customer"]["preferred_drinks"], "日本酒")
+            booking = next(r for r in get("/api/reservations") if r["id"] == first)
+            self.assertEqual(booking["customer_allergies"], "海老")
+            self.assertEqual(booking["customer_preferred_seat"], "カウンター右端")
             self.assertEqual(next(v for v in profile["visits"] if v["id"] == first)["companions"], "佐藤様")
             self.assertFalse(next(v for v in profile["visits"] if v["id"] == second)["visit_note"])
             with self.assertRaises(urllib.error.HTTPError) as error:
@@ -358,6 +365,18 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(error.exception.code, 404)
         finally:
             server.shutdown(); server.server_close()
+
+    def test_customer_preference_columns_migrate_existing_database(self):
+        c = run.con()
+        c.execute("DROP TABLE customers")
+        c.execute("""CREATE TABLE customers(id INTEGER PRIMARY KEY,match_key TEXT UNIQUE,name TEXT NOT NULL,
+            company_name TEXT NOT NULL DEFAULT '',receipt_name TEXT NOT NULL DEFAULT '',phone TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)""")
+        c.commit(); c.close()
+        c = run.con()
+        columns = {r["name"] for r in c.execute("PRAGMA table_info(customers)")}
+        self.assertTrue({"allergies", "disliked_foods", "preferred_seat", "preferred_drinks"} <= columns)
+        c.close()
 
     def test_two_matsuba_courses_keep_distinct_periods_and_names(self):
         from datetime import date

@@ -308,9 +308,17 @@ def con():
         phone TEXT NOT NULL DEFAULT '',
         email TEXT NOT NULL DEFAULT '',
         note TEXT NOT NULL DEFAULT '',
+        allergies TEXT NOT NULL DEFAULT '',
+        disliked_foods TEXT NOT NULL DEFAULT '',
+        preferred_seat TEXT NOT NULL DEFAULT '',
+        preferred_drinks TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )""")
+    customer_cols = {row["name"] for row in c.execute("PRAGMA table_info(customers)")}
+    for field in ("allergies", "disliked_foods", "preferred_seat", "preferred_drinks"):
+        if field not in customer_cols:
+            c.execute(f"ALTER TABLE customers ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
     c.execute("CREATE INDEX IF NOT EXISTS reservations_customer_idx ON reservations(customer_id)")
 
     c.commit()
@@ -1868,13 +1876,15 @@ class Handler(
                 sync_customers(c)
                 if p == "/api/customers":
                     rows = [dict(row) for row in c.execute("""SELECT c.id,c.name,c.company_name,c.receipt_name,c.phone,c.email,c.note,
+                        c.allergies,c.disliked_foods,c.preferred_seat,c.preferred_drinks,
                         COUNT(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN 1 END) AS visit_count,
                         MAX(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN r.visit_at END) AS last_visit
                         FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id
                         GROUP BY c.id HAVING COUNT(r.id)>0 ORDER BY c.id DESC""", (datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"),)*2)]
                     return self.send_json(rows)
                 customer_id = int(p.rsplit("/", 1)[1])
-                row = c.execute("SELECT id,name,company_name,receipt_name,phone,email,note FROM customers WHERE id=?", (customer_id,)).fetchone()
+                row = c.execute("""SELECT id,name,company_name,receipt_name,phone,email,note,
+                    allergies,disliked_foods,preferred_seat,preferred_drinks FROM customers WHERE id=?""", (customer_id,)).fetchone()
                 if not row:
                     return self.send_json({"error": "顧客が見つかりません"}, 404)
                 visits = [dict(v) for v in c.execute("""SELECT id,visit_at,party_size,course_name,seating_area,status,
@@ -1934,14 +1944,16 @@ class Handler(
                 )
 
             c = con()
+            sync_customers(c)
 
             rows = [
                 dict(x)
                 for x in c.execute(
                     """
-                    SELECT *
-                    FROM reservations
-                    ORDER BY visit_at,id
+                    SELECT r.*,c.allergies AS customer_allergies,c.disliked_foods AS customer_disliked_foods,
+                        c.preferred_seat AS customer_preferred_seat,c.preferred_drinks AS customer_preferred_drinks
+                    FROM reservations r LEFT JOIN customers c ON c.id=r.customer_id
+                    ORDER BY r.visit_at,r.id
                     """
                 )
             ]
@@ -2099,7 +2111,9 @@ class Handler(
                 visit_id = customer_path[2]
                 fields = ({"visit_note": 2000, "companions": 500} if visit_id else
                           {"name": 100, "company_name": 150, "receipt_name": 150,
-                           "phone": 50, "email": 254, "note": 2000})
+                           "phone": 50, "email": 254, "note": 2000,
+                           "allergies": 1000, "disliked_foods": 1000,
+                           "preferred_seat": 500, "preferred_drinks": 1000})
                 if not x or any(k not in fields or not isinstance(v, str) or len(v) > fields[k]
                                 for k, v in x.items()):
                     raise ValueError("入力項目または文字数を確認してください")
