@@ -15,6 +15,58 @@ import run
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_phone_booking_uses_server_course_and_price(self):
+        day = "2026-11-10"
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            body = {"guest_name": "電話のお客様", "phone": "09012345678",
+                    "visit_at": day + "T18:00", "party_size": 3,
+                    "seating_area": "COUNTER", "counter_round": 1,
+                    "amount": 1, "course_name": "改ざんしたコース"}
+            req = urllib.request.Request(base + "/api/reservations/phone",
+                                         data=json.dumps(body).encode(),
+                                         headers={"x-admin-token": "test-secret", "Content-Type": "application/json"})
+            result = json.load(urllib.request.urlopen(req))
+            row = self.get(result["id"])
+            self.assertEqual((row["course_name"], row["amount"]),
+                             (run.PUBLIC_COURSES["matsuba-seko"][0], 180000))
+            body["visit_at"] = "2027-04-01T18:00"
+            req = urllib.request.Request(base + "/api/reservations/phone",
+                                         data=json.dumps(body).encode(),
+                                         headers={"x-admin-token": "test-secret", "Content-Type": "application/json"})
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(req)
+            self.assertEqual(error.exception.code, 400)
+        finally:
+            server.shutdown(); server.server_close()
+
+    def test_unpaid_reminder_once_and_phone_expiry_after_48_hours(self):
+        rid = self.reservation(email="")
+        issued = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        c = run.con()
+        c.execute("UPDATE reservations SET square_invoice_url=?,invoice_issued_at=? WHERE id=?",
+                  ("https://squareup.com/pay-test", issued, rid))
+        c.commit(); c.close()
+        with patch.multiple(run, TWILIO_ACCOUNT_SID="account", TWILIO_AUTH_TOKEN="token",
+                            TWILIO_FROM_NUMBER="+8112345678"), \
+             patch.object(run, "send_sms", return_value={"sid": "SM-reminder", "status": "queued"}) as sms:
+            self.assertFalse(run.send_payment_reminder(self.get(rid), "PAID"))
+            self.assertTrue(run.send_payment_reminder(self.get(rid), "UNPAID"))
+            self.assertFalse(run.send_payment_reminder(self.get(rid), "UNPAID"))
+            self.assertEqual(sms.call_count, 1)
+            self.assertIn("取り消し", sms.call_args.kwargs["body"])
+        self.assertEqual(self.get(rid)["reminder_status"], "SENT")
+        c = run.con()
+        c.execute("UPDATE reservations SET invoice_issued_at=? WHERE id=?",
+                  ((datetime.now(timezone.utc) - timedelta(hours=49)).isoformat(), rid))
+        c.commit(); c.close()
+        with patch.object(run, "square", side_effect=[{"invoice": {"status": "UNPAID", "version": 1}},
+                                                      {"invoice": {"status": "CANCELED"}}]):
+            self.assertEqual(run.expire_public_reservations(), 1)
+        self.assertEqual(self.get(rid)["status"], "CANCELLED")
+
     def test_staff_new_booking_acknowledgement_is_persistent_and_scoped(self):
         first, second = self.reservation(), self.reservation()
         server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
@@ -266,9 +318,9 @@ class WorkflowTest(unittest.TestCase):
                                          ("INVOICED", "recent", recent)):
             ids.append(c.execute(
                 "INSERT INTO reservations(source,guest_name,visit_at,party_size,amount,"
-                "status,square_invoice_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                "status,square_invoice_id,created_at,updated_at,reminder_status) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 ("WEB", "テスト", "2026-11-10T18:00", 2, 120000,
-                 status, invoice, created, created)
+                 status, invoice, created, created, "SKIPPED_LEGACY" if invoice else None)
             ).lastrowid)
         c.commit()
         c.close()

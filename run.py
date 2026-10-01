@@ -38,6 +38,7 @@ LOGIN_LOCK = threading.Lock()
 SMS_LOCK = threading.Lock()
 EMAIL_LOCK = threading.Lock()
 RECONCILE_LOCK = threading.Lock()
+REMINDER_LOCK = threading.Lock()
 
 SQUARE_TOKEN = os.getenv("SQUARE_ACCESS_TOKEN", "")
 SQUARE_LOCATION_ID = os.getenv("SQUARE_LOCATION_ID", "")
@@ -130,6 +131,15 @@ def public_slot_allowed(day, time_text, course=None):
     if time_text not in ("18:00", "20:30"):
         return False
     return visit > datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
+
+
+def bookable_course(day):
+    """Return the currently priced course for a staff phone reservation."""
+    if day.month == 11 and day.day >= 10 or day.month == 12:
+        return PUBLIC_COURSES["matsuba-seko"]
+    if day.month in (1, 2) or day.month == 3 and day.day <= 20:
+        return PUBLIC_COURSES["matsuba-fukahire"]
+    return None
 
 
 def now_iso():
@@ -229,9 +239,14 @@ def con():
         "last_error": "TEXT",
         "booking_language": "TEXT DEFAULT 'ja'",
         "staff_seen_at": "TEXT",
+        "invoice_issued_at": "TEXT",
+        "reminder_status": "TEXT",
+        "reminder_sent_at": "TEXT",
+        "reminder_error": "TEXT",
     }
 
     migrate_seen = "staff_seen_at" not in cols
+    migrate_reminder = "reminder_status" not in cols
 
     for name, typ in wanted.items():
         if name not in cols:
@@ -244,6 +259,8 @@ def con():
 
     if migrate_seen:
         c.execute("UPDATE reservations SET staff_seen_at=created_at WHERE staff_seen_at IS NULL")
+    if migrate_reminder:
+        c.execute("UPDATE reservations SET reminder_status='SKIPPED_LEGACY' WHERE square_invoice_id IS NOT NULL")
 
     c.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS public_request_id_unique "
@@ -733,6 +750,81 @@ def parse_dt(s):
     )
 
 
+def send_payment_reminder(reservation, invoice_status):
+    """Send one 24-hour warning only for a confirmed unpaid Square invoice."""
+    issued = reservation.get("invoice_issued_at")
+    if (reservation.get("status") != "INVOICED" or invoice_status != "UNPAID"
+            or not issued or not reservation.get("square_invoice_url")
+            or parse_dt(issued) > datetime.now(timezone.utc) - timedelta(hours=24)):
+        return False
+    if not (reservation.get("email") and SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_FROM
+            or reservation.get("phone") and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER):
+        return False
+    with REMINDER_LOCK:
+        c = con()
+        try:
+            claimed = c.execute(
+                "UPDATE reservations SET reminder_status='SENDING',reminder_error=NULL "
+                "WHERE id=? AND status='INVOICED' AND reminder_status IS NULL",
+                (reservation["id"],)
+            ).rowcount
+            c.commit()
+            if not claimed:
+                return False
+        finally:
+            c.close()
+        deadline = (parse_dt(issued) + timedelta(hours=48)).astimezone(timezone(timedelta(hours=9)))
+        english = reservation.get("booking_language") == "en"
+        if english:
+            text_body = (
+                f"Dear {reservation['guest_name']},\n\n"
+                "We have not yet confirmed full payment for your reservation at Tsukiya at Nishi-Tenma. "
+                "Please find your invoice again below:\n"
+                f"{reservation['square_invoice_url']}\n\n"
+                f"If full payment is not confirmed by {deadline:%Y-%m-%d %H:%M} JST, "
+                "your reservation will be canceled. If you have already paid by bank transfer, "
+                "please contact us so we can verify your payment.\n\nTsukiya at Nishi-Tenma"
+            )
+        else:
+            text_body = (
+                f"{reservation['guest_name']} 様\n\n西天満つきやでございます。"
+                "ご予約のお料理代のお支払いが、現時点では確認できておりません。\n"
+                "請求書を再度ご案内いたします。\n"
+                f"{reservation['square_invoice_url']}\n\n"
+                f"{deadline:%Y年%m月%d日 %H:%M}までにお支払いが確認できない場合、"
+                "ご予約は取り消しとなります。\n"
+                "すでにお振り込み済みの場合は、行き違いのご案内となりますので店舗へご連絡ください。\n\n"
+                "西天満 つきや"
+            )
+        try:
+            if reservation.get("email") and SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_FROM:
+                message = EmailMessage()
+                message["Subject"] = "Tsukiya | Payment reminder" if english else "【西天満つきや】お支払いの再案内"
+                message["From"] = MAIL_FROM
+                message["To"] = reservation["email"]
+                message.set_content(text_body)
+                with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+                    server.starttls()
+                    server.login(SMTP_USER, SMTP_PASS)
+                    server.send_message(message)
+            else:
+                result = send_sms(reservation["phone"], body=text_body)
+                if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
+                    raise RuntimeError("SMS送信を確認できませんでした")
+        except Exception as exc:
+            # An ambiguous SMTP/Twilio failure must not automatically send a duplicate.
+            c = con()
+            c.execute("UPDATE reservations SET reminder_status='ERROR',reminder_error=? WHERE id=?",
+                      (type(exc).__name__, reservation["id"]))
+            c.commit(); c.close()
+            return False
+        c = con()
+        c.execute("UPDATE reservations SET reminder_status='SENT',reminder_sent_at=? WHERE id=?",
+                  (now_iso(), reservation["id"]))
+        c.commit(); c.close()
+        return True
+
+
 def expire_public_reservations():
     """Release expired public holds only after Square confirms an invoice is unpaid."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=PUBLIC_PAYMENT_HOURS)).isoformat()
@@ -741,9 +833,13 @@ def expire_public_reservations():
     try:
         c.execute("BEGIN IMMEDIATE")
         rows = c.execute(
-            "SELECT id,square_invoice_id FROM reservations WHERE source='WEB' "
-            "AND status IN ('PENDING','INVOICED','ERROR') AND created_at<=? "
-            "ORDER BY id LIMIT 50", (cutoff,)
+            "SELECT id,square_invoice_id FROM reservations WHERE "
+            "((source='WEB' AND square_invoice_id IS NULL AND created_at<=?) "
+            "OR (source IN ('WEB','PHONE') AND square_invoice_id IS NOT NULL "
+            "AND COALESCE(invoice_issued_at,created_at)<=? "
+            "AND reminder_status IN ('SENT','SKIPPED_LEGACY'))) "
+            "AND status IN ('PENDING','INVOICED','ERROR') "
+            "ORDER BY id LIMIT 50", (cutoff, cutoff)
         ).fetchall()
         for row in rows:
             iid = row["square_invoice_id"]
@@ -1329,6 +1425,7 @@ def reconcile_reservations():
                         process_square_event(event, json.dumps(event).encode())
                     else:
                         send_invoice_sms(row)
+                        send_payment_reminder(row, invoice.get("status"))
                 elif row["status"] == "CONFIRMED":
                     deliver_confirmation(row)
             except Exception as exc:
@@ -1727,6 +1824,22 @@ class Handler(
             c.close()
 
             return self.send_json(rows)
+
+        if p == "/api/phone-course":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            q = parse_qs(u.query)
+            try:
+                day = date.fromisoformat(q.get("date", [""])[0])
+                party = int(q.get("party_size", ["0"])[0])
+                if not 1 <= party <= 20:
+                    raise ValueError()
+            except ValueError:
+                return self.send_json({"error": "来店日・人数が不正です"}, 400)
+            course = bookable_course(day) if public_slot_allowed(day, "18:00") or public_slot_allowed(day, "20:30") else None
+            return self.send_json({"available": bool(course),
+                                   "course_name": course[0] if course else None,
+                                   "amount": course[1] * party if course else None})
 
         if p == "/api/unpaid-invoices":
             if not self.auth():
@@ -2163,7 +2276,6 @@ class Handler(
                 "guest_name",
                 "visit_at",
                 "party_size",
-                "amount",
                 "seating_area"
             )
 
@@ -2214,12 +2326,15 @@ class Handler(
                 x["party_size"]
             )
 
-            amount = int(
-                x["amount"]
-            )
-
-            if amount <= 0:
-                return self.send_json({"error": "前受け金額は1円以上にしてください"}, 400)
+            try:
+                day = parse_dt(x["visit_at"]).date()
+            except ValueError:
+                return self.send_json({"error": "来店日が不正です"}, 400)
+            time_text = parse_dt(x["visit_at"]).strftime("%H:%M")
+            course = bookable_course(day) if public_slot_allowed(day, time_text) else None
+            if not course or not 1 <= party <= 20:
+                return self.send_json({"error": "この来店日に予約可能なコース・人数がありません"}, 400)
+            amount = course[1] * party
 
             c = con()
 
@@ -2289,8 +2404,7 @@ class Handler(
                     x.get("email"),
                     x["visit_at"],
                     party,
-                    x.get("course_name")
-                    or "松葉蟹おまかせコース",
+                    course[0],
                     amount,
                     area,
                     rnd,
@@ -2400,6 +2514,7 @@ class Handler(
                         square_invoice_id=?,
                         square_invoice_url=?,
                         status='INVOICED',
+                        invoice_issued_at=?,
                         last_error=NULL,
                         updated_at=?
                     WHERE id=?
@@ -2409,6 +2524,7 @@ class Handler(
                         oid,
                         iid,
                         url,
+                        ts,
                         ts,
                         rid
                     )
