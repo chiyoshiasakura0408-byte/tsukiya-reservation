@@ -1965,7 +1965,16 @@ class Handler(
                     requests = [x.strip() for x in row["celebration_items"].split(",") if "花束" in x or "ケーキ" in x]
                     if requests:
                         items.append({"reservation_id": row["id"], "visit_at": row["visit_at"], "status": row["status"], "guest_name": row["guest_name"], "requests": requests, "plate_message": row["plate_message"] or "", "message": f"{'本日' if day == today_jp else day}ご予約の{row['guest_name']}様より、{'・'.join(requests)}のリクエストがあります。予約詳細からご確認ください。"})
-                return self.send_json({"date": day, "timezone": "Asia/Tokyo", "items": items})
+                greeting = "おはようございます、本日のご予約状況をお伝え致します。"
+                request_lines = [f"本日ご予約の{item['guest_name']}様より、{'・'.join(item['requests'])}のリクエストがございます。" for item in items]
+                if len(request_lines) > 1:
+                    request_text = "本日のリクエスト一覧\n" + "\n".join(f"{i}. {text}" for i, text in enumerate(request_lines, 1))
+                else:
+                    request_text = request_lines[0] if request_lines else ""
+                return self.send_json({"date": day, "timezone": "Asia/Tokyo", "items": items,
+                    "morning_message": greeting + ("\n\n" + request_text if request_text else ""),
+                    "snapshot_path": f"/reservations?snapshot=1&date={day}",
+                    "delivery_time": "09:00", "delivery_enabled": False})
             finally:
                 c.close()
 
