@@ -1481,7 +1481,7 @@ def import_booking(event):
     c.close()
 
 
-def deliver_confirmation(reservation):
+def deliver_confirmation(reservation, retry_failed=False):
     result = send_confirmation_sms(reservation)
     if not result.get("email") or result["status"] != "CONFIRMED":
         return result
@@ -1492,6 +1492,9 @@ def deliver_confirmation(reservation):
             row = dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
             if row.get("confirmation_sent_at"):
                 return row
+            if retry_failed and row.get("confirmation_email_status") == "ERROR":
+                c.execute("UPDATE reservations SET confirmation_email_status=NULL WHERE id=? AND confirmation_sent_at IS NULL AND confirmation_email_status='ERROR'", (rid,))
+                c.commit()
             if not (SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_FROM):
                 c.execute("UPDATE reservations SET confirmation_email_status='NOT_CONFIGURED',last_error='SMTP未設定' WHERE id=? AND (confirmation_email_status IS NULL OR confirmation_email_status='NOT_CONFIGURED')", (rid,))
                 c.commit()
@@ -2457,7 +2460,7 @@ class Handler(
                 saved = dict(row)
             finally:
                 c.close()
-            result = deliver_confirmation(saved)
+            result = deliver_confirmation(saved, retry_failed=True)
             ok = bool(result.get("confirmation_sent_at") if result.get("email") else result.get("confirmation_sms_status") == "QUEUED")
             return self.send_json({"ok": ok, "error": result.get("last_error") if result.get("email") else result.get("confirmation_sms_error")})
 
