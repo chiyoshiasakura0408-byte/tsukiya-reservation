@@ -23,6 +23,8 @@ services:
         sync: false
       - key: SQUARE_LOCATION_ID
         sync: false
+      - key: SQUARE_EN_LOCATION_ID
+        sync: false
       - key: SQUARE_WEBHOOK_SIGNATURE_KEY
         sync: false
       - key: SMTP_HOST

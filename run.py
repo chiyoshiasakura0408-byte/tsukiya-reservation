@@ -41,6 +41,7 @@ RECONCILE_LOCK = threading.Lock()
 
 SQUARE_TOKEN = os.getenv("SQUARE_ACCESS_TOKEN", "")
 SQUARE_LOCATION_ID = os.getenv("SQUARE_LOCATION_ID", "")
+SQUARE_EN_LOCATION_ID = os.getenv("SQUARE_EN_LOCATION_ID", "")
 SQUARE_ENV = os.getenv("SQUARE_ENV", "production")
 SQUARE_API_VERSION = os.getenv("SQUARE_API_VERSION", "2026-08-19")
 
@@ -498,6 +499,7 @@ def make_invoice(r):
         )
 
     english = r["booking_language"] == "en"
+    location_id = SQUARE_EN_LOCATION_ID if english and SQUARE_EN_LOCATION_ID else SQUARE_LOCATION_ID
     rid = str(r["id"])
 
     created = (
@@ -546,7 +548,7 @@ def make_invoice(r):
 
             "order": {
                 "location_id":
-                    SQUARE_LOCATION_ID,
+                    location_id,
 
                 "reference_id":
                     f"tsukiya-reservation-{rid}",
@@ -590,7 +592,7 @@ def make_invoice(r):
 
             "invoice": {
                 "location_id":
-                    SQUARE_LOCATION_ID,
+                    location_id,
 
                 "order_id":
                     order["id"],

@@ -35,6 +35,7 @@
 - SQUARE_WEBHOOK_SIGNATURE_KEY
 - APP_BASE_URL
 - SMTP_HOST / SMTP_USER / SMTP_PASS / MAIL_FROM
+- SQUARE_EN_LOCATION_ID（任意。英語の請求画面が必要な場合、Squareで希望言語をEnglishに設定した別店舗のロケーションIDを指定。未設定なら通常のロケーションで英語の品目・件名・説明を送信しますが、Square共通UIの言語は保証されません）
 - ADMIN_TOKEN（Blueprintが生成。任意の強い値に変更可能）
 
 秘密鍵やパスワードはGitHubへ保存しないでください。

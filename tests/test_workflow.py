@@ -211,8 +211,12 @@ class WorkflowTest(unittest.TestCase):
             if path == "/v2/invoices":
                 return {"invoice": {"id": "invoice-test", "version": 1}}
             return {"invoice": {"id": "invoice-test", "public_url": "https://square.example/pay"}}
-        with patch.object(run, "SQUARE_LOCATION_ID", "location-test"), patch.object(run, "square", side_effect=square_mock):
+        with patch.object(run, "SQUARE_LOCATION_ID", "location-test"), \
+             patch.object(run, "SQUARE_EN_LOCATION_ID", "english-location"), \
+             patch.object(run, "square", side_effect=square_mock):
             run.make_invoice(row)
+        self.assertEqual(requests[1][1]["order"]["location_id"], "english-location")
+        self.assertEqual(requests[2][1]["invoice"]["location_id"], "english-location")
         self.assertEqual(requests[1][1]["order"]["line_items"][0]["name"], "Crab omakase course")
         self.assertIn("Nishitenma Tsukiya", requests[2][1]["invoice"]["title"])
         self.assertIn("Full prepayment", requests[2][1]["invoice"]["description"])
