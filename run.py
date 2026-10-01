@@ -1949,6 +1949,26 @@ class Handler(
                 }
             )
 
+        if p == "/api/reservation-requests":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            today_jp = datetime.now(timezone(timedelta(hours=9))).date().isoformat()
+            try:
+                day = date.fromisoformat((parse_qs(u.query).get("date") or [today_jp])[0]).isoformat()
+            except ValueError:
+                return self.send_json({"error": "日付が不正です"}, 400)
+            c = con()
+            try:
+                rows = c.execute("SELECT id,guest_name,visit_at,status,celebration_items,plate_message FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' AND COALESCE(celebration_items,'')!='' ORDER BY visit_at,id", (day,)).fetchall()
+                items = []
+                for row in rows:
+                    requests = [x.strip() for x in row["celebration_items"].split(",") if "花束" in x or "ケーキ" in x]
+                    if requests:
+                        items.append({"reservation_id": row["id"], "visit_at": row["visit_at"], "status": row["status"], "guest_name": row["guest_name"], "requests": requests, "plate_message": row["plate_message"] or "", "message": f"{'本日' if day == today_jp else day}ご予約の{row['guest_name']}様より、{'・'.join(requests)}のリクエストがあります。予約詳細からご確認ください。"})
+                return self.send_json({"date": day, "timezone": "Asia/Tokyo", "items": items})
+            finally:
+                c.close()
+
         if p == "/api/reservations":
             if not self.auth():
                 return self.send_json(
