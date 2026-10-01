@@ -276,6 +276,67 @@ class WorkflowTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_direct_booking_links_customer_and_sends_only_confirmation(self):
+        import uuid
+        previous = self.reservation()
+        c = run.con()
+        run.sync_customers(c)
+        customer_id = c.execute("SELECT customer_id FROM reservations WHERE id=?", (previous,)).fetchone()["customer_id"]
+        c.close()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        def post(path, body, auth=True):
+            headers = {"Content-Type": "application/json"}
+            if auth:
+                headers["x-admin-token"] = "test-secret"
+            return json.load(urllib.request.urlopen(urllib.request.Request(base+path, data=json.dumps(body).encode(), headers=headers)))
+        body = {"guest_name": "ゲスト", "phone": "09012345678", "email": "guest@example.com",
+                "visit_at": "2026-11-12T18:00", "party_size": 2, "seating_area": "PRIVATE",
+                "customer_id": customer_id, "request_id": str(uuid.uuid4())}
+        try:
+            with patch.object(run, "make_invoice") as invoice, patch.object(run, "send_sms") as sms, patch.object(run, "send_confirmation", return_value=(True, "")) as mail, patch.multiple(run, SMTP_HOST="mock", SMTP_USER="mock", SMTP_PASS="mock", MAIL_FROM="mock@example.com"):
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    post("/api/reservations/direct", body, False)
+                self.assertEqual(caught.exception.code, 401)
+                with self.assertRaises(urllib.error.HTTPError):
+                    post("/api/reservations/direct", {**body, "email": ""})
+                created = post("/api/reservations/direct", body)
+                self.assertEqual(created["status"], "CONFIRMED")
+                self.assertEqual(created["source"], "DIRECT")
+                self.assertEqual(created["customer_id"], customer_id)
+                self.assertIsNone(created["payment_confirmed_at"])
+                self.assertIsNone(created["square_invoice_id"])
+                self.assertTrue(created["confirmation_sent_at"])
+                self.assertEqual(post("/api/reservations/direct", body)["id"], created["id"])
+                mail.assert_called_once()
+                sms.assert_not_called()
+                invoice.assert_not_called()
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    post(f"/api/reservations/{created['id']}/send-invoice", {})
+                self.assertEqual(caught.exception.code, 409)
+                post("/api/seat-blocks", {"date": "2026-11-12", "blocks": [{"time": "18:00", "seating_area": "PRIVATE2", "seat_number": 0}]})
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    post("/api/reservations/direct", {**body, "request_id": str(uuid.uuid4())})
+                self.assertEqual(caught.exception.code, 409)
+                second = post("/api/reservations/direct", {**body, "customer_id": None, "guest_name": "別のお客様", "email": "another@example.com", "visit_at": "2026-11-13T18:00", "request_id": str(uuid.uuid4())})
+                self.assertNotEqual(second["customer_id"], customer_id)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_direct_confirmation_does_not_claim_payment(self):
+        rid = self.reservation()
+        row = self.get(rid)
+        row.update(source="DIRECT", seating_area="PRIVATE1", booking_language="ja")
+        with patch.multiple(run, SMTP_HOST="mock", SMTP_USER="mock", SMTP_PASS="mock", MAIL_FROM="mock@example.com"), patch.object(run.smtplib, "SMTP") as smtp:
+            self.assertTrue(run.send_confirmation(row)[0])
+            body = smtp.return_value.__enter__.return_value.send_message.call_args.args[0].get_content()
+            self.assertNotIn("ご入金を確認", body)
+            self.assertIn("当日店舗にて", body)
+            self.assertIn("3-8-7", body)
+            self.assertNotIn("個室1", body)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_db = run.DB

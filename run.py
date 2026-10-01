@@ -1222,6 +1222,9 @@ def send_confirmation(r):
     msg = EmailMessage()
 
     english = r["booking_language"] == "en"
+    direct = r["source"] == "DIRECT"
+    confirmation_ja = "下記の内容にてご予約を確定いたしました。\nお料理代・お飲み物代は当日店舗にてお支払いください。" if direct else "ご入金を確認し、\n下記の内容にてご予約を確定いたしました。"
+    confirmation_en = "Your reservation is confirmed. Please pay for your course and beverages at the restaurant on the day of your visit." if direct else "We have received your full payment and confirmed your reservation."
     msg["Subject"] = ("Nishitenma Tsukiya | Reservation Confirmed" if english
                       else "【西天満 つきや】ご予約確定のご案内")
 
@@ -1234,12 +1237,12 @@ def send_confirmation(r):
             f"""Dear {r['guest_name']},
 
 Thank you for choosing Nishitenma Tsukiya.
-We have received your full payment and confirmed your reservation.
+{confirmation_en}
 
 Date and time: {r['visit_at']} (Japan time)
 Seating: {seat_en}
 Guests: {r['party_size']}
-Course payment: JPY {r['amount']:,}
+{'Course price (pay at restaurant)' if direct else 'Course payment'}: JPY {r['amount']:,}
 
 {annex_message(r, True)}
 
@@ -1256,8 +1259,7 @@ Nishitenma Tsukiya
 このたびは西天満 つきやをご予約いただき、
 誠にありがとうございます。
 
-ご入金を確認し、
-下記の内容にてご予約を確定いたしました。
+{confirmation_ja}
 
 ご来店日時：{r['visit_at']}
 お席：{customer_seating_label(r)}
@@ -2526,7 +2528,8 @@ class Handler(
             finally:
                 c.close()
 
-        if p == "/api/reservations/phone":
+        if p in ("/api/reservations/phone", "/api/reservations/direct"):
+            direct = p.endswith("/direct")
             if not self.auth():
                 return self.send_json(
                     {
@@ -2536,7 +2539,29 @@ class Handler(
                     401
                 )
 
-            x = self.read_json()
+            try:
+                x = self.read_json()
+                if not isinstance(x, dict):
+                    raise ValueError("入力形式が不正です")
+                linked_customer = x.get("customer_id") if direct else None
+                if linked_customer is not None and (type(linked_customer) is not int or linked_customer < 1):
+                    raise ValueError("顧客を選び直してください")
+                request_id = str(x.get("request_id") or "")
+                if direct:
+                    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", request_id):
+                        raise ValueError("画面を開き直して登録してください")
+                    email = str(x.get("email") or "").strip()
+                    if len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+                        raise ValueError("確定メールを送るメールアドレスを入力してください")
+                    if not isinstance(x.get("guest_name"), str) or not 1 <= len(x["guest_name"].strip()) <= 80:
+                        raise ValueError("お名前を入力してください")
+                    x["email"] = email
+                    x["guest_name"] = x["guest_name"].strip()
+                    int(x.get("party_size", 0))
+                    int(x.get("counter_round") or 0)
+                    int(x.get("duration_minutes") or 150)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
 
             try:
                 guest_note, celebration_items, plate_message = guest_requests(x)
@@ -2611,6 +2636,14 @@ class Handler(
 
             try:
                 c.execute("BEGIN IMMEDIATE")
+                if direct:
+                    existing = c.execute("SELECT * FROM reservations WHERE public_request_id=?", ("direct:" + request_id,)).fetchone()
+                    if existing:
+                        c.rollback()
+                        c.close()
+                        return self.send_json(dict(existing))
+                    if linked_customer is not None and not c.execute("SELECT id FROM customers WHERE id=?", (linked_customer,)).fetchone():
+                        raise ValueError("顧客が見つかりません")
                 if area == "PRIVATE":
                     area = next((room for room in ROOMS if public_party_allowed(room, party) and availability_check(c, room, x["visit_at"], party, None, dur)[0]), "PRIVATE")
                 ok, msg = availability_check(
@@ -2672,7 +2705,7 @@ class Handler(
                 )
                 """,
                 (
-                    "PHONE",
+                    "DIRECT" if direct else "PHONE",
                     x["guest_name"],
                     x.get("phone"),
                     x.get("email"),
@@ -2683,7 +2716,7 @@ class Handler(
                     area,
                     rnd,
                     dur,
-                    "PENDING",
+                    "CONFIRMED" if direct else "PENDING",
                     ts,
                     ts,
                     guest_note,
@@ -2692,6 +2725,12 @@ class Handler(
                 )
             )
 
+            if direct:
+                if linked_customer is None:
+                    key = customer_match_key({"id": cur.lastrowid, "guest_name": x["guest_name"], "phone": x.get("phone"), "email": x.get("email")})
+                    c.execute("INSERT OR IGNORE INTO customers(match_key,name,phone,email,created_at,updated_at) VALUES(?,?,?,?,?,?)", (key,x["guest_name"],x.get("phone") or "",x["email"],ts,ts))
+                    linked_customer = c.execute("SELECT id FROM customers WHERE match_key=?", (key,)).fetchone()["id"]
+                c.execute("UPDATE reservations SET customer_id=?,public_request_id=?,staff_seen_at=? WHERE id=?", (linked_customer,"direct:" + request_id,ts,cur.lastrowid))
             c.commit()
 
             row = dict(
@@ -2709,6 +2748,8 @@ class Handler(
 
             c.close()
 
+            if direct:
+                row = deliver_confirmation(row)
             return self.send_json(row)
 
         if (
@@ -2765,6 +2806,10 @@ class Handler(
                     },
                     404
                 )
+
+            if r["source"] == "DIRECT":
+                c.close()
+                return self.send_json({"error": "直接予約は前受け請求を送信しません（当日精算）"}, 409)
 
             if r["square_invoice_id"]:
                 out = dict(r)
