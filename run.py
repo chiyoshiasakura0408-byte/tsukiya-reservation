@@ -1,4 +1,6 @@
 import os
+import re
+from functools import lru_cache
 import json
 import sqlite3
 import urllib.request
@@ -33,6 +35,9 @@ LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_FAILURES = 5
 LOGIN_FAILURES = {}
 LOGIN_LOCK = threading.Lock()
+SMS_LOCK = threading.Lock()
+EMAIL_LOCK = threading.Lock()
+RECONCILE_LOCK = threading.Lock()
 
 SQUARE_TOKEN = os.getenv("SQUARE_ACCESS_TOKEN", "")
 SQUARE_LOCATION_ID = os.getenv("SQUARE_LOCATION_ID", "")
@@ -147,6 +152,7 @@ def con():
             visit_at TEXT NOT NULL,
             party_size INTEGER NOT NULL,
             course_name TEXT,
+            booking_language TEXT DEFAULT 'ja',
             amount INTEGER NOT NULL,
             seating_area TEXT,
             counter_round INTEGER,
@@ -201,6 +207,15 @@ def con():
     }
 
     wanted = {
+        "confirmation_email_status": "TEXT",
+        "confirmation_sms_status": "TEXT",
+        "confirmation_sms_sid": "TEXT",
+        "confirmation_sms_sent_at": "TEXT",
+        "confirmation_sms_error": "TEXT",
+        "invoice_sms_status": "TEXT",
+        "invoice_sms_sid": "TEXT",
+        "invoice_sms_sent_at": "TEXT",
+        "invoice_sms_error": "TEXT",
         "seating_area": "TEXT",
         "counter_round": "INTEGER",
         "duration_minutes": "INTEGER DEFAULT 150",
@@ -211,6 +226,7 @@ def con():
         "payment_source": "TEXT",
         "payment_confirmed_at": "TEXT",
         "last_error": "TEXT",
+        "booking_language": "TEXT DEFAULT 'ja'",
     }
 
     for name, typ in wanted.items():
@@ -310,7 +326,7 @@ def normalize_jp_phone(phone):
     return p
 
 
-def send_sms(phone, payment_url):
+def send_sms(phone, payment_url=None, *, body=None):
     if not TWILIO_ACCOUNT_SID:
         raise RuntimeError(
             "TWILIO_ACCOUNT_SID が未設定です"
@@ -333,7 +349,7 @@ def send_sms(phone, payment_url):
 
     to_number = normalize_jp_phone(phone)
 
-    message_body = (
+    message_body = body if body is not None else (
         "西天満つきやです。\n"
         "ご予約いただき誠にありがとうございます。\n\n"
         "下記よりお料理代のお支払いをお願いいたします。\n"
@@ -400,12 +416,88 @@ def send_sms(phone, payment_url):
         )
 
 
+def send_invoice_sms(reservation):
+    """Submit a phone-only invoice once; retain ambiguous failures for manual review."""
+    if reservation.get("email") or not reservation.get("phone"):
+        return reservation
+    rid = reservation["id"]
+    with SMS_LOCK:
+        c = con()
+        try:
+            row = dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+            if row["status"] != "INVOICED" or not row.get("square_invoice_url"):
+                return row
+            if row.get("invoice_sms_status") in ("QUEUED", "SENDING", "ERROR"):
+                return row
+            if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER):
+                c.execute("UPDATE reservations SET invoice_sms_status='NOT_CONFIGURED',"
+                          "invoice_sms_error=? WHERE id=?", ("TwilioのSMS送信設定が未完了です", rid))
+                c.commit()
+            else:
+                c.execute("UPDATE reservations SET invoice_sms_status='SENDING',invoice_sms_error=NULL WHERE id=?", (rid,))
+                c.commit()
+                try:
+                    result = send_sms(row["phone"], row["square_invoice_url"])
+                    if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
+                        raise RuntimeError("SMS送信を受け付けられませんでした")
+                    c.execute("UPDATE reservations SET invoice_sms_status='QUEUED',invoice_sms_sid=?,"
+                              "invoice_sms_sent_at=? WHERE id=?", (result["sid"], now_iso(), rid))
+                except Exception:
+                    c.execute("UPDATE reservations SET invoice_sms_status='ERROR',invoice_sms_error=? WHERE id=?",
+                              ("SMS送信を確認できません。Twilioの送信履歴を確認してください", rid))
+                c.commit()
+            return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+        finally:
+            c.close()
+
+
+def send_confirmation_sms(reservation):
+    """Claim a confirmed phone-only notification before contacting Twilio."""
+    if reservation.get("email") or not reservation.get("phone"):
+        return reservation
+    rid = reservation["id"]
+    with SMS_LOCK:
+        c = con()
+        try:
+            row = dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+            if row["status"] != "CONFIRMED":
+                return row
+            if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER):
+                c.execute("UPDATE reservations SET confirmation_sms_status='NOT_CONFIGURED',confirmation_sms_error=? "
+                          "WHERE id=? AND (confirmation_sms_status IS NULL OR confirmation_sms_status='NOT_CONFIGURED')",
+                          ("TwilioのSMS送信設定が未完了です", rid))
+                c.commit()
+            else:
+                claimed = c.execute("UPDATE reservations SET confirmation_sms_status='SENDING',confirmation_sms_error=NULL "
+                                    "WHERE id=? AND status='CONFIRMED' AND "
+                                    "(confirmation_sms_status IS NULL OR confirmation_sms_status='NOT_CONFIGURED')", (rid,)).rowcount
+                c.commit()
+                if claimed:
+                    body = (f"西天満つきやです。{row['guest_name']}様\nご入金を確認し、ご予約を確定いたしました。\n"
+                            f"日時：{row['visit_at'].replace('T', ' ')}\nお席：{seating_label(row)}\n"
+                            f"人数：{row['party_size']}名様\n当日は心を尽くしてお迎えいたします。")
+                    try:
+                        result = send_sms(row["phone"], body=body)
+                        if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
+                            raise RuntimeError("SMS送信を受け付けられませんでした")
+                        c.execute("UPDATE reservations SET confirmation_sms_status='QUEUED',confirmation_sms_sid=?,"
+                                  "confirmation_sms_sent_at=? WHERE id=?", (result["sid"], now_iso(), rid))
+                    except Exception:
+                        c.execute("UPDATE reservations SET confirmation_sms_status='ERROR',confirmation_sms_error=? WHERE id=?",
+                                  ("SMS送信を確認できません。Twilioの送信履歴を確認してください", rid))
+                    c.commit()
+            return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+        finally:
+            c.close()
+
+
 def make_invoice(r):
     if not r["email"] and not r["phone"]:
         raise RuntimeError(
             "メールアドレスまたは電話番号が必要です"
         )
 
+    english = r["booking_language"] == "en"
     rid = str(r["id"])
 
     created = (
@@ -465,7 +557,7 @@ def make_invoice(r):
                 "line_items": [
                     {
                         "name":
-                            "お料理代",
+                            "Crab omakase course" if english else "お料理代",
 
                         "quantity":
                             "1",
@@ -512,9 +604,16 @@ def make_invoice(r):
                     delivery_method,
 
                 "title":
-                    "西天満 つきや お料理代",
+                    "Nishitenma Tsukiya | Crab Omakase" if english else "西天満 つきや お料理代",
 
                 "description": (
+                    "Full prepayment for your crab omakase reservation. "
+                    "Your reservation is confirmed after full payment. "
+                    "Beverages are paid for at the restaurant.\n\n"
+                    "For bank transfers:\nSumitomo Mitsui Banking Corporation\n"
+                    "Dojima Branch\nOrdinary account 0655295\n"
+                    "Account name: ASAKURA CHIYOSHI"
+                ) if english else (
                     "お振込みの際は下記口座までお願い致します。\n\n"
                     "三井住友銀行\n"
                     "堂島支店\n"
@@ -664,6 +763,7 @@ def expire_public_reservations():
 def expiry_loop():
     while True:
         try:
+            reconcile_reservations()
             expire_public_reservations()
         except Exception as exc:
             print(f"Public reservation expiry failed: {exc}")
@@ -873,15 +973,35 @@ def send_confirmation(r):
 
     msg = EmailMessage()
 
-    msg["Subject"] = (
-        "【西天満 つきや】"
-        "ご予約確定のご案内"
-    )
+    english = r["booking_language"] == "en"
+    msg["Subject"] = ("Nishitenma Tsukiya | Reservation Confirmed" if english
+                      else "【西天満 つきや】ご予約確定のご案内")
 
     msg["From"] = MAIL_FROM
     msg["To"] = r["email"]
 
-    msg.set_content(
+    if english:
+        seat_en = {"カウンター": "Counter", "個室1": "Private Room 1",
+                   "個室2": "Private Room 2", "個室3": "Private Room 3"}.get(
+                       seating_label(r), seating_label(r))
+        msg.set_content(
+            f"""Dear {r['guest_name']},
+
+Thank you for choosing Nishitenma Tsukiya.
+We have received your full payment and confirmed your reservation.
+
+Date and time: {r['visit_at']} (Japan time)
+Seating: {seat_en}
+Guests: {r['party_size']}
+Course payment: JPY {r['amount']:,}
+
+We look forward to welcoming you. Please arrive on time, as each seating begins together.
+
+Nishitenma Tsukiya
+"""
+        )
+    else:
+        msg.set_content(
         f"""
 {r['guest_name']} 様
 
@@ -901,7 +1021,7 @@ def send_confirmation(r):
 
 西天満 つきや
 """
-    )
+        )
 
     try:
         with smtplib.SMTP(
@@ -1106,6 +1226,78 @@ def import_booking(event):
     c.close()
 
 
+def deliver_confirmation(reservation):
+    result = send_confirmation_sms(reservation)
+    if not result.get("email") or result["status"] != "CONFIRMED":
+        return result
+    rid = result["id"]
+    with EMAIL_LOCK:
+        c = con()
+        try:
+            row = dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+            if row.get("confirmation_sent_at"):
+                return row
+            if not (SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_FROM):
+                c.execute("UPDATE reservations SET confirmation_email_status='NOT_CONFIGURED',last_error='SMTP未設定' WHERE id=? AND (confirmation_email_status IS NULL OR confirmation_email_status='NOT_CONFIGURED')", (rid,))
+                c.commit()
+            else:
+                claimed = c.execute("UPDATE reservations SET confirmation_email_status='SENDING' WHERE id=? AND confirmation_sent_at IS NULL AND (confirmation_email_status IS NULL OR confirmation_email_status='NOT_CONFIGURED')", (rid,)).rowcount
+                c.commit()
+                if claimed:
+                    ok, error = send_confirmation(row)
+                    c.execute("UPDATE reservations SET confirmation_email_status=?,confirmation_sent_at=?,last_error=? WHERE id=?", ("SENT" if ok else "ERROR", now_iso() if ok else None, None if ok else error, rid))
+                    c.commit()
+            return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+        finally:
+            c.close()
+
+
+def refresh_sms_delivery(row):
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
+        return
+    for prefix in ("invoice_sms", "confirmation_sms"):
+        sid = row.get(prefix + "_sid")
+        if not sid or row.get(prefix + "_status") != "QUEUED":
+            continue
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages/{sid}.json"
+        auth = base64.b64encode(f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()).decode()
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Authorization": "Basic " + auth}), timeout=30) as response:
+            result = json.load(response)
+        if result.get("status") in ("failed", "undelivered", "canceled"):
+            c = con()
+            c.execute(f"UPDATE reservations SET {prefix}_status='ERROR',{prefix}_error=? WHERE id=?", ("SMS配信失敗。Twilioの送信履歴を確認してください", row["id"]))
+            c.commit(); c.close()
+
+
+def reconcile_reservations():
+    """Repair missed payment events and unclaimed notifications without duplicate sends."""
+    if not RECONCILE_LOCK.acquire(blocking=False):
+        return
+    try:
+        c = con()
+        rows = [dict(r) for r in c.execute("SELECT * FROM reservations WHERE status IN ('INVOICED','CONFIRMED') ORDER BY id")]
+        c.close()
+        for row in rows:
+            try:
+                refresh_sms_delivery(row)
+            except Exception as exc:
+                print(f"SMS delivery check failed for reservation {row['id']}: {type(exc).__name__}")
+            try:
+                if row["status"] == "INVOICED" and row.get("square_invoice_id"):
+                    invoice = square(f"/v2/invoices/{row['square_invoice_id']}")["invoice"]
+                    if invoice.get("status") == "PAID":
+                        event = {"event_id": "reconcile-paid-" + invoice["id"], "type": "invoice.payment_made", "data": {"object": {"invoice": invoice}}}
+                        process_square_event(event, json.dumps(event).encode())
+                    else:
+                        send_invoice_sms(row)
+                elif row["status"] == "CONFIRMED":
+                    deliver_confirmation(row)
+            except Exception as exc:
+                print(f"Reconciliation failed for reservation {row['id']}: {type(exc).__name__}")
+    finally:
+        RECONCILE_LOCK.release()
+
+
 def process_square_event(event, raw):
     event_id = event.get("event_id") or event.get("id") or hashlib.sha256(raw).hexdigest()
     event_type = event.get("type") or ""
@@ -1162,26 +1354,15 @@ def process_square_event(event, raw):
     finally:
         c.close()
 
-    if confirmed and confirmed["email"] and not confirmed["confirmation_sent_at"]:
-        ok, error = send_confirmation(confirmed)
-        c = con()
-        try:
-            if ok:
-                c.execute(
-                    "UPDATE reservations SET confirmation_sent_at=?, last_error=NULL, "
-                    "updated_at=? WHERE id=? AND confirmation_sent_at IS NULL",
-                    (now_iso(), now_iso(), confirmed["id"])
-                )
-            else:
-                c.execute(
-                    "UPDATE reservations SET last_error=?, updated_at=? WHERE id=?",
-                    (error, now_iso(), confirmed["id"])
-                )
-            c.commit()
-        finally:
-            c.close()
+    if confirmed:
+        deliver_confirmation(confirmed)
 
     return False
+
+
+@lru_cache(maxsize=3)
+def crab_video(number):
+    return base64.b64decode((BASE / "public" / "assets" / f"crab-{number}.mp4.b64").read_text(), validate=True)
 
 
 class Handler(
@@ -1238,6 +1419,8 @@ class Handler(
         text,
         status=200
     ):
+        if "</head>" in text and "/crab-loader.js" not in text:
+            text = text.replace("</head>", "<script>" + (BASE / "public" / "crab-loader.js").read_text() + "</script></head>", 1)
         b = text.encode("utf-8")
 
         self.send_response(status)
@@ -1326,10 +1509,47 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
-        if p == "/book":
-            return self.send_html(
-                (BASE / "public" / "book.html").read_text(encoding="utf-8")
-            )
+        if p == "/loading-test":
+            return self.send_html((BASE / "public" / "loading-test.html").read_text())
+        if p == "/crab-loader.js":
+            b = (BASE / "public" / "crab-loader.js").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers(); self.wfile.write(b)
+            return
+        if p in ("/assets/crab-1.mp4", "/assets/crab-2.mp4", "/assets/crab-3.mp4"):
+            b = crab_video(int(p[-5])); total = len(b); start = 0; end = total - 1
+            requested = self.headers.get("Range")
+            if requested:
+                match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested)
+                if not match or not any(match.groups()):
+                    self.send_response(416); self.send_header("Content-Range", f"bytes */{total}"); self.end_headers(); return
+                if match[1]:
+                    start = int(match[1]); end = min(int(match[2]) if match[2] else total - 1, total - 1)
+                else:
+                    start = max(0, total - int(match[2]))
+                if start > end or start >= total:
+                    self.send_response(416); self.send_header("Content-Range", f"bytes */{total}"); self.end_headers(); return
+            self.send_response(206 if requested else 200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Content-Length", str(end - start + 1))
+            if requested: self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+            self.end_headers(); self.wfile.write(b[start:end+1]); return
+
+        if p in ("/book", "/book-test"):
+            if p == "/book-test" and not self.auth():
+                return self.redirect("/login")
+            english = p == "/book" and (parse_qs(u.query).get("lang") or [""])[0] == "en"
+            page = (BASE / "public" / ("book-en.html" if english else "book.html")).read_text(encoding="utf-8")
+            if p == "/book-test":
+                page = page.replace("1名様 60,000円（税込）", "決済テスト専用・1予約 1円（税込）")
+                page = page.replace("selected.party_size*60000", "1")
+                page = page.replace("/api/public/reservations", "/api/test/reservations")
+            return self.send_html(page)
 
         if p == "/api/public/availability":
             expire_public_reservations()
@@ -1426,6 +1646,9 @@ class Handler(
                             SQUARE_WEBHOOK_SIGNATURE_KEY
                             and APP_BASE_URL
                         ),
+
+                    "email_configured":
+                        bool(SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_FROM),
 
                     "sms_configured":
                         bool(
@@ -1567,7 +1790,10 @@ class Handler(
             self.path
         ).path
 
-        if p == "/api/public/reservations":
+        if p in ("/api/public/reservations", "/api/test/reservations"):
+            test_booking = p == "/api/test/reservations"
+            if test_booking and not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
             expire_public_reservations()
             try:
                 body_length = int(self.headers.get("Content-Length", "0"))
@@ -1588,6 +1814,7 @@ class Handler(
                 request_id = str(x.get("request_id", ""))
                 policy_accepted = x.get("cancellation_policy_accepted") is True
                 course = x.get("course")
+                booking_language = x.get("booking_language", "ja")
                 name = str(x.get("guest_name", "")).strip()
                 email = str(x.get("email", "")).strip().lower()
                 phone = str(x.get("phone", "")).strip()
@@ -1598,6 +1825,8 @@ class Handler(
                 return self.send_json({"error": "キャンセルポリシーへの同意が必要です"}, 400)
             if course is not None and course not in PUBLIC_COURSES:
                 return self.send_json({"error": "コースを選び直してください"}, 400)
+            if booking_language not in ("ja", "en"):
+                return self.send_json({"error": "Invalid language"}, 400)
             if (not public_party_allowed(area, party)
                     or day > today_jp + timedelta(days=365)
                     or not public_slot_allowed(day, time_text, course)
@@ -1644,11 +1873,14 @@ class Handler(
                 ts = now_iso()
                 cur = c.execute(
                     "INSERT INTO reservations(source,guest_name,phone,email,visit_at,"
-                    "party_size,course_name,amount,seating_area,counter_round,"
+                    "party_size,course_name,booking_language,amount,seating_area,counter_round,"
                     "duration_minutes,status,public_request_id,cancellation_policy_accepted_at,created_at,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("WEB", name, phone, email, visit_at, party,
-                     PUBLIC_COURSES[course][0] if course else "松葉蟹おまかせコース", party * PUBLIC_COURSE_PRICE,
+                     "決済テスト（お料理のご予約ではありません）" if test_booking else (
+                         PUBLIC_COURSES[course][0] if course else "松葉蟹おまかせコース"),
+                     booking_language,
+                     1 if test_booking else party * PUBLIC_COURSE_PRICE,
                      area, (1 if time_text == "18:00" else 2) if area == "COUNTER" else None,
                      150, "PENDING", request_id, ts, ts, ts)
                 )
@@ -1683,6 +1915,12 @@ class Handler(
                     "error": "請求書を作成できませんでした。店舗へご連絡ください",
                     "reservation_id": rid
                 }, 503)
+
+        if p == "/api/reconcile":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            reconcile_reservations()
+            return self.send_json({"ok": True})
 
         if p == "/api/login":
             if not ADMIN_TOKEN:
@@ -1739,22 +1977,14 @@ class Handler(
                 row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
                 if not row:
                     return self.send_json({"error": "not found"}, 404)
-                if row["status"] != "CONFIRMED" or not row["email"]:
-                    return self.send_json({"error": "確定済みのメール予約のみ送信できます"}, 409)
-                if row["confirmation_sent_at"]:
-                    return self.send_json({"error": "確定メールは送信済みです"}, 409)
-                ok, error = send_confirmation(row)
-                c.execute(
-                    "UPDATE reservations SET confirmation_sent_at=?,last_error=?,updated_at=? "
-                    "WHERE id=?",
-                    (now_iso() if ok else None, None if ok else error, now_iso(), rid)
-                )
-                c.commit()
-                if not ok:
-                    return self.send_json({"error": error}, 503)
-                return self.send_json({"ok": True})
+                if row["status"] != "CONFIRMED":
+                    return self.send_json({"error": "確定済みの予約のみ送信できます"}, 409)
+                saved = dict(row)
             finally:
                 c.close()
+            result = deliver_confirmation(saved)
+            ok = bool(result.get("confirmation_sent_at") if result.get("email") else result.get("confirmation_sms_status") == "QUEUED")
+            return self.send_json({"ok": ok, "error": result.get("last_error") if result.get("email") else result.get("confirmation_sms_error")})
 
         if p.startswith("/api/reservations/") and p.endswith("/confirm-bank-payment"):
             if not self.auth():
@@ -1817,18 +2047,8 @@ class Handler(
             finally:
                 c.close()
 
-            if confirmed["email"]:
-                ok, error = send_confirmation(confirmed)
-                c = con()
-                try:
-                    c.execute(
-                        "UPDATE reservations SET confirmation_sent_at=?,last_error=?,updated_at=? WHERE id=?",
-                        (now_iso() if ok else None, None if ok else error, now_iso(), rid)
-                    )
-                    c.commit()
-                finally:
-                    c.close()
-            return self.send_json({"ok": True, "confirmation_email_sent": bool(confirmed["email"] and ok)})
+            confirmed = deliver_confirmation(confirmed)
+            return self.send_json({"ok": True, "confirmation_email_sent": bool(confirmed.get("confirmation_sent_at"))})
 
         if p.startswith("/api/reservations/") and p.endswith("/cancel"):
             if not self.auth():
@@ -2094,7 +2314,7 @@ class Handler(
                 out = dict(r)
                 c.close()
 
-                return self.send_json(out)
+                return self.send_json(send_invoice_sms(out))
 
             try:
                 (
@@ -2146,7 +2366,7 @@ class Handler(
 
                 c.close()
 
-                return self.send_json(out)
+                return self.send_json(send_invoice_sms(out))
 
             except Exception as e:
                 ts = now_iso()

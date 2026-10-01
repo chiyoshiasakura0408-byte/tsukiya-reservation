@@ -15,6 +15,137 @@ import run
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_crab_preview_and_mobile_video_ranges(self):
+        server=ThreadingHTTPServer(("127.0.0.1",0),run.Handler)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        base=f"http://127.0.0.1:{server.server_port}"
+        try:
+            with urllib.request.urlopen(base+"/loading-test") as response:
+                page=response.read().decode()
+            self.assertIn("/assets/crab-3.mp4",page)
+            self.assertIn("/crab-loader.js",page)
+            with urllib.request.urlopen(base+"/book") as response:booking=response.read().decode()
+            self.assertNotIn('<script src="/crab-loader.js">',booking)
+            self.assertIn("data:image/jpeg;base64,",booking)
+            self.assertIn("MutationObserver",booking)
+            request=urllib.request.Request(base+"/assets/crab-1.mp4",headers={"Range":"bytes=0-31"})
+            with urllib.request.urlopen(request) as response:
+                self.assertEqual(response.status,206)
+                self.assertEqual(len(response.read()),32)
+                self.assertTrue(response.headers["Content-Range"].startswith("bytes 0-31/"))
+            request=urllib.request.Request(base+"/assets/crab-1.mp4",headers={"Range":"bytes=999999999-"})
+            with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(request)
+            self.assertEqual(error.exception.code,416)
+        finally:server.shutdown();server.server_close()
+
+    def test_reconcile_recovers_missing_payment_event(self):
+        rid=self.reservation(email="")
+        with patch.object(run,"square",return_value={"invoice":{"id":"inv-test","status":"PAID"}}), patch.object(run,"send_confirmation_sms",side_effect=lambda r:r):
+            run.reconcile_reservations()
+            run.reconcile_reservations()
+        self.assertEqual(self.get(rid)["status"],"CONFIRMED")
+        self.assertEqual(self.get(rid)["payment_source"],"SQUARE")
+
+    def test_reconcile_does_not_confirm_when_square_is_unavailable(self):
+        rid=self.reservation(email="")
+        with patch.object(run,"square",side_effect=TimeoutError()):
+            run.reconcile_reservations()
+        self.assertEqual(self.get(rid)["status"],"INVOICED")
+
+    def test_email_ambiguous_failure_is_not_sent_twice(self):
+        rid=self.reservation()
+        c=run.con();c.execute("UPDATE reservations SET status='CONFIRMED' WHERE id=?",(rid,));c.commit();c.close()
+        with patch.multiple(run,SMTP_HOST="mock",SMTP_USER="mock",SMTP_PASS="mock",MAIL_FROM="test@example.com"),patch.object(run,"send_confirmation",return_value=(False,"timeout")) as mail:
+            run.deliver_confirmation(self.get(rid));run.deliver_confirmation(self.get(rid))
+            self.assertEqual(mail.call_count,1)
+            self.assertEqual(self.get(rid)["confirmation_email_status"],"ERROR")
+
+    def test_confirmation_sms_only_confirmed_and_once(self):
+        rid = self.reservation(email="")
+        with patch.object(run, "TWILIO_ACCOUNT_SID", "account"), patch.object(run, "TWILIO_AUTH_TOKEN", "secret"), patch.object(run, "TWILIO_FROM_NUMBER", "TSUKIYA"), patch.object(run, "send_sms", return_value={"sid":"SM-confirm","status":"queued"}) as sms:
+            run.send_confirmation_sms(self.get(rid))
+            sms.assert_not_called()
+            c=run.con(); c.execute("UPDATE reservations SET status='CONFIRMED' WHERE id=?", (rid,)); c.commit(); c.close()
+            run.send_confirmation_sms(self.get(rid))
+            result=run.send_confirmation_sms(self.get(rid))
+            self.assertEqual(sms.call_count,1)
+            self.assertEqual(result["confirmation_sms_status"],"QUEUED")
+            self.assertIn("ご予約を確定",sms.call_args.kwargs["body"])
+
+    def test_confirmation_sms_failure_preserves_confirmation_and_no_duplicate(self):
+        rid=self.reservation(email="")
+        c=run.con(); c.execute("UPDATE reservations SET status='CONFIRMED' WHERE id=?",(rid,)); c.commit(); c.close()
+        with patch.object(run,"TWILIO_ACCOUNT_SID","account"), patch.object(run,"TWILIO_AUTH_TOKEN","secret"), patch.object(run,"TWILIO_FROM_NUMBER","TSUKIYA"), patch.object(run,"send_sms",side_effect=TimeoutError()) as sms:
+            run.send_confirmation_sms(self.get(rid))
+            result=run.send_confirmation_sms(self.get(rid))
+            self.assertEqual(sms.call_count,1)
+            self.assertEqual(result["status"],"CONFIRMED")
+            self.assertEqual(result["confirmation_sms_status"],"ERROR")
+
+    def test_invoice_sms_records_submission_once_and_keeps_payment_status(self):
+        rid = self.reservation(email="")
+        c = run.con()
+        c.execute("UPDATE reservations SET square_invoice_url=? WHERE id=?", ("https://example.com/pay", rid))
+        c.commit()
+        c.close()
+        with patch.object(run, "TWILIO_ACCOUNT_SID", "account"), patch.object(run, "TWILIO_AUTH_TOKEN", "secret"), \
+             patch.object(run, "TWILIO_FROM_NUMBER", "+1234567890"), \
+             patch.object(run, "send_sms", return_value={"sid": "SM-test", "status": "queued"}) as sms:
+            first = run.send_invoice_sms(self.get(rid))
+            second = run.send_invoice_sms(self.get(rid))
+            self.assertEqual(first["invoice_sms_status"], "QUEUED")
+            self.assertEqual(second["status"], "INVOICED")
+            self.assertEqual(sms.call_count, 1)
+            self.assertTrue(second["invoice_sms_sent_at"])
+
+    def test_invoice_sms_missing_settings_and_failure_are_visible(self):
+        rid = self.reservation(email="")
+        c = run.con()
+        c.execute("UPDATE reservations SET square_invoice_url=? WHERE id=?", ("https://example.com/pay", rid))
+        c.commit()
+        c.close()
+        with patch.object(run, "TWILIO_ACCOUNT_SID", ""):
+            self.assertEqual(run.send_invoice_sms(self.get(rid))["invoice_sms_status"], "NOT_CONFIGURED")
+        with patch.object(run, "TWILIO_ACCOUNT_SID", "account"), patch.object(run, "TWILIO_AUTH_TOKEN", "secret"), \
+             patch.object(run, "TWILIO_FROM_NUMBER", "+1234567890"), \
+             patch.object(run, "send_sms", side_effect=TimeoutError) as sms:
+            failed = run.send_invoice_sms(self.get(rid))
+            run.send_invoice_sms(self.get(rid))
+            self.assertEqual(failed["invoice_sms_status"], "ERROR")
+            self.assertEqual(failed["status"], "INVOICED")
+            self.assertEqual(sms.call_count, 1)
+
+    def test_one_yen_booking_requires_staff_and_ignores_client_amount(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        payload = {"date": "2026-11-10", "time": "18:00", "seating_area": "COUNTER",
+                   "party_size": 2, "request_id": "12345678-1234-1234-1234-123456789abc",
+                   "guest_name": "決済テスト", "email": "test@example.com", "phone": "09012345678",
+                   "cancellation_policy_accepted": True, "amount": 999999}
+        try:
+            request = urllib.request.Request(base + "/api/test/reservations",
+                data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(request)
+            self.assertEqual(error.exception.code, 401)
+            request.add_header("x-admin-token", "test-secret")
+            with patch.object(run, "SQUARE_TOKEN", "mock"), patch.object(run, "SQUARE_LOCATION_ID", "mock"), \
+                 patch.object(run, "make_invoice", return_value=("c", "o", "i", "https://example.com/pay")) as invoice:
+                with urllib.request.urlopen(request) as response:
+                    rid = json.load(response)["reservation_id"]
+                self.assertEqual(invoice.call_args.args[0]["amount"], 1)
+                self.assertEqual(self.get(rid)["amount"], 1)
+            request = urllib.request.Request(base + "/book-test", headers={"x-admin-token": "test-secret"})
+            with urllib.request.urlopen(request) as response:
+                page = response.read().decode()
+            self.assertIn("1予約 1円", page)
+            self.assertIn("/api/test/reservations", page)
+            self.assertNotIn("selected.party_size*60000", page)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_db = run.DB
@@ -62,6 +193,29 @@ class WorkflowTest(unittest.TestCase):
         self.assertFalse(run.public_slot_allowed(date(2027, 3, 21), "18:00", "matsuba-fukahire"))
         self.assertEqual(run.PUBLIC_COURSES["matsuba-seko"][1], 60000)
         self.assertEqual(run.PUBLIC_COURSES["matsuba-fukahire"][1], 60000)
+
+    def test_english_booking_creates_english_invoice_content(self):
+        rid = self.reservation()
+        c = run.con()
+        c.execute("UPDATE reservations SET booking_language='en' WHERE id=?", (rid,))
+        c.commit()
+        row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+        c.close()
+        requests = []
+        def square_mock(path, body=None):
+            requests.append((path, body))
+            if path == "/v2/customers":
+                return {"customer": {"id": "customer-test"}}
+            if path == "/v2/orders":
+                return {"order": {"id": "order-test"}}
+            if path == "/v2/invoices":
+                return {"invoice": {"id": "invoice-test", "version": 1}}
+            return {"invoice": {"id": "invoice-test", "public_url": "https://square.example/pay"}}
+        with patch.object(run, "SQUARE_LOCATION_ID", "location-test"), patch.object(run, "square", side_effect=square_mock):
+            run.make_invoice(row)
+        self.assertEqual(requests[1][1]["order"]["line_items"][0]["name"], "Crab omakase course")
+        self.assertIn("Nishitenma Tsukiya", requests[2][1]["invoice"]["title"])
+        self.assertIn("Full prepayment", requests[2][1]["invoice"]["description"])
 
     def test_public_hold_expires_after_48_hours_only_if_unpaid(self):
         old = (datetime.now(timezone.utc) - timedelta(hours=49)).isoformat()
@@ -171,7 +325,8 @@ class WorkflowTest(unittest.TestCase):
                 event = {"event_id": "public-paid", "type": "invoice.payment_made",
                          "data": {"object": {"invoice": {"id": "invoice", "status": "PAID"}}}}
                 with patch.object(run, "square", return_value={"invoice": {"status": "PAID"}}), \
-                     patch.object(run, "send_confirmation", return_value=(True, "")):
+                     patch.multiple(run, SMTP_HOST="mock", SMTP_USER="mock", SMTP_PASS="mock", MAIL_FROM="test@example.com"), \
+             patch.object(run, "send_confirmation", return_value=(True, "")):
                     run.process_square_event(event, json.dumps(event).encode())
                 self.assertEqual(self.get(first["reservation_id"])["status"], "CONFIRMED")
                 self.assertEqual(self.get(first["reservation_id"])["payment_source"], "SQUARE")
@@ -184,6 +339,7 @@ class WorkflowTest(unittest.TestCase):
         rid = self.reservation()
         sent = []
         with patch.object(run, "square", return_value={"invoice": {"status": "PAID"}}), \
+             patch.multiple(run, SMTP_HOST="mock", SMTP_USER="mock", SMTP_PASS="mock", MAIL_FROM="test@example.com"), \
              patch.object(run, "send_confirmation", side_effect=lambda row: (sent.append(row["id"]) or True, "")):
             def event(eid, status):
                 data = {"event_id": eid, "type": "invoice.payment_made",
