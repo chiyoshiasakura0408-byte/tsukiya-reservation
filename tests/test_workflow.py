@@ -182,6 +182,41 @@ class WorkflowTest(unittest.TestCase):
         c.close()
         return row
 
+    def test_two_matsuba_courses_keep_distinct_periods_and_names(self):
+        from datetime import date
+        self.assertTrue(run.public_slot_allowed(date(2026, 11, 10), "18:00", "matsuba-seko"))
+        self.assertTrue(run.public_slot_allowed(date(2026, 12, 31), "18:00", "matsuba-seko"))
+        self.assertFalse(run.public_slot_allowed(date(2027, 1, 1), "18:00", "matsuba-seko"))
+        self.assertTrue(run.public_slot_allowed(date(2027, 1, 1), "18:00", "matsuba-fukahire"))
+        self.assertTrue(run.public_slot_allowed(date(2027, 3, 20), "18:00", "matsuba-fukahire"))
+        self.assertFalse(run.public_slot_allowed(date(2026, 12, 31), "18:00", "matsuba-fukahire"))
+        self.assertFalse(run.public_slot_allowed(date(2027, 3, 21), "18:00", "matsuba-fukahire"))
+        self.assertEqual(run.PUBLIC_COURSES["matsuba-seko"][1], 60000)
+        self.assertEqual(run.PUBLIC_COURSES["matsuba-fukahire"][1], 60000)
+
+    def test_english_booking_creates_english_invoice_content(self):
+        rid = self.reservation()
+        c = run.con()
+        c.execute("UPDATE reservations SET booking_language='en' WHERE id=?", (rid,))
+        c.commit()
+        row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+        c.close()
+        requests = []
+        def square_mock(path, body=None):
+            requests.append((path, body))
+            if path == "/v2/customers":
+                return {"customer": {"id": "customer-test"}}
+            if path == "/v2/orders":
+                return {"order": {"id": "order-test"}}
+            if path == "/v2/invoices":
+                return {"invoice": {"id": "invoice-test", "version": 1}}
+            return {"invoice": {"id": "invoice-test", "public_url": "https://square.example/pay"}}
+        with patch.object(run, "SQUARE_LOCATION_ID", "location-test"), patch.object(run, "square", side_effect=square_mock):
+            run.make_invoice(row)
+        self.assertEqual(requests[1][1]["order"]["line_items"][0]["name"], "Crab omakase course")
+        self.assertIn("Nishitenma Tsukiya", requests[2][1]["invoice"]["title"])
+        self.assertIn("Full prepayment", requests[2][1]["invoice"]["description"])
+
     def test_public_hold_expires_after_48_hours_only_if_unpaid(self):
         old = (datetime.now(timezone.utc) - timedelta(hours=49)).isoformat()
         recent = run.now_iso()

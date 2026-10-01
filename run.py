@@ -95,6 +95,10 @@ ROOMS = (
 
 PUBLIC_COURSE_PRICE = 60000  # 税込・1名あたり
 PUBLIC_PAYMENT_HOURS = 48
+PUBLIC_COURSES = {
+    "matsuba-seko": ("松葉蟹、せこ蟹おまかせコース", PUBLIC_COURSE_PRICE),
+    "matsuba-fukahire": ("松葉蟹と名物ふかひれあんかけおまかせコース", PUBLIC_COURSE_PRICE),
+}
 
 
 def public_party_allowed(area, party):
@@ -107,10 +111,16 @@ def public_party_allowed(area, party):
     return False
 
 
-def public_slot_allowed(day, time_text):
+def public_slot_allowed(day, time_text, course=None):
     """The public course is offered annually from Nov 10 through Mar 20."""
     if not (day.month > 11 or (day.month == 11 and day.day >= 10)
             or day.month < 3 or (day.month == 3 and day.day <= 20)):
+        return False
+    if course == "matsuba-seko" and day.month not in (11, 12):
+        return False
+    if course == "matsuba-fukahire" and day.month not in (1, 2, 3):
+        return False
+    if course is not None and course not in PUBLIC_COURSES:
         return False
     try:
         visit = datetime.fromisoformat(f"{day.isoformat()}T{time_text}")
@@ -142,6 +152,7 @@ def con():
             visit_at TEXT NOT NULL,
             party_size INTEGER NOT NULL,
             course_name TEXT,
+            booking_language TEXT DEFAULT 'ja',
             amount INTEGER NOT NULL,
             seating_area TEXT,
             counter_round INTEGER,
@@ -215,6 +226,7 @@ def con():
         "payment_source": "TEXT",
         "payment_confirmed_at": "TEXT",
         "last_error": "TEXT",
+        "booking_language": "TEXT DEFAULT 'ja'",
     }
 
     for name, typ in wanted.items():
@@ -485,6 +497,7 @@ def make_invoice(r):
             "メールアドレスまたは電話番号が必要です"
         )
 
+    english = r["booking_language"] == "en"
     rid = str(r["id"])
 
     created = (
@@ -544,7 +557,7 @@ def make_invoice(r):
                 "line_items": [
                     {
                         "name":
-                            "お料理代",
+                            "Crab omakase course" if english else "お料理代",
 
                         "quantity":
                             "1",
@@ -591,9 +604,16 @@ def make_invoice(r):
                     delivery_method,
 
                 "title":
-                    "西天満 つきや お料理代",
+                    "Nishitenma Tsukiya | Crab Omakase" if english else "西天満 つきや お料理代",
 
                 "description": (
+                    "Full prepayment for your crab omakase reservation. "
+                    "Your reservation is confirmed after full payment. "
+                    "Beverages are paid for at the restaurant.\n\n"
+                    "For bank transfers:\nSumitomo Mitsui Banking Corporation\n"
+                    "Dojima Branch\nOrdinary account 0655295\n"
+                    "Account name: ASAKURA CHIYOSHI"
+                ) if english else (
                     "お振込みの際は下記口座までお願い致します。\n\n"
                     "三井住友銀行\n"
                     "堂島支店\n"
@@ -953,15 +973,35 @@ def send_confirmation(r):
 
     msg = EmailMessage()
 
-    msg["Subject"] = (
-        "【西天満 つきや】"
-        "ご予約確定のご案内"
-    )
+    english = r["booking_language"] == "en"
+    msg["Subject"] = ("Nishitenma Tsukiya | Reservation Confirmed" if english
+                      else "【西天満 つきや】ご予約確定のご案内")
 
     msg["From"] = MAIL_FROM
     msg["To"] = r["email"]
 
-    msg.set_content(
+    if english:
+        seat_en = {"カウンター": "Counter", "個室1": "Private Room 1",
+                   "個室2": "Private Room 2", "個室3": "Private Room 3"}.get(
+                       seating_label(r), seating_label(r))
+        msg.set_content(
+            f"""Dear {r['guest_name']},
+
+Thank you for choosing Nishitenma Tsukiya.
+We have received your full payment and confirmed your reservation.
+
+Date and time: {r['visit_at']} (Japan time)
+Seating: {seat_en}
+Guests: {r['party_size']}
+Course payment: JPY {r['amount']:,}
+
+We look forward to welcoming you. Please arrive on time, as each seating begins together.
+
+Nishitenma Tsukiya
+"""
+        )
+    else:
+        msg.set_content(
         f"""
 {r['guest_name']} 様
 
@@ -981,7 +1021,7 @@ def send_confirmation(r):
 
 西天満 つきや
 """
-    )
+        )
 
     try:
         with smtplib.SMTP(
@@ -1503,7 +1543,8 @@ class Handler(
         if p in ("/book", "/book-test"):
             if p == "/book-test" and not self.auth():
                 return self.redirect("/login")
-            page = (BASE / "public" / "book.html").read_text(encoding="utf-8")
+            english = p == "/book" and (parse_qs(u.query).get("lang") or [""])[0] == "en"
+            page = (BASE / "public" / ("book-en.html" if english else "book.html")).read_text(encoding="utf-8")
             if p == "/book-test":
                 page = page.replace("1名様 60,000円（税込）", "決済テスト専用・1予約 1円（税込）")
                 page = page.replace("selected.party_size*60000", "1")
@@ -1513,6 +1554,9 @@ class Handler(
         if p == "/api/public/availability":
             expire_public_reservations()
             q = parse_qs(u.query)
+            course = (q.get("course") or [None])[0]
+            if course is not None and course not in PUBLIC_COURSES:
+                return self.send_json({"error": "コースを選び直してください"}, 400)
             try:
                 start = date.fromisoformat((q.get("start") or [""])[0])
                 party = int((q.get("party_size") or ["2"])[0])
@@ -1532,7 +1576,7 @@ class Handler(
                     for area in ("COUNTER", *ROOMS):
                         slots[area] = {}
                         for time_text, round_number in (("18:00", 1), ("20:30", 2)):
-                            allowed = public_slot_allowed(day, time_text)
+                            allowed = public_slot_allowed(day, time_text, course)
                             available = allowed and public_party_allowed(area, party) and availability_check(
                                 c, area, f"{day.isoformat()}T{time_text}", party,
                                 round_number if area == "COUNTER" else None, 150
@@ -1543,7 +1587,7 @@ class Handler(
                 c.close()
             return self.send_json({
                 "days": days, "price_per_person": PUBLIC_COURSE_PRICE,
-                "course_name": "松葉蟹おまかせコース"
+                "course_name": PUBLIC_COURSES[course][0] if course else "松葉蟹おまかせコース"
             })
 
         if p == "/":
@@ -1769,6 +1813,8 @@ class Handler(
                 party = int(x.get("party_size"))
                 request_id = str(x.get("request_id", ""))
                 policy_accepted = x.get("cancellation_policy_accepted") is True
+                course = x.get("course")
+                booking_language = x.get("booking_language", "ja")
                 name = str(x.get("guest_name", "")).strip()
                 email = str(x.get("email", "")).strip().lower()
                 phone = str(x.get("phone", "")).strip()
@@ -1777,9 +1823,13 @@ class Handler(
             today_jp = datetime.now(timezone(timedelta(hours=9))).date()
             if not policy_accepted:
                 return self.send_json({"error": "キャンセルポリシーへの同意が必要です"}, 400)
+            if course is not None and course not in PUBLIC_COURSES:
+                return self.send_json({"error": "コースを選び直してください"}, 400)
+            if booking_language not in ("ja", "en"):
+                return self.send_json({"error": "Invalid language"}, 400)
             if (not public_party_allowed(area, party)
                     or day > today_jp + timedelta(days=365)
-                    or not public_slot_allowed(day, time_text)
+                    or not public_slot_allowed(day, time_text, course)
                     or len(name) < 1 or len(name) > 80
                     or len(email) > 254 or email.count("@") != 1
                     or len(phone) < 10 or len(phone) > 20
@@ -1823,11 +1873,13 @@ class Handler(
                 ts = now_iso()
                 cur = c.execute(
                     "INSERT INTO reservations(source,guest_name,phone,email,visit_at,"
-                    "party_size,course_name,amount,seating_area,counter_round,"
+                    "party_size,course_name,booking_language,amount,seating_area,counter_round,"
                     "duration_minutes,status,public_request_id,cancellation_policy_accepted_at,created_at,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("WEB", name, phone, email, visit_at, party,
-                     "決済テスト（お料理のご予約ではありません）" if test_booking else "松葉蟹おまかせコース",
+                     "決済テスト（お料理のご予約ではありません）" if test_booking else (
+                         PUBLIC_COURSES[course][0] if course else "松葉蟹おまかせコース"),
+                     booking_language,
                      1 if test_booking else party * PUBLIC_COURSE_PRICE,
                      area, (1 if time_text == "18:00" else 2) if area == "COUNTER" else None,
                      150, "PENDING", request_id, ts, ts, ts)
