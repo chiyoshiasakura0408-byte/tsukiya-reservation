@@ -15,6 +15,39 @@ import run
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_staff_new_booking_acknowledgement_is_persistent_and_scoped(self):
+        first, second = self.reservation(), self.reservation()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = {"x-admin-token": "test-secret", "Content-Type": "application/json"}
+        try:
+            request = urllib.request.Request(base + "/api/reservations", headers=headers)
+            self.assertEqual(sum(not row["staff_seen_at"] for row in json.load(urllib.request.urlopen(request))), 2)
+            request = urllib.request.Request(base + "/api/reservations/mark-read",
+                                            data=json.dumps({"ids": [first]}).encode(), headers=headers)
+            self.assertEqual(json.load(urllib.request.urlopen(request))["marked"], 1)
+            self.assertIsNotNone(self.get(first)["staff_seen_at"])
+            self.assertIsNone(self.get(second)["staff_seen_at"])
+            self.assertEqual(json.load(urllib.request.urlopen(request))["marked"], 0)
+        finally:
+            server.shutdown(); server.server_close()
+
+    def test_full_slot_suggests_nearby_seats_and_dates(self):
+        day = (datetime.now(timezone(timedelta(hours=9))) + timedelta(days=10)).date().isoformat()
+        c = run.con()
+        ts = run.now_iso()
+        c.execute("INSERT INTO reservations(source,guest_name,visit_at,party_size,amount,seating_area,counter_round,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                  ("PHONE", "満席", day + "T18:00", 8, 10000, "COUNTER", 1, "CONFIRMED", ts, ts))
+        c.commit()
+        try:
+            candidates = run.nearby_availability(c, day + "T18:00", "COUNTER", 2)
+            self.assertTrue(candidates)
+            self.assertNotIn({"visit_at": day + "T18:00", "seating_area": "COUNTER", "counter_round": 1}, candidates)
+            self.assertTrue(any(x["visit_at"].startswith(day) and x["seating_area"] != "COUNTER" for x in candidates))
+        finally:
+            c.close()
+
     def test_crab_preview_and_mobile_video_ranges(self):
         server=ThreadingHTTPServer(("127.0.0.1",0),run.Handler)
         threading.Thread(target=server.serve_forever,daemon=True).start()

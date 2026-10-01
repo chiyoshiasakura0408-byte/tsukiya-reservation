@@ -228,7 +228,10 @@ def con():
         "payment_confirmed_at": "TEXT",
         "last_error": "TEXT",
         "booking_language": "TEXT DEFAULT 'ja'",
+        "staff_seen_at": "TEXT",
     }
+
+    migrate_seen = "staff_seen_at" not in cols
 
     for name, typ in wanted.items():
         if name not in cols:
@@ -238,6 +241,9 @@ def con():
                 ADD COLUMN {name} {typ}
                 """
             )
+
+    if migrate_seen:
+        c.execute("UPDATE reservations SET staff_seen_at=created_at WHERE staff_seen_at IS NULL")
 
     c.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS public_request_id_unique "
@@ -932,6 +938,37 @@ def availability_check(
         False,
         "席の指定が不正です"
     )
+
+
+def nearby_availability(c, visit_at, area, party_size, limit=6):
+    """Offer actual free seats, prioritizing the requested day and time."""
+    visit = parse_dt(visit_at)
+    if area not in ("COUNTER", *ROOMS) or party_size < 1:
+        raise ValueError("席または人数が不正です")
+    candidates = []
+    areas = [area] + [a for a in ("COUNTER", *ROOMS) if a != area]
+    times = [visit.strftime("%H:%M")] + [t for t in ("18:00", "20:30") if t != visit.strftime("%H:%M")]
+    for offset in [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7]:
+        day = (visit + timedelta(days=offset)).date()
+        if day < datetime.now(timezone(timedelta(hours=9))).date():
+            continue
+        for time_text in times:
+            if time_text not in ("18:00", "20:30"):
+                continue
+            proposed = f"{day.isoformat()}T{time_text}"
+            if datetime.fromisoformat(proposed) <= datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None):
+                continue
+            for candidate_area in areas:
+                if proposed == visit_at and candidate_area == area:
+                    continue
+                rnd = (1 if time_text == "18:00" else 2) if candidate_area == "COUNTER" else None
+                ok, _ = availability_check(c, candidate_area, proposed, party_size, rnd)
+                if ok:
+                    candidates.append({"visit_at": proposed, "seating_area": candidate_area,
+                                       "counter_round": rnd})
+                if len(candidates) >= limit:
+                    return candidates
+    return candidates
 
 
 def seating_label(r):
@@ -1776,6 +1813,10 @@ class Handler(
                 ok = False
                 msg = str(e)
 
+            try:
+                suggestions = nearby_availability(c, visit, area, party) if not ok and area in ("COUNTER", *ROOMS) and party > 0 else []
+            except (ValueError, OverflowError):
+                suggestions = []
             c.close()
 
             return self.send_json(
@@ -1784,7 +1825,8 @@ class Handler(
                         ok,
 
                     "message":
-                        msg
+                        msg,
+                    "suggestions": suggestions
                 }
             )
 
@@ -1794,6 +1836,24 @@ class Handler(
         p = urlparse(
             self.path
         ).path
+
+        if p == "/api/reservations/mark-read":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            x = self.read_json()
+            ids = x.get("ids", []) if isinstance(x, dict) else []
+            if not isinstance(ids, list) or len(ids) > 1000 or any(type(i) is not int or i < 1 for i in ids):
+                return self.send_json({"error": "予約IDが不正です"}, 400)
+            if not ids:
+                return self.send_json({"ok": True, "marked": 0})
+            c = con()
+            try:
+                placeholders = ",".join("?" for _ in ids)
+                result = c.execute(f"UPDATE reservations SET staff_seen_at=? WHERE staff_seen_at IS NULL AND id IN ({placeholders})", (now_iso(), *ids))
+                c.commit()
+                return self.send_json({"ok": True, "marked": result.rowcount})
+            finally:
+                c.close()
 
         if p in ("/api/public/reservations", "/api/test/reservations"):
             test_booking = p == "/api/test/reservations"
