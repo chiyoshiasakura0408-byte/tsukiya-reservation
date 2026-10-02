@@ -1,3 +1,4 @@
+from email.utils import formataddr, parseaddr
 import refunds
 import sys
 import os
@@ -67,6 +68,10 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 MAIL_FROM = os.getenv("MAIL_FROM", SMTP_USER)
+
+def mail_sender():
+    return formataddr(("西天満つきや", parseaddr(MAIL_FROM)[1]))
+
 
 TWILIO_ACCOUNT_SID = os.getenv(
     "TWILIO_ACCOUNT_SID",
@@ -894,7 +899,7 @@ def send_payment_reminder(reservation, invoice_status):
             if reservation.get("email") and SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_FROM:
                 message = EmailMessage()
                 message["Subject"] = "Tsukiya | Payment reminder" if english else "【西天満つきや】お支払いの再案内"
-                message["From"] = MAIL_FROM
+                message["From"] = mail_sender()
                 message["To"] = reservation["email"]
                 message.set_content(text_body)
                 with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
@@ -1278,7 +1283,7 @@ def send_confirmation(r):
     msg["Subject"] = ("Nishitenma Tsukiya | Reservation Confirmed" if english
                       else "【西天満 つきや】ご予約確定のご案内")
 
-    msg["From"] = MAIL_FROM
+    msg["From"] = mail_sender()
     msg["To"] = r["email"]
 
     cancel_link = cancellation_url(r)
@@ -2000,6 +2005,7 @@ class Handler(
                             and SQUARE_LOCATION_ID
                         ),
 
+                    "release": os.getenv("RENDER_GIT_COMMIT", ""),
                     "english_square_location_configured":
                         bool(SQUARE_EN_LOCATION_ID),
 

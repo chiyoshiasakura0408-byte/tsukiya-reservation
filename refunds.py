@@ -56,7 +56,7 @@ def notify(app, job, reservation, stage):
             body+='\n返金手続きは完了していません。店舗で確認・対応いたします。'
         if audience=='store':
             body+='\n\n'+GUIDE+'\n\n確認情報：'+str(job.get('error') or '')
-        msg=EmailMessage(); msg['From']=app.MAIL_FROM; msg['To']=recipient
+        msg=EmailMessage(); msg['From']=app.mail_sender(); msg['To']=recipient
         msg['Subject']=f'【西天満 つきや】キャンセル・{state}（予約 #{job["reservation_id"]}）'
         msg.set_content(body)
         result='SENT'
