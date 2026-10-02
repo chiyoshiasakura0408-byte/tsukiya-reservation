@@ -949,7 +949,7 @@ def expire_public_reservations():
                 except Exception as exc:
                     print(f"Expiry check failed for reservation {row['id']}: {exc}")
                     continue
-            c.execute("UPDATE reservations SET status='CANCELLED',cancellation_reason='PAYMENT_EXPIRED',cancelled_at=?,updated_at=? WHERE id=?",
+            c.execute("UPDATE reservations SET status='CANCELLED',staff_seen_at=NULL,cancellation_reason='PAYMENT_EXPIRED',cancelled_at=?,updated_at=? WHERE id=?",
                       (now_iso(), now_iso(), row["id"]))
             expired += 1
         c.commit()
@@ -1242,7 +1242,7 @@ def customer_cancellation(token, confirm=False, accepted=False, expected_fee=Non
         if confirm:
             if accepted is not True or expected_fee != fee:
                 return 400, {"error": "キャンセル規定をご確認ください。"}
-            c.execute("UPDATE reservations SET status='CANCELLED',cancellation_reason='CUSTOMER',cancelled_at=?,updated_at=? WHERE id=? AND status='CONFIRMED'", (now_iso(), now_iso(), r["id"]))
+            c.execute("UPDATE reservations SET status='CANCELLED',staff_seen_at=NULL,cancellation_reason='CUSTOMER',cancelled_at=?,updated_at=? WHERE id=? AND status='CONFIRMED'", (now_iso(), now_iso(), r["id"]))
             refunds.enqueue(c, r, fee, now_iso())
             c.commit()
             return 200, {"cancelled": True, "fee": fee, "refund": refunds.public(c, r["id"])}
@@ -2639,7 +2639,7 @@ class Handler(
                             return self.send_json({"error": "Squareの支払状態を確認してください"}, 409)
                     except Exception:
                         return self.send_json({"error": "請求書を停止できませんでした"}, 502)
-                c.execute("UPDATE reservations SET status='CANCELLED',cancellation_reason='MANUAL',cancelled_at=?,updated_at=? WHERE id=?",
+                c.execute("UPDATE reservations SET status='CANCELLED',staff_seen_at=NULL,cancellation_reason='MANUAL',cancelled_at=?,updated_at=? WHERE id=?",
                           (now_iso(), now_iso(), rid))
                 if row["status"] == "CONFIRMED":
                     now = datetime.now(timezone(timedelta(hours=9)))

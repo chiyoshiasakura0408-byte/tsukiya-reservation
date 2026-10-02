@@ -15,6 +15,7 @@ class RefundTests(unittest.TestCase):
         self.day=(datetime.now(timezone(timedelta(hours=9)))+timedelta(days=10)).isoformat()
         c=run.con();c.execute("INSERT INTO reservations(source,guest_name,email,visit_at,party_size,amount,status,payment_source,square_invoice_id,created_at,updated_at) VALUES('WEB','Test','a@example.com',?,2,120000,'CONFIRMED','SQUARE','inv','created','updated')",(self.day,));c.commit();self.r=dict(c.execute('SELECT * FROM reservations').fetchone());c.close()
         self.token=run.cancellation_token(self.r)
+        c=run.con();c.execute("UPDATE reservations SET staff_seen_at='seen'");c.commit();c.close()
     def tearDown(self):
         for p in reversed(self.patches):p.stop()
         self.tmp.cleanup()
@@ -35,6 +36,7 @@ class RefundTests(unittest.TestCase):
         self.assertEqual(run.customer_cancellation(self.token,True,True,120000)[0],400)
         self.assertEqual(run.customer_cancellation(self.token,True,True,0)[0],200)
         run.customer_cancellation(self.token,True,True,0)
+        c=run.con();self.assertIsNone(c.execute('SELECT staff_seen_at FROM reservations').fetchone()[0]);c.close()
         with patch.object(run,'square',side_effect=self.fake) as sq:
             refunds.process(run);self.assertEqual(self.job()['status'],'PENDING')
             refunds.process(run);self.assertEqual(self.job()['status'],'COMPLETED')
