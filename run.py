@@ -1,3 +1,5 @@
+import refunds
+import sys
 import os
 import re
 from functools import lru_cache
@@ -168,6 +170,7 @@ def now_iso():
 def con():
     c = sqlite3.connect(DB, timeout=30)
     c.row_factory = sqlite3.Row
+    refunds.schema(c)
 
     c.execute(
         """
@@ -958,6 +961,7 @@ def expire_public_reservations():
 def expiry_loop():
     while True:
         try:
+            refunds.process(sys.modules[__name__])
             reconcile_reservations()
             expire_public_reservations()
         except Exception as exc:
@@ -1203,6 +1207,50 @@ def annex_message(r, english=False):
     return 'Private rooms are in a separate building from the main restaurant. Please come to Tsukiya at Nishi-Tenma, Bettei (Annex), 3-8-7 Nishitenma, Kita-ku, Osaka.' if english else '個室は本店とは別の建物でのご案内となります。西天満つきや 別邸（大阪市北区西天満3-8-7）までお越しください。'
 
 
+def cancellation_token(r):
+    if not ADMIN_TOKEN:
+        return ""
+    data = "customer-cancel-v1|" + "|".join(str(r[k] or "") for k in ("id", "created_at", "email", "visit_at"))
+    return str(r["id"]) + "." + hmac.new(ADMIN_TOKEN.encode(), data.encode(), hashlib.sha256).hexdigest()
+
+
+def cancellation_url(r):
+    token = cancellation_token(r)
+    return APP_BASE_URL + "/cancel-reservation#" + token if token and APP_BASE_URL.startswith("https://") else ""
+
+
+def customer_cancellation(token, confirm=False, accepted=False, expected_fee=None):
+    if not isinstance(token, str) or not re.fullmatch(r"[0-9]{1,18}\.[0-9a-f]{64}", token):
+        return 403, {"error": "リンクが無効です。店舗へお問い合わせください。"}
+    c = con()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        r = c.execute("SELECT * FROM reservations WHERE id=?", (int(token.split(".")[0]),)).fetchone()
+        if not r or not hmac.compare_digest(cancellation_token(r), token):
+            return 403, {"error": "リンクが無効です。店舗へお問い合わせください。"}
+        visit = datetime.fromisoformat(r["visit_at"])
+        if visit.tzinfo is None:
+            visit = visit.replace(tzinfo=timezone(timedelta(hours=9)))
+        now = datetime.now(timezone(timedelta(hours=9)))
+        if now >= visit:
+            return 410, {"error": "オンラインでのお手続き期限を過ぎています。店舗へお問い合わせください。"}
+        if r["status"] == "CANCELLED":
+            return 200, {"cancelled": True, "refund": refunds.public(c, r["id"])}
+        if r["status"] != "CONFIRMED":
+            return 409, {"error": "この予約はオンラインでキャンセルできません。店舗へお問い合わせください。"}
+        fee = r["amount"] if now.date() >= visit.astimezone(now.tzinfo).date() - timedelta(days=3) else 0
+        if confirm:
+            if accepted is not True or expected_fee != fee:
+                return 400, {"error": "キャンセル規定をご確認ください。"}
+            c.execute("UPDATE reservations SET status='CANCELLED',cancellation_reason='CUSTOMER',cancelled_at=?,updated_at=? WHERE id=? AND status='CONFIRMED'", (now_iso(), now_iso(), r["id"]))
+            refunds.enqueue(c, r, fee, now_iso())
+            c.commit()
+            return 200, {"cancelled": True, "fee": fee, "refund": refunds.public(c, r["id"])}
+        return 200, {"cancelled": False, "name": r["guest_name"], "visit_at": r["visit_at"], "party_size": r["party_size"], "amount": r["amount"], "paid": r["amount"] if r["payment_source"] in ("SQUARE", "BANK") else 0, "fee": fee}
+    finally:
+        c.close()
+
+
 def send_confirmation(r):
     if (
         not SMTP_HOST
@@ -1233,6 +1281,9 @@ def send_confirmation(r):
     msg["From"] = MAIL_FROM
     msg["To"] = r["email"]
 
+    cancel_link = cancellation_url(r)
+    cancel_ja = ("ご予約のキャンセルはこちら\n" + cancel_link + "\nリンク先で内容とキャンセル規定をご確認のうえ、お手続きください。キャンセル規定に基づき返金対象額を計算します。Squareカード決済は原則自動返金し、銀行振込・処理できない場合は店舗で対応します。カード明細への反映には通常さらに2〜7営業日ほどかかる場合があります。") if cancel_link else "キャンセルをご希望の場合は店舗へお問い合わせください。"
+    cancel_en = ("Cancel your reservation:\n" + cancel_link + "\nReview the cancellation policy before confirming. Eligible Square card payments are refunded automatically. Bank transfers and exceptions require assistance from the restaurant. Card statements may take a further 2–7 business days to reflect refunds.") if cancel_link else "Please contact the restaurant to cancel your reservation."
     if english:
         seat_en = "Private Room" if str(r["seating_area"]).startswith("PRIVATE") else "Counter"
         msg.set_content(
@@ -1249,6 +1300,8 @@ Guests: {r['party_size']}
 {annex_message(r, True)}
 
 We look forward to welcoming you. Please arrive on time, as each seating begins together.
+
+{cancel_en}
 
 Nishitenma Tsukiya
 """
@@ -1275,6 +1328,8 @@ Nishitenma Tsukiya
 
 当日は心を尽くしてお迎えいたします。
 どうぞお気をつけてお越しくださいませ。
+
+{cancel_ja}
 
 西天満 つきや
 """
@@ -1678,9 +1733,10 @@ class Handler(
     def send_html(
         self,
         text,
-        status=200
+        status=200,
+        loader=True
     ):
-        if "</head>" in text and "/crab-loader.js" not in text:
+        if loader and "</head>" in text and "/crab-loader.js" not in text:
             text = text.replace("</head>", "<script>" + (BASE / "public" / "crab-loader.js").read_text() + "</script></head>", 1)
         b = text.encode("utf-8")
 
@@ -1692,6 +1748,7 @@ class Handler(
         )
 
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
 
         self.send_header(
             "Content-Length",
@@ -1753,6 +1810,7 @@ class Handler(
         self.send_response(303)
         self.send_header("Location", location)
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
 
     def cookie_header(self, value, max_age):
@@ -1770,6 +1828,15 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        if p == "/api/refunds":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            c = con()
+            rows = [dict(r) for r in c.execute("SELECT f.*,r.guest_name FROM cancellation_refunds f JOIN reservations r ON r.id=f.reservation_id ORDER BY f.created_at DESC")]
+            c.close()
+            return self.send_json({"refunds": rows, "guide": refunds.GUIDE}, 200, {"Cache-Control": "no-store"})
+        if p == "/cancel-reservation":
+            return self.send_html((BASE / "public" / "cancel.html").read_text(encoding="utf-8"), loader=False)
         if p == "/loading-test":
             return self.send_html((BASE / "public" / "loading-test.html").read_text())
         if p == "/crab-loader.js":
@@ -2149,6 +2216,18 @@ class Handler(
         p = urlparse(
             self.path
         ).path
+
+        if p in ("/api/public/cancellation/preview", "/api/public/cancellation/confirm"):
+            try:
+                if int(self.headers.get("Content-Length", "0")) > 2048:
+                    return self.send_json({"error": "入力が長すぎます"}, 413)
+                x = self.read_json()
+                if not isinstance(x, dict):
+                    raise ValueError()
+                status, data = customer_cancellation(x.get("token"), p.endswith("/confirm"), x.get("accepted"), x.get("expected_fee"))
+            except (ValueError, TypeError, json.JSONDecodeError):
+                return self.send_json({"error": "入力内容を確認してください"}, 400)
+            return self.send_json(data, status, {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
         customer_path = re.fullmatch(r"/api/customers/(\d+)(?:/visits/(\d+))?", p)
         if customer_path:
@@ -2555,13 +2634,20 @@ class Handler(
                             square(f"/v2/invoices/{iid}/cancel",
                                    body={"version": current["version"]})
                         elif row["status"] == "CONFIRMED" and current["status"] in ("PAID", "CANCELED", "CANCELLED", "REFUNDED", "PARTIALLY_REFUNDED"):
-                            pass  # Reservation cancellation never issues a refund.
+                            pass  # Refund job is queued after the cancellation is committed.
                         else:
                             return self.send_json({"error": "Squareの支払状態を確認してください"}, 409)
                     except Exception:
                         return self.send_json({"error": "請求書を停止できませんでした"}, 502)
                 c.execute("UPDATE reservations SET status='CANCELLED',cancellation_reason='MANUAL',cancelled_at=?,updated_at=? WHERE id=?",
                           (now_iso(), now_iso(), rid))
+                if row["status"] == "CONFIRMED":
+                    now = datetime.now(timezone(timedelta(hours=9)))
+                    visit = datetime.fromisoformat(row["visit_at"])
+                    if visit.tzinfo is None:
+                        visit = visit.replace(tzinfo=now.tzinfo)
+                    fee = row["amount"] if now.date() >= visit.astimezone(now.tzinfo).date() - timedelta(days=3) else 0
+                    refunds.enqueue(c, row, fee, now_iso())
                 c.commit()
                 return self.send_json({"ok": True})
             finally:
