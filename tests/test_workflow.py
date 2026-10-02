@@ -513,6 +513,49 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual([self.get(rid)["status"] for rid in ids],
                          ["CANCELLED", "INVOICED", "INVOICED", "CANCELLED", "INVOICED"])
         self.assertEqual(sum(path.endswith("/cancel") for path in calls), 1)
+        self.assertEqual(self.get(ids[0])["cancellation_reason"], "PAYMENT_EXPIRED")
+        self.assertEqual(self.get(ids[3])["cancellation_reason"], "PAYMENT_EXPIRED")
+
+    def test_cancel_confirmed_preserves_payment_and_does_not_refund(self):
+        for source, payment, invoice in (("DIRECT", None, None), ("WEB", "SQUARE", "paid-invoice"), ("PHONE", "BANK", "bank-invoice")):
+            rid = self.reservation(invoice_id=invoice)
+            c = run.con()
+            c.execute("UPDATE reservations SET status='CONFIRMED',source=?,payment_source=?,payment_confirmed_at='paid-at' WHERE id=?", (source, payment, rid))
+            c.commit(); c.close()
+            handler = run.Handler.__new__(run.Handler)
+            handler.path = f"/api/reservations/{rid}/cancel"
+            handler.auth = lambda: True
+            handler.send_json = lambda data, status=200: (status, data)
+            with patch.object(run, "square", return_value={"invoice": {"status": "CANCELED" if payment == "BANK" else "PAID"}}) as sq:
+                self.assertEqual(handler.do_POST()[0], 200)
+                self.assertTrue(all(call.kwargs.get("body") is None for call in sq.call_args_list))
+                sq.reset_mock()
+                self.assertEqual(handler.do_POST()[0], 200)
+                sq.assert_not_called()
+            row = self.get(rid)
+            self.assertEqual(row["status"], "CANCELLED")
+            self.assertEqual(row["cancellation_reason"], "MANUAL")
+            self.assertEqual(row["payment_source"], payment)
+            self.assertEqual(row["payment_confirmed_at"], "paid-at")
+            self.assertTrue(row["cancelled_at"])
+            with patch.object(run, "deliver_confirmation") as send:
+                run.process_square_event({"event_id": f"late-{rid}", "type": "invoice.payment_made", "data": {"object": {"invoice": {"id": invoice, "status": "PAID"}}}}, b"test")
+                send.assert_not_called()
+            self.assertEqual(self.get(rid)["status"], "CANCELLED")
+
+    def test_cancel_rejects_unauthenticated_and_unverified_payment(self):
+        rid = self.reservation()
+        handler = run.Handler.__new__(run.Handler)
+        handler.path = f"/api/reservations/{rid}/cancel"
+        handler.send_json = lambda data, status=200: (status, data)
+        handler.auth = lambda: False
+        self.assertEqual(handler.do_POST()[0], 401)
+        handler.auth = lambda: True
+        with patch.object(run, "square", return_value={"invoice": {"status": "PAID"}}):
+            self.assertEqual(handler.do_POST()[0], 409)
+        with patch.object(run, "square", side_effect=RuntimeError("offline")):
+            self.assertEqual(handler.do_POST()[0], 502)
+        self.assertEqual(self.get(rid)["status"], "INVOICED")
 
     def test_public_booking_uses_seasonal_price_and_holds_only_available_seats(self):
         today = datetime.now(timezone(timedelta(hours=9))).date()

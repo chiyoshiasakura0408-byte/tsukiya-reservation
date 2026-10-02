@@ -260,6 +260,8 @@ def con():
         "square_booking_id": "TEXT",
         "public_request_id": "TEXT",
         "cancellation_policy_accepted_at": "TEXT",
+        "cancellation_reason": "TEXT",
+        "cancelled_at": "TEXT",
         "confirmation_sent_at": "TEXT",
         "payment_source": "TEXT",
         "payment_confirmed_at": "TEXT",
@@ -944,8 +946,8 @@ def expire_public_reservations():
                 except Exception as exc:
                     print(f"Expiry check failed for reservation {row['id']}: {exc}")
                     continue
-            c.execute("UPDATE reservations SET status='CANCELLED',updated_at=? WHERE id=?",
-                      (now_iso(), row["id"]))
+            c.execute("UPDATE reservations SET status='CANCELLED',cancellation_reason='PAYMENT_EXPIRED',cancelled_at=?,updated_at=? WHERE id=?",
+                      (now_iso(), now_iso(), row["id"]))
             expired += 1
         c.commit()
     finally:
@@ -2541,20 +2543,25 @@ class Handler(
                 row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
                 if not row:
                     return self.send_json({"error": "not found"}, 404)
-                if row["status"] not in ("PENDING", "INVOICED", "ERROR"):
-                    return self.send_json({"error": "未決済の申込のみ取り消せます"}, 409)
+                if row["status"] == "CANCELLED":
+                    return self.send_json({"ok": True})
+                if row["status"] not in ("PENDING", "INVOICED", "ERROR", "CONFIRMED"):
+                    return self.send_json({"error": "この予約はキャンセルできません"}, 409)
                 if row["square_invoice_id"]:
                     try:
                         iid = row["square_invoice_id"]
                         current = square(f"/v2/invoices/{iid}")["invoice"]
-                        if current["status"] != "UNPAID":
+                        if current["status"] == "UNPAID":
+                            square(f"/v2/invoices/{iid}/cancel",
+                                   body={"version": current["version"]})
+                        elif row["status"] == "CONFIRMED" and current["status"] in ("PAID", "CANCELED", "CANCELLED", "REFUNDED", "PARTIALLY_REFUNDED"):
+                            pass  # Reservation cancellation never issues a refund.
+                        else:
                             return self.send_json({"error": "Squareの支払状態を確認してください"}, 409)
-                        square(f"/v2/invoices/{iid}/cancel",
-                               body={"version": current["version"]})
                     except Exception:
                         return self.send_json({"error": "請求書を停止できませんでした"}, 502)
-                c.execute("UPDATE reservations SET status='CANCELLED',updated_at=? WHERE id=?",
-                          (now_iso(), rid))
+                c.execute("UPDATE reservations SET status='CANCELLED',cancellation_reason='MANUAL',cancelled_at=?,updated_at=? WHERE id=?",
+                          (now_iso(), now_iso(), rid))
                 c.commit()
                 return self.send_json({"ok": True})
             finally:
