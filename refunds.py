@@ -51,7 +51,9 @@ def notify(app, job, reservation, stage):
         c.commit(); c.close()
         if not cur.rowcount: continue
         state=LABELS.get(stage,stage)
-        body=f"予約 #{job['reservation_id']} {reservation['guest_name']} 様\nご来店予定：{reservation['visit_at']}\n予約キャンセル受付済み\nキャンセル料：{job['fee']:,}円\n返金対象額：{job['amount']:,}円\n返金状況：{state}\n{DELAY}"
+        body=f"予約 #{job['reservation_id']} {reservation['guest_name']} 様\nご来店予定：{reservation['visit_at']}\n予約キャンセル受付済み\nキャンセル料：{job['fee']:,}円\n返金対象額：{job['amount']:,}円\n返金状況：{state}"
+        if job['amount'] > 0 and reservation['payment_source']=='SQUARE':
+            body+='\n'+DELAY
         if stage in ('MANUAL','FAILED','REJECTED'):
             body+='\n返金手続きは完了していません。店舗で確認・対応いたします。'
         if audience=='store':
