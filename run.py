@@ -1,5 +1,6 @@
 from email.utils import formataddr, parseaddr
 import refunds
+import line_bot
 import sys
 import os
 import re
@@ -1833,6 +1834,15 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        if p == "/api/line/status":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            return self.send_json(line_bot.status(DB), headers={"Cache-Control": "no-store"})
+
+        if p == "/webhooks/line":
+            return self.send_json({"service": "tsukiya-line-webhook", "version": 1,
+                                   "method": "POST", "delivery_enabled": False})
+
         if p == "/api/refunds":
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
@@ -2222,6 +2232,24 @@ class Handler(
         p = urlparse(
             self.path
         ).path
+
+        if p == "/webhooks/line":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if self.headers.get("Transfer-Encoding") or length <= 0:
+                    return self.send_json({"error": "invalid content length"}, 400)
+                if length > line_bot.MAX_BODY:
+                    return self.send_json({"error": "payload too large"}, 413)
+                self.connection.settimeout(10)
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    return self.send_json({"error": "incomplete body"}, 400)
+                status, result = line_bot.receive(DB, raw, self.headers.get("x-line-signature", ""))
+            except (ValueError, TypeError):
+                return self.send_json({"error": "invalid request"}, 400)
+            except Exception:
+                return self.send_json({"error": "webhook temporarily unavailable"}, 503)
+            return self.send_json(result, status, {"Cache-Control": "no-store"})
 
         if p in ("/api/public/cancellation/preview", "/api/public/cancellation/confirm"):
             try:
