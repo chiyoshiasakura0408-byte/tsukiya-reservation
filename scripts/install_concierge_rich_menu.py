@@ -87,6 +87,7 @@ def main():
     assert api('user/all/richmenu')['richMenuId'] == rich_id
     current = api('richmenu/' + rich_id)
     assert current['areas'] == spec['areas'] and current['selected'] is True
+    (backup.parent / 'concierge-rich-menu-ready').write_text(rich_id, encoding='utf-8')
     print('INSTALLED_AND_VERIFIED', rich_id, '5 buttons; default open', flush=True)
 
 

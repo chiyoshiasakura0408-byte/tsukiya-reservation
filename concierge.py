@@ -59,8 +59,9 @@ def put(c, key, value):
 
 def text_message(text, menu=True):
     message = {'type': 'text', 'text': elegant(re.sub(r'。(?![\n\s]|$)', '。\n\n', text))[:4900]}
-    # Navigation lives in the fixed rich menu. Only contextual choices (party size)
-    # add quick replies, so the old scrolling menu does not cover the new design.
+    # Keep navigation available until the fixed menu has been installed successfully.
+    if menu and not os.path.isfile(os.path.join(os.environ.get('DATA_DIR', '.'), 'concierge-rich-menu-ready')):
+        message['quickReply'] = {'items': [{'type': 'action', 'action': {'type': 'message', 'label': label, 'text': label}} for label in MENU]}
     return message
 
 

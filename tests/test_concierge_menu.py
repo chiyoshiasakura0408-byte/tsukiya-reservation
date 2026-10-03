@@ -81,7 +81,9 @@ class MenuFlow(unittest.TestCase):
         messages=self.send('コース内容')
         self.assertEqual([m['type'] for m in messages],['text','image','video'])
         self.assertIn('前菜。\n\n焼き蟹。',messages[0]['text'])
-        self.assertNotIn('quickReply', messages[0])
+        self.assertIn('年間スケジュール', [x['action']['label'] for x in messages[0]['quickReply']['items']])
+        with patch('concierge.os.path.isfile', return_value=True):
+            self.assertNotIn('quickReply', bot.text_message('ご案内'))
 
     def test_course_seasons_and_no_invented_summer_menu(self):
         text=menu.current_courses(self.courses)
