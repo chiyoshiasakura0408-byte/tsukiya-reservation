@@ -82,11 +82,11 @@ def briefing_html(db, day, font_data, session=None):
         note = escape(row['guest_note'] or '')
         details = []
         if request:
-            details.append('<div><strong>ケーキ・花束</strong><br>'+request+'</div>')
+            details.append('<div>'+request+'</div>')
         if plate:
-            details.append('<div><strong>プレート</strong><br>'+plate+'</div>')
+            details.append('<div>'+plate+'</div>')
         if note:
-            details.append('<div><strong>備考</strong><br>'+note+'</div>')
+            details.append('<div>'+note+'</div>')
         extra = '<aside>'+''.join(details)+'</aside>' if details else ''
         cards.append(f'<article><section><div class="meta">{time_label}　{seat}</div><div class="guest">{escape(row["guest_name"])} 様 <b>{row["party_size"]}名</b></div><div class="status">{status}</div></section>{extra}</article>')
     content = ''.join(cards) or '<article class="empty">本日の登録予約はありません</article>'
@@ -96,7 +96,7 @@ def briefing_html(db, day, font_data, session=None):
     *{{box-sizing:border-box}}body{{margin:0;background:#f5f2ec;color:#102b45;font-family:TsukiyaJP,sans-serif}}
     main{{width:720px;padding:32px}}h1{{font-size:34px;margin:0 0 12px}}header{{border-bottom:3px solid #b69b65;padding-bottom:22px;margin-bottom:24px}}
     .date{{font-size:30px}}.total{{font-size:25px;margin-top:12px}}article{{display:flex;gap:20px;align-items:flex-start;background:white;border:1px solid #d9d4c9;border-radius:16px;padding:24px;margin:16px 0;break-inside:avoid}}
-    .meta{{font-size:23px}}section{{flex:1;min-width:0}}.guest{{font-size:29px;margin:12px 0;overflow-wrap:anywhere}}b{{white-space:nowrap}}.status{{font-size:23px;color:#496451}}aside{{width:42%;flex-shrink:0;font-size:22px;background:#fff3cd;padding:14px;border-radius:10px;overflow-wrap:anywhere;white-space:pre-wrap}}aside div+div{{margin-top:12px}}aside strong{{font-size:20px;color:#826832}}.empty{{font-size:28px}}footer{{font-size:20px;color:#647080;margin-top:24px}}
+    .meta{{font-size:23px}}section{{flex:1;min-width:0}}.guest{{font-size:29px;margin:12px 0;overflow-wrap:anywhere}}b{{white-space:nowrap}}.status{{font-size:23px;color:#496451}}aside{{width:42%;flex-shrink:0;font-size:22px;background:#fff3cd;padding:14px;border-radius:10px;overflow-wrap:anywhere;white-space:pre-wrap}}aside div+div{{margin-top:12px}}.empty{{font-size:28px}}footer{{font-size:20px;color:#647080;margin-top:24px}}
     </style><main><header><h1>西天満 つきや｜本日のご予約</h1><div class="date">{escape(day)}　{escape(session or '')}</div><div class="total">{len(rows)}組・{total}名（未決済を含む）</div></header>{content}<footer>送信時点の予約情報です。変更は予約管理画面をご確認ください。</footer></main></html>'''
 
 
