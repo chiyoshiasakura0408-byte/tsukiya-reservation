@@ -91,9 +91,9 @@ def calendar_message(month=None):
             nav.append({'type': 'button', 'height': 'sm', 'action': {'type': 'postback', 'label': label, 'data': f'calendar:{target:%Y-%m}'}})
     bubble = {'type': 'bubble', 'size': 'mega', 'body': {'type': 'box', 'layout': 'vertical', 'spacing': 'md', 'contents': [
         {'type': 'text', 'text': '空席案内', 'weight': 'bold', 'size': 'lg', 'color': '#153D40'},
+        {'type': 'text', 'text': 'ご希望日をお選びください。\n次に人数を選択すると、空席をご案内します。\n\n日付の色は空席状況を示すものではありません。', 'size': 'xs', 'wrap': True, 'color': '#64716D'},
         {'type': 'text', 'text': f'{shown.year}年{shown.month}月', 'weight': 'bold', 'align': 'center'},
-        *rows,
-        {'type': 'text', 'text': 'ご希望日をお選びください。\n次に人数を選択すると、空席をご案内します。\n日付の色は空席状況を示すものではありません。', 'size': 'xs', 'wrap': True, 'color': '#64716D'}]}}
+        *rows]}}
     if nav:
         bubble['footer'] = {'type': 'box', 'layout': 'horizontal', 'contents': nav}
     return {'type': 'flex', 'altText': f'空席案内：{shown.year}年{shown.month}月のカレンダーから日付をお選びください', 'contents': bubble}

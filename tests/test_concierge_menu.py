@@ -81,7 +81,7 @@ class MenuFlow(unittest.TestCase):
         messages=self.send('コース内容')
         self.assertEqual([m['type'] for m in messages],['text','image','video'])
         self.assertIn('前菜。\n\n焼き蟹。',messages[0]['text'])
-        self.assertEqual([x['action']['label'] for x in messages[0]['quickReply']['items']][:5],['空席案内','ただいまのコース','コース内容','蟹の時期','VIP担当に相談'])
+        self.assertNotIn('quickReply', messages[0])
 
     def test_course_seasons_and_no_invented_summer_menu(self):
         text=menu.current_courses(self.courses)

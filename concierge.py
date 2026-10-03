@@ -59,8 +59,8 @@ def put(c, key, value):
 
 def text_message(text, menu=True):
     message = {'type': 'text', 'text': elegant(re.sub(r'。(?![\n\s]|$)', '。\n\n', text))[:4900]}
-    if menu:
-        message['quickReply'] = {'items': [{'type': 'action', 'action': {'type': 'message', 'label': label, 'text': label}} for label in MENU]}
+    # Navigation lives in the fixed rich menu. Only contextual choices (party size)
+    # add quick replies, so the old scrolling menu does not cover the new design.
     return message
 
 
@@ -301,7 +301,7 @@ def respond(c, user, command, lookup, courses, base_url):
             enqueue(c, owner, [text_message('【常連様からのご相談】受付 ' + request_id + '\n' + command + '\n回答はこちら：' + base_url + '/concierge', False)], channel='owner', kind='request')
         return [text_message('ご相談を受け付けました（受付番号 ' + request_id + '）。朝倉の確認・回答をお待ちください。この時点では予約・特別対応は確定していません。')]
     c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
-    return [text_message('西天満つきやのコンシェルジュでございます。\n\nお席のご相談や、お料理のご案内を承ります。\n\n下のメニューよりお選びください。')]
+    return [text_message('西天満つきやのコンシェルジュでございます。\n\nお席のご相談や、お料理のご案内を承ります。\n\nご希望の項目を、下の「ご案内メニュー」からお選びください ↓')]
 
 
 def receive(db, raw, signature, lookup, courses, base_url):
