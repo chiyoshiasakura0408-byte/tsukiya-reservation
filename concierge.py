@@ -19,7 +19,7 @@ from urllib.parse import urlencode, urlparse
 LOCK = threading.RLock()
 DELIVERY_LOCK = threading.Lock()
 JST = timezone(timedelta(hours=9))
-MENU = ['空席案内', 'ただいまのコース', 'コース内容', '蟹の時期', 'VIP担当に相談', '配信停止', '配信再開']
+MENU = ['空席案内', 'ただいまのコース', 'コース内容', '年間スケジュール', 'VIP担当に相談', '配信停止', '配信再開']
 
 
 def connect(db):
@@ -196,7 +196,8 @@ def pair_owner(db, events):
 def respond(c, user, command, lookup, courses, base_url):
     cat = catalog(c)
     command = {'空席': '空席案内', '空席確認': '空席案内', 'コース・料金': 'ただいまのコース',
-               '朝倉へ相談': 'VIP担当に相談', '写真': 'コース内容', '動画': 'コース内容', 'お品書き': 'コース内容'}.get(command, command)
+               '朝倉へ相談': 'VIP担当に相談', '写真': 'コース内容', '動画': 'コース内容', 'お品書き': 'コース内容',
+               '蟹の時期': '年間スケジュール', '空席・ご予約': '空席案内', 'お料理・お品書き': 'コース内容'}.get(command, command)
     if command in MENU or command.startswith(('calendar:', 'visit:')):
         c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
     if command == '空席案内' or command.startswith('calendar:'):
@@ -214,7 +215,7 @@ def respond(c, user, command, lookup, courses, base_url):
         return [message]
     if command == 'ただいまのコース':
         return [text_message(concierge_menu.current_courses(courses))]
-    if command == '蟹の時期':
+    if command == '年間スケジュール':
         return [text_message(concierge_menu.annual_courses(courses))]
     if command == 'コース内容':
         details = ['【コース内容】']

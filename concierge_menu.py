@@ -32,7 +32,7 @@ def current_courses(courses):
 
 
 def annual_courses(courses):
-    lines = ['【蟹の時期】', '年間のコーススケジュール']
+    lines = ['【年間スケジュール】', '年間のコーススケジュール']
     for key in ('matsuba-fukahire',):
         if key in courses:
             lines.append('1月1日〜3月20日\n' + courses[key][0])

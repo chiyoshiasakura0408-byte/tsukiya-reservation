@@ -16,7 +16,7 @@ def definition():
         (0, 124, 768, 306, '空席・ご予約', '空席案内'),
         (768, 124, 768, 306, 'ただいまのコース', 'ただいまのコース'),
         (0, 430, 768, 303, 'お料理・お品書き', 'コース内容'),
-        (768, 430, 768, 303, '蟹の時期', '蟹の時期'),
+        (768, 430, 768, 303, '年間スケジュール', '年間スケジュール'),
         (0, 733, 1536, 291, 'VIP担当に相談', 'VIP担当に相談'),
     ]
     return {
@@ -50,6 +50,8 @@ def main():
         req = urllib.request.Request(host + '/v2/bot/' + path, data=body, headers=headers, method=method)
         with urllib.request.urlopen(req, timeout=30) as response:
             raw = response.read()
+            if image and method == 'GET':
+                return raw
             return json.loads(raw) if raw else {}
 
     bot = api('info')
@@ -73,8 +75,14 @@ def main():
     menus = api('richmenu/list')['richmenus']
     match = next((m for m in menus if m['name'] == spec['name'] and m['areas'] == spec['areas']), None)
     rich_id = match['richMenuId'] if match else api('richmenu', 'POST', spec)['richMenuId']
-    # Re-uploading the same asset makes retries safe after a partially finished run.
-    api('richmenu/' + rich_id + '/content', 'POST', IMAGE.read_bytes(), image=True)
+    try:
+        installed_image = api('richmenu/' + rich_id + '/content', image=True)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        installed_image = None
+    if installed_image is None:
+        api('richmenu/' + rich_id + '/content', 'POST', IMAGE.read_bytes(), image=True)
     api('user/all/richmenu/' + rich_id, 'POST')
     assert api('user/all/richmenu')['richMenuId'] == rich_id
     current = api('richmenu/' + rich_id)
