@@ -3,7 +3,7 @@ services:
     name: tsukiya-reservation
     runtime: python
     plan: 0.5c-512mb
-    buildCommand: "echo 'No external Python packages required'"
+    buildCommand: "pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium"
     startCommand: "python3 run.py"
     healthCheckPath: /health
     envVars:

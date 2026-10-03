@@ -1,6 +1,7 @@
 from email.utils import formataddr, parseaddr
 import refunds
 import line_bot
+import line_delivery
 import sys
 import os
 import re
@@ -1696,6 +1697,8 @@ class Handler(
         fmt,
         *args
     ):
+        if self.path.startswith("/line-image/"):
+            return
         print(
             "%s - - [%s] %s"
             % (
@@ -1834,10 +1837,28 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        if p.startswith("/line-image/"):
+            q = parse_qs(u.query)
+            path = line_delivery.image_path(DB, p.rsplit("/",1)[-1], (q.get("expires") or [""])[0], (q.get("sig") or [""])[0])
+            if not path:
+                return self.send_error(404)
+            data = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "private, no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if p == "/line-settings":
+            if not self.auth():
+                return self.redirect("/login")
+            return self.send_html((BASE / "public" / "line-settings.html").read_text(), loader=False)
+
         if p == "/api/line/status":
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
-            return self.send_json(line_bot.status(DB), headers={"Cache-Control": "no-store"})
+            return self.send_json({**line_bot.status(DB), **line_delivery.status(DB)}, headers={"Cache-Control": "no-store"})
 
         if p == "/webhooks/line":
             return self.send_json({"service": "tsukiya-line-webhook", "version": 1,
@@ -2232,6 +2253,25 @@ class Handler(
         p = urlparse(
             self.path
         ).path
+
+        if p in ("/api/line/test", "/api/line/enable", "/api/line/disable"):
+            if not self.auth():
+                return self.send_json({"error":"unauthorized"},401)
+            if self.headers.get("X-Tsukiya-Action") != "line-settings":
+                return self.send_json({"error":"invalid request"},403)
+            try:
+                if p.endswith("test"):
+                    result = line_delivery.deliver(DB, PORT, ADMIN_TOKEN, APP_BASE_URL)
+                else:
+                    if p.endswith("enable"):
+                        info = line_delivery.status(DB)
+                        if not any(r['state']=='SENT' for r in info['deliveries']):
+                            return self.send_json({"error":"先にテスト送信を完了してください"},409)
+                    line_delivery.enable(DB,p.endswith("enable"))
+                    result = {"ok":True}
+                return self.send_json(result)
+            except Exception as e:
+                return self.send_json({"error":str(e) if isinstance(e,RuntimeError) else type(e).__name__},503)
 
         if p == "/webhooks/line":
             try:
@@ -3110,6 +3150,7 @@ if __name__ == "__main__":
     c = con()
     c.close()
     threading.Thread(target=expiry_loop, daemon=True).start()
+    threading.Thread(target=line_delivery.loop, args=(DB, PORT, ADMIN_TOKEN, APP_BASE_URL), daemon=True).start()
 
     print(
         f"Tsukiya reservation server starting on :{PORT}"
