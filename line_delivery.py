@@ -101,11 +101,11 @@ def capture(db, day, port, admin, base_url):
             old.unlink(missing_ok=True)
     stem = uuid.uuid4().hex
     original = folder / (stem + '-original.jpg')
-    font = folder / 'NotoSansCJKjp-Regular.otf'
+    font = folder / 'NotoSerifCJKjp-Regular.otf'
     if not font.exists():
-        req = urllib.request.Request('https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf')
+        req = urllib.request.Request('https://raw.githubusercontent.com/notofonts/noto-cjk/main/Serif/OTF/Japanese/NotoSerifCJKjp-Regular.otf')
         with urllib.request.urlopen(req, timeout=60) as response:
-            data = response.read(25_000_000)
+            data = response.read(35_000_000)
         if data[:4] != b'OTTO' or len(data) < 1_000_000:
             raise RuntimeError('日本語フォントを取得できませんでした')
         temp = font.with_suffix('.tmp')
