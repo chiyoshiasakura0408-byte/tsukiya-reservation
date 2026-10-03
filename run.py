@@ -1,6 +1,7 @@
 from email.utils import formataddr, parseaddr
 import refunds
 import line_bot
+import concierge
 import line_delivery
 import line_receipts
 import sys
@@ -1689,6 +1690,24 @@ def crab_video(number):
     return base64.b64decode((BASE / "public" / "assets" / f"crab-{number}.mp4.b64").read_text(), validate=True)
 
 
+def concierge_availability(day, party):
+    expire_public_reservations()
+    slots = []
+    c = con()
+    try:
+        for course in PUBLIC_COURSES:
+            for clock, round_number in (("18:00", 1), ("20:30", 2)):
+                if not public_slot_allowed(day, clock, course):
+                    continue
+                for area in ("COUNTER", "PRIVATE"):
+                    rooms = ("COUNTER",) if area == "COUNTER" else ROOMS
+                    if any(public_party_allowed(room, party) and availability_check(c, room, str(day)+"T"+clock, party, round_number if room == "COUNTER" else None, 150)[0] for room in rooms):
+                        slots.append({"course": course, "area": area, "time": clock})
+        return slots
+    finally:
+        c.close()
+
+
 class Handler(
     BaseHTTPRequestHandler
 ):
@@ -1837,6 +1856,17 @@ class Handler(
     def do_GET(self):
         u = urlparse(self.path)
         p = u.path
+
+        if p == "/concierge":
+            if not self.auth():
+                return self.redirect("/login")
+            return self.send_html((BASE / "public" / "concierge.html").read_text(), loader=False)
+        if p == "/api/concierge/status":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            return self.send_json(concierge.status(DB), headers={"Cache-Control": "no-store"})
+        if p == "/webhooks/concierge":
+            return self.send_json({"service": "tsukiya-customer-concierge", "version": 1})
 
         if p.startswith("/line-image/"):
             q = parse_qs(u.query)
@@ -2254,6 +2284,30 @@ class Handler(
         p = urlparse(
             self.path
         ).path
+
+        if p in ("/webhooks/concierge", "/api/concierge/configure"):
+            admin = p == "/api/concierge/configure"
+            if admin and not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if admin and self.headers.get("X-Tsukiya-Action") != "concierge":
+                return self.send_json({"error": "invalid request"}, 403)
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if self.headers.get("Transfer-Encoding") or not 0 < length <= 1024*1024:
+                    return self.send_json({"error": "invalid request"}, 400)
+                self.connection.settimeout(10)
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    return self.send_json({"error": "invalid request"}, 400)
+                if admin:
+                    result = concierge.configure(DB, json.loads(raw))
+                    return self.send_json(result, headers={"Cache-Control": "no-store"})
+                code, result = concierge.receive(DB, raw, self.headers.get("X-Line-Signature", ""), concierge_availability, PUBLIC_COURSES, APP_BASE_URL or "https://tsukiya-reservation.onrender.com")
+                return self.send_json(result, code, headers={"Cache-Control": "no-store"})
+            except (ValueError, TypeError, AttributeError) as exc:
+                return self.send_json({"error": str(exc) if admin else "invalid request"}, 400)
+            except Exception:
+                return self.send_json({"error": "temporarily unavailable"}, 503)
 
         if p == "/api/line/receipt-bridge":
             if not self.auth():
@@ -3188,6 +3242,7 @@ class Handler(
 if __name__ == "__main__":
     c = con()
     c.close()
+    threading.Thread(target=concierge.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=expiry_loop, daemon=True).start()
     threading.Thread(target=line_receipts.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=line_delivery.loop, args=(DB, PORT, ADMIN_TOKEN, APP_BASE_URL), daemon=True).start()

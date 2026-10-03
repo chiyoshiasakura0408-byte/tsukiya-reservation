@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import line_receipts
+import concierge
 from datetime import datetime, timezone
 
 MAX_BODY = 1024 * 1024
@@ -77,6 +78,7 @@ def receive(db, raw, signature):
             c.execute('INSERT OR REPLACE INTO line_connection_state VALUES (?,?)', ('last_verified_at', now))
     finally:
         c.close()
+    concierge.pair_owner(db, events)
     return 200, {'ok': True, 'received': received}
 
 
