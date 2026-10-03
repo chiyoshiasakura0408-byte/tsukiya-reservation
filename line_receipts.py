@@ -12,11 +12,12 @@ import urllib.request
 import urllib.error
 
 GROUP = 'Cc95ce7808ee54a2a3d19a4a7b7d78818'
-RELAY = 'https://tsukiya-line-receiver.chiyoshi-a-0408.chatgpt.site/webhook'
+RELAY = 'https://tsukiya-line-receiver.chiyoshi-a-0408.chatgpt.site/receipt-relay'
 LOCK = threading.Lock()
 MAX_IMAGE = 12 * 1024 * 1024
 
 def schema(c):
+    c.execute('CREATE TABLE IF NOT EXISTS receipt_bridge_config(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
     c.execute('CREATE TABLE IF NOT EXISTS receipt_relay(id TEXT PRIMARY KEY, body BLOB NOT NULL, signature TEXT NOT NULL, created REAL NOT NULL, next_try REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT \'pending\', error TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS receipt_images(message_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, created REAL NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0)')
     c.execute('CREATE INDEX IF NOT EXISTS receipt_relay_pending ON receipt_relay(state,next_try)')
@@ -53,7 +54,11 @@ def drain(db):
             c.commit()
             if not row: return
             try:
-                req = urllib.request.Request(RELAY, data=row[1], headers={'Content-Type':'application/json','X-Line-Signature':row[2]})
+                secret = bridge_secret(db)
+                if not secret: raise RuntimeError('bridge not configured')
+                stamp = str(int(time.time()))
+                signature = base64.b64encode(hmac.new(secret.encode(),b'tsukiya-receipt-relay-v1\n'+stamp.encode()+b'\n'+row[1],hashlib.sha256).digest()).decode()
+                req = urllib.request.Request(RELAY, data=row[1], headers={'Content-Type':'application/json','X-Tsukiya-Relay-Signature':signature,'X-Tsukiya-Relay-Time':stamp})
                 with urllib.request.urlopen(req, timeout=15) as r:
                     if r.status != 200: raise RuntimeError()
                 c.execute("UPDATE receipt_relay SET state='forwarded',body=X'',signature='',error=NULL WHERE id=?", (row[0],))
@@ -70,7 +75,7 @@ def loop(db):
         time.sleep(5)
 
 def content(db, raw, signature):
-    secret = os.getenv('LINE_CHANNEL_SECRET', '').strip()
+    secret = bridge_secret(db)
     expected = hmac.new(secret.encode(), b'tsukiya-receipt-content-v1\n'+raw, hashlib.sha256).hexdigest()
     if not secret or not hmac.compare_digest(expected, signature): return 403, b'', ''
     try:
@@ -103,5 +108,21 @@ def status(db):
         schema(c)
         counts=dict(c.execute('SELECT state,COUNT(*) FROM receipt_relay GROUP BY state'))
         error=c.execute('SELECT error FROM receipt_relay WHERE error IS NOT NULL ORDER BY created DESC LIMIT 1').fetchone()
-        return {'receipt_import_enabled':True,'receipt_relay':counts,'receipt_relay_error':error[0] if error else None}
+        return {'receipt_import_enabled':bool(bridge_secret(db)),'receipt_relay':counts,'receipt_relay_error':error[0] if error else None}
+    finally:c.close()
+
+def bridge_secret(db):
+    c=sqlite3.connect(db,timeout=30)
+    try:
+        schema(c)
+        row=c.execute("SELECT value FROM receipt_bridge_config WHERE key='secret'").fetchone()
+        return row[0] if row else ''
+    finally:c.close()
+
+def configure(db,secret):
+    if not isinstance(secret,str) or not re.fullmatch(r'[0-9a-f]{64}',secret):raise ValueError('invalid key')
+    c=sqlite3.connect(db,timeout=30)
+    try:
+        schema(c)
+        with c:c.execute("INSERT INTO receipt_bridge_config VALUES('secret',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(secret,))
     finally:c.close()

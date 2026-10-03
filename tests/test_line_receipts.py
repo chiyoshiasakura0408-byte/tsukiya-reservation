@@ -3,14 +3,14 @@ from unittest.mock import patch,MagicMock
 import line_bot,line_receipts as r
 class RelayTests(unittest.TestCase):
  def setUp(self):
-  self.tmp=tempfile.TemporaryDirectory();self.db=self.tmp.name+'/db';self.env=patch.dict(os.environ,{'LINE_CHANNEL_SECRET':'test','LINE_CHANNEL_ACCESS_TOKEN':'token'});self.env.start()
+  self.tmp=tempfile.TemporaryDirectory();self.db=self.tmp.name+'/db';self.env=patch.dict(os.environ,{'LINE_CHANNEL_SECRET':'test','LINE_CHANNEL_ACCESS_TOKEN':'token'});self.env.start();r.configure(self.db,"a"*64)
  def tearDown(self):self.env.stop();self.tmp.cleanup()
  def receive(self,mid='123',group=r.GROUP,kind='message'):
   event={'webhookEventId':'e'+mid+kind,'type':kind,'timestamp':int(time.time()*1000),'source':{'type':'group','groupId':group},'message':{'id':mid,'type':'image'},'unsend':{'messageId':mid}}
   body=json.dumps({'destination':'test','events':[event]}).encode();sig=base64.b64encode(hmac.new(b'test',body,hashlib.sha256).digest()).decode()
   return line_bot.receive(self.db,body,sig)
  def request(self,mid='123',stamp=None):
-  body=json.dumps({'message_id':mid,'group_id':r.GROUP,'timestamp':stamp or int(time.time())}).encode();sig=hmac.new(b'test',b'tsukiya-receipt-content-v1\n'+body,hashlib.sha256).hexdigest();return body,sig
+  body=json.dumps({'message_id':mid,'group_id':r.GROUP,'timestamp':stamp or int(time.time())}).encode();sig=hmac.new(b'a'*64,b'tsukiya-receipt-content-v1\n'+body,hashlib.sha256).hexdigest();return body,sig
  def test_dedup_and_allowlist(self):
   self.receive();self.receive();self.receive('124','Cother');c=sqlite3.connect(self.db);self.assertEqual(c.execute('select count(*) from receipt_relay').fetchone()[0],1);c.close()
  def test_protected_content(self):

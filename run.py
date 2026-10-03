@@ -2255,6 +2255,22 @@ class Handler(
             self.path
         ).path
 
+        if p == "/api/line/receipt-bridge":
+            if not self.auth():
+                return self.send_json({"error":"unauthorized"},401)
+            if self.headers.get("X-Tsukiya-Action") != "line-settings":
+                return self.send_json({"error":"invalid request"},403)
+            try:
+                length=int(self.headers.get("Content-Length", "0"))
+                if self.headers.get("Transfer-Encoding") or not 0 < length <= 512:
+                    return self.send_json({"error":"invalid request"},400)
+                self.connection.settimeout(10)
+                data=json.loads(self.rfile.read(length))
+                line_receipts.configure(DB,data.get("secret"))
+                return self.send_json({"ok":True})
+            except (ValueError,TypeError,AttributeError):
+                return self.send_json({"error":"invalid request"},400)
+
         if p == "/api/line/receipt-content":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
