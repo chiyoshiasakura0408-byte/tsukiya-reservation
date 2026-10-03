@@ -333,7 +333,7 @@ def con():
         updated_at TEXT NOT NULL
     )""")
     customer_cols = {row["name"] for row in c.execute("PRAGMA table_info(customers)")}
-    for field in ("allergies", "disliked_foods", "preferred_seat", "preferred_drinks", "preferred_crab", "return_transport", "alcohol_service"):
+    for field in ("allergies", "disliked_foods", "preferred_seat", "preferred_drinks", "preferred_crab", "return_transport", "alcohol_service", "soft_drink_only"):
         if field not in customer_cols:
             c.execute(f"ALTER TABLE customers ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
     c.execute("CREATE INDEX IF NOT EXISTS reservations_customer_idx ON reservations(customer_id)")
@@ -2089,7 +2089,7 @@ class Handler(
                 sync_customers(c)
                 if p == "/api/customers":
                     rows = [dict(row) for row in c.execute("""SELECT c.id,c.name,c.company_name,c.receipt_name,c.phone,c.email,c.note,
-                        c.allergies,c.disliked_foods,c.preferred_seat,c.preferred_drinks,c.preferred_crab,c.return_transport,c.alcohol_service,
+                        c.allergies,c.disliked_foods,c.preferred_seat,c.preferred_drinks,c.preferred_crab,c.return_transport,c.alcohol_service,c.soft_drink_only,
                         COUNT(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN 1 END) AS visit_count,
                         MAX(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN r.visit_at END) AS last_visit
                         FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id
@@ -2097,7 +2097,7 @@ class Handler(
                     return self.send_json(rows)
                 customer_id = int(p.rsplit("/", 1)[1])
                 row = c.execute("""SELECT id,name,company_name,receipt_name,phone,email,note,
-                    allergies,disliked_foods,preferred_seat,preferred_drinks,preferred_crab,return_transport,alcohol_service FROM customers WHERE id=?""", (customer_id,)).fetchone()
+                    allergies,disliked_foods,preferred_seat,preferred_drinks,preferred_crab,return_transport,alcohol_service,soft_drink_only FROM customers WHERE id=?""", (customer_id,)).fetchone()
                 if not row:
                     return self.send_json({"error": "顧客が見つかりません"}, 404)
                 visits = [dict(v) for v in c.execute("""SELECT id,visit_at,party_size,course_name,seating_area,status,
@@ -2499,11 +2499,15 @@ class Handler(
                           {"name": 100, "company_name": 150, "receipt_name": 150,
                            "phone": 50, "email": 254, "note": 2000,
                            "allergies": 1000, "disliked_foods": 1000,
-                           "preferred_seat": 500, "preferred_drinks": 1000, "preferred_crab": 1000, "return_transport": 1000, "alcohol_service": 10})
+                           "preferred_seat": 500, "preferred_drinks": 1000, "preferred_crab": 1000, "return_transport": 1000, "alcohol_service": 10, "soft_drink_only": 1})
                 if not x or any(k not in fields or not isinstance(v, str) or len(v) > fields[k]
                                 for k, v in x.items()):
                     raise ValueError("入力項目または文字数を確認してください")
                 values = {k: v.strip() for k, v in x.items()}
+                if "soft_drink_only" in values and values["soft_drink_only"] not in ("0","1"):
+                    raise ValueError("ソフトドリンク欄を確認してください")
+                if "alcohol_service" in values and values["alcohol_service"] not in ("","可","不可"):
+                    raise ValueError("飲酒案内の可否を確認してください")
                 if "name" in values and not values["name"]:
                     raise ValueError("名前を入力してください")
                 if "email" in values and values["email"] and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", values["email"]):

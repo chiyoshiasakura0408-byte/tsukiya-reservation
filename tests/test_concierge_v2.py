@@ -37,7 +37,7 @@ class ConciergeV2(unittest.TestCase):
         return messages[1]['template']['actions'][0]['uri'].split('#')[1]
 
     def test_booking_no_square_and_idempotency(self):
-        token=self.proposal();data={'guest_name':'テスト','phone':'09012345678','email':'test@example.com','cancellation_policy_accepted':True}
+        token=self.proposal();data={'guest_name':'テスト','phone':'09012345678','email':'test@example.com','cancellation_policy_accepted':True,'celebration_items':['花束','ホールケーキ'],'plate_message':'Happy Birthday','guest_note':'卵不可'}
         with patch.object(run,'square',side_effect=AssertionError('must not charge')),patch.object(run,'deliver_confirmation',side_effect=lambda x:x):
             first=concierge_booking.booking(run,token,data)
             second=concierge_booking.booking(run,token,data)
@@ -45,6 +45,7 @@ class ConciergeV2(unittest.TestCase):
         c=run.con();row=c.execute('SELECT * FROM reservations').fetchone();c.close()
         self.assertEqual(row['source'],'CONCIERGE_LINE');self.assertEqual(row['status'],'CONFIRMED');self.assertIsNone(row['square_invoice_id'])
         self.assertEqual(row['amount'],120000)
+        self.assertEqual(row['celebration_items'],'花束,ホールケーキ');self.assertEqual(row['plate_message'],'Happy Birthday');self.assertEqual(row['guest_note'],'卵不可')
 
     def test_booking_rechecks_sold_out_and_consent(self):
         token=self.proposal()

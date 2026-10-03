@@ -42,6 +42,8 @@ def booking(app, token, data=None):
             fields[key]=value.strip()
         if not fields['guest_name'] or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',fields['email']) or not re.fullmatch(r'[+\d ()-]{7,50}',fields['phone']):
             raise ValueError('お名前・電話番号・メールアドレスをご確認ください。')
+        note,celebrations,plate=app.guest_requests(data)
+        fields['guest_note']=note
         day = date.fromisoformat(slot['date'])
         if not app.public_slot_allowed(day, slot['time'], slot['course']):
             raise ValueError('この日時は現在ご予約いただけません。')
@@ -65,16 +67,14 @@ def booking(app, token, data=None):
             VALUES('CONCIERGE_LINE',?,?,?,?,?,?,?,?,?,150,'CONFIRMED',?,?,?,?,?,?)''',
             (fields['guest_name'],fields['phone'],fields['email'],visit_at,party,course[0],result['amount'],room,round_number if room=='COUNTER' else None,now,now,fields['guest_note'],customer_id,'concierge:'+hashed,now))
         rid = cursor.lastrowid
+        c.execute('UPDATE reservations SET celebration_items=?,plate_message=? WHERE id=?',(celebrations,plate,rid))
         c.execute('UPDATE concierge_proposals SET reservation_id=? WHERE hash=?',(rid,hashed))
         concierge.enqueue(c,proposal['user_id'],[concierge.text_message(f"ご予約を承りました。\n{slot['date']} {slot['time']}・{party}名様\n受付番号 {rid}\n前受けのお支払いはございません。ご来店を心よりお待ち申し上げております。")])
-        if fields['guest_note']:
-            request_id = 'booking-'+str(rid)
-            c.execute('INSERT INTO concierge_requests(id,user_id,body,created) VALUES(?,?,?,?)',(request_id,proposal['user_id'],fields['guest_note'],time.time()))
-            owner=concierge.setting(c,'owner')
-            if owner: concierge.enqueue(c,owner,[concierge.text_message('【LINE予約のご要望】受付 '+str(rid)+'\n'+fields['guest_note'],False)],channel='owner',kind='request')
         row = dict(c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone())
         c.commit()
     finally:
         c.close()
+    import guest_service
+    guest_service.sync_requests(app)
     app.deliver_confirmation(row)
     return {'reservation_id':rid,'status':'CONFIRMED','confirmed':True}

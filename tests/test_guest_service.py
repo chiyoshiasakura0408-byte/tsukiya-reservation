@@ -16,6 +16,7 @@ class GuestServiceTests(unittest.TestCase):
         c=run.con();c.close();c=care.connect(run)
         with c:bot.put(c,'care_enabled','1');bot.put(c,'enabled','1');bot.put(c,'care_started','2000-01-01')
         c.close();self.now=datetime.now(bot.JST).replace(hour=12,minute=0,second=0,microsecond=0)
+        clock=patch.object(care,'datetime',wraps=datetime);self.clock=clock.start();self.clock.now.return_value=self.now;self.addCleanup(clock.stop)
 
     def reservation(self,name='お客様',days=0,drink='日本酒',allowed='可',source='DIRECT',paid=False):
         c=run.con();ts=run.now_iso();day=(self.now.date()+timedelta(days=days)).isoformat()
@@ -43,7 +44,7 @@ class GuestServiceTests(unittest.TestCase):
         for source in ['DIRECT','CONCIERGE_LINE','PUBLIC','PHONE']:
             self.reservation(source,days=3,source=source)
         self.reservation('明日',days=1)
-        care.plan(run,self.now.replace(hour=8));self.assertEqual(len(self.jobs()),0)
+        care.plan(run,self.now.replace(hour=11));self.assertEqual(len(self.jobs()),0)
         care.plan(run,self.now);care.plan(run,self.now)
         self.assertEqual(sum(j['kind']=='reminder' for j in self.jobs()),4)
 
@@ -87,5 +88,43 @@ class GuestServiceTests(unittest.TestCase):
             bot.put(c,'owner','owner-id')
             result=bot.respond(c,'line-'+str(cid),'忘れ物について確認をお願いします',None,run.PUBLIC_COURSES,'https://example.com')
         self.assertIn('受け付け',result[0]['text']);self.assertEqual(c.execute('SELECT count(*) FROM concierge_requests').fetchone()[0],1);c.close()
+
+    def test_soft_drink_checkbox_overrides_permission(self):
+        rid,cid=self.reservation();self.sake();care.plan(run,self.now)
+        c=care.connect(run)
+        with c:c.execute("UPDATE customers SET soft_drink_only='1' WHERE id=?",(cid,))
+        c.close();care.deliver(run)
+        self.assertEqual(next(j for j in self.jobs() if j['kind']=='sake')['state'],'cancelled')
+
+    def test_thanks_waits_four_hours_and_refreshes_next_booking(self):
+        rid,cid=self.reservation(paid=True);care.plan(run,self.now)
+        job=next(j for j in self.jobs() if j['kind']=='thanks')
+        with patch.object(care.time,'time',return_value=job['due']-1):care.deliver(run)
+        self.assertEqual(self.jobs()[0]['state'],'pending')
+        c=run.con()
+        with c:c.execute("INSERT INTO reservations(source,guest_name,visit_at,party_size,course_name,amount,status,customer_id,created_at,updated_at) VALUES('DIRECT','お客様','2099-01-01T18:00',2,'次回',120000,'CONFIRMED',?,'now','now')",(cid,))
+        c.close()
+        with patch.object(care.time,'time',return_value=job['due']):care.deliver(run)
+        self.assertEqual(self.jobs()[0]['state'],'queued');self.assertIn('2099-01-01',self.jobs()[0]['body'])
+
+    def test_stock_drafts_restrict_group_and_deduplicate(self):
+        import line_delivery
+        event={'webhookEventId':'stock-event','type':'message','source':{'type':'group','groupId':line_delivery.TARGET},'message':{'type':'text','text':f'隠し酒登録\n銘柄：テスト銘柄\n在庫：6杯\n提供日：{self.now.date()}'}}
+        care.receive_stock(run.DB,[event,event]);care.drain_stock(run);care.drain_stock(run)
+        c=care.connect(run);rows=c.execute('SELECT * FROM premium_sake').fetchall()
+        self.assertEqual(len(rows),1);self.assertEqual(rows[0]['approved'],0);self.assertEqual(rows[0]['stock'],6)
+        self.assertEqual(c.execute("SELECT count(*) FROM concierge_outbox WHERE kind='stock-draft'").fetchone()[0],1);c.close()
+        event['webhookEventId']='outside';event['source']['groupId']='other'
+        care.receive_stock(run.DB,[event]);care.drain_stock(run)
+        c=care.connect(run);self.assertEqual(c.execute('SELECT count(*) FROM premium_sake').fetchone()[0],1);c.close()
+
+    def test_reservation_fields_owner_handoff_once(self):
+        rid,_=self.reservation(days=3);c=care.connect(run)
+        with c:
+            c.execute("UPDATE reservations SET celebration_items='花束',guest_note='記念日、卵不可' WHERE id=?",(rid,));bot.put(c,'owner','owner-id')
+        c.close();care.sync_requests(run);care.sync_requests(run)
+        c=care.connect(run);rows=c.execute('SELECT * FROM concierge_requests').fetchall()
+        self.assertEqual(len(rows),1);self.assertIn('花束',rows[0]['body']);self.assertIn('卵不可',rows[0]['body'])
+        self.assertEqual(c.execute("SELECT count(*) FROM concierge_outbox WHERE kind='request'").fetchone()[0],1);c.close()
 
 if __name__=='__main__':unittest.main()

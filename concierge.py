@@ -153,6 +153,8 @@ def configure(db, data):
                     row = c.execute('SELECT * FROM concierge_requests WHERE id=?', (data.get('id'),)).fetchone()
                     if not row or row['status'] != '未回答':
                         raise ValueError('未回答のご相談が見つかりません')
+                    if row['user_id'].startswith('booking:'):
+                        raise ValueError('予約に登録された連絡先へ回答してください')
                     if row['user_id'].startswith('ig:') and len(body.strip())>950:
                         raise ValueError('Instagramへの回答は950文字以内で入力してください')
                     if setting(c, 'instagram_enabled' if row['user_id'].startswith('ig:') else 'enabled') != '1':
@@ -356,6 +358,7 @@ def deliver(db):
                     continue
                 if row['kind'] == 'guest-service':
                     import guest_service
+                    if not guest_service.ready_delivery(c,row['id']):continue
                     if not guest_service.validate_delivery(c,row['id']):
                         with c:c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE id=?",(row['id'],))
                         continue

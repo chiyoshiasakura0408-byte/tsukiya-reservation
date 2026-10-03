@@ -24,7 +24,19 @@ def connect(app):
     CREATE TABLE IF NOT EXISTS guest_payments(id TEXT PRIMARY KEY,reservation_id INTEGER,amount INTEGER NOT NULL,state TEXT NOT NULL,created REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS premium_sake(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,photo TEXT NOT NULL,sources TEXT NOT NULL,stock INTEGER NOT NULL,day TEXT NOT NULL,approved INTEGER NOT NULL DEFAULT 0);
     ''')
+    cols={r['name'] for r in c.execute('PRAGMA table_info(guest_jobs)')}
+    if 'due' not in cols:
+        c.execute('ALTER TABLE guest_jobs ADD COLUMN due REAL NOT NULL DEFAULT 0')
+        for job in c.execute("SELECT * FROM guest_jobs WHERE kind='thanks' AND state IN ('pending','blocked','queued')").fetchall():
+            r=c.execute('SELECT payment_confirmed_at FROM reservations WHERE id=?',(job['reservation_id'],)).fetchone()
+            paid=parse_time(r[0] if r else None,job['created'])
+            c.execute('UPDATE guest_jobs SET due=? WHERE id=?',(paid+4*3600,job['id']))
+    if 'paid_at' not in {r['name'] for r in c.execute('PRAGMA table_info(guest_payments)')}:
+        c.execute('ALTER TABLE guest_payments ADD COLUMN paid_at REAL')
+        c.execute('UPDATE guest_payments SET paid_at=created WHERE paid_at IS NULL')
+    c.commit()
     if not bot.setting(c,'care_started'):
+
         with c:
             bot.put(c,'care_started',app.now_iso())
             bot.put(c,'care_enabled','0')
@@ -111,8 +123,15 @@ def summary(app,r):
     return (f"Date: {r['visit_at'].replace('T',' ')} (Japan time)\nGuests: {r['party_size']}\nCourse: {r['course_name']}\n"+app.annex_message(r,True)) if english else f"日時：{r['visit_at'].replace('T',' ')}\n人数：{r['party_size']}名様\nお料理：{r['course_name']}\n"+app.annex_message(r,False)
 
 
-def insert(c,key,rid,kind,body):
-    c.execute('INSERT OR IGNORE INTO guest_jobs(id,reservation_id,kind,body,created) VALUES(?,?,?,?,?)',(key,rid,kind,json.dumps(body,ensure_ascii=False),time.time()))
+def parse_time(value,fallback=None):
+    try:
+        dt=datetime.fromisoformat(value.replace('Z','+00:00'))
+        return (dt if dt.tzinfo else dt.replace(tzinfo=bot.JST)).timestamp()
+    except (ValueError,TypeError,AttributeError):return time.time() if fallback is None else fallback
+
+
+def insert(c,key,rid,kind,body,due=0):
+    c.execute('INSERT OR IGNORE INTO guest_jobs(id,reservation_id,kind,body,created,due) VALUES(?,?,?,?,?,?)',(key,rid,kind,json.dumps(body,ensure_ascii=False),time.time(),due))
 
 
 def plan(app,now=None):
@@ -122,7 +141,7 @@ def plan(app,now=None):
         with c:
             if bot.setting(c,'care_enabled')!='1':return
             target=(now.date()+timedelta(days=3)).isoformat()
-            if now.hour>=9:
+            if now.hour>=12:
                 for record in c.execute("SELECT * FROM reservations WHERE status='CONFIRMED' AND substr(visit_at,1,10)=?",(target,)).fetchall():
                     r=dict(record);en=r.get('booking_language')=='en'
                     body=(f"Dear {r['guest_name']},\n\nWe look forward to welcoming you in three days.\n" if en else f"{r['guest_name']}様\n\nご来店の3日前となりましたので、ご予約内容をご案内いたします。\n")+summary(app,r)+('\nPlease arrive on time, as each seating starts together.' if en else '\n一斉にお料理をお出しいたしますので、お時間に合わせてお越しくださいませ。')
@@ -131,7 +150,7 @@ def plan(app,now=None):
             for record in c.execute("SELECT * FROM reservations WHERE status='CONFIRMED' AND payment_confirmed_at>=? AND payment_source IN ('SQUARE','BANK')",(started,)).fetchall():
                 r=dict(record)
                 enqueue_thanks(c,app,r,'reservation:'+str(r['id']))
-            for record in c.execute("SELECT r.* FROM guest_payments p JOIN reservations r ON r.id=p.reservation_id WHERE p.state='COMPLETED' AND r.status='CONFIRMED'").fetchall():
+            for record in c.execute("SELECT r.*,p.paid_at AS care_paid_at FROM guest_payments p JOIN reservations r ON r.id=p.reservation_id WHERE p.state='COMPLETED' AND r.status='CONFIRMED'").fetchall():
                 r=dict(record);enqueue_thanks(c,app,r,'reservation:'+str(r['id']))
             today=now.date().isoformat()
             for sake in c.execute('SELECT * FROM premium_sake WHERE day=? AND approved=1 AND stock>0',(today,)).fetchall():
@@ -139,10 +158,10 @@ def plan(app,now=None):
                     staff='【本日の常連様限定・プレミアム隠し酒】\n'+sake['name']+'\n'+sake['description']+'\n登録在庫：'+str(sake['stock'])+'\nご注文は常連様担当スタッフへ。提供前に在庫をご確認ください。'
                     insert(c,'sake-staff:'+today+':'+sake['id'],None,'staff-sake',{'text':staff,'photo':sake['photo'],'sake_id':sake['id'],'day':today})
                 if now.hour<12:continue
-                rows=c.execute("SELECT r.*,c.preferred_drinks,c.alcohol_service FROM reservations r JOIN customers c ON c.id=r.customer_id WHERE r.status='CONFIRMED' AND substr(r.visit_at,1,10)=? AND r.visit_at>?",(today,now.strftime('%Y-%m-%dT%H:%M'))).fetchall()
+                rows=c.execute("SELECT r.*,c.preferred_drinks,c.alcohol_service,c.soft_drink_only FROM reservations r JOIN customers c ON c.id=r.customer_id WHERE r.status='CONFIRMED' AND substr(r.visit_at,1,10)=? AND r.visit_at>?",(today,now.strftime('%Y-%m-%dT%H:%M'))).fetchall()
                 for record in rows:
                     r=dict(record)
-                    if r['alcohol_service']!='可' or re.search('ソフトドリンク|ノンアル|飲まない|飲酒しない',r.get('preferred_drinks') or ''):continue
+                    if r['soft_drink_only']=='1' or r['alcohol_service']!='可' or re.search('ソフトドリンク|ノンアル|飲まない|飲酒しない',r.get('preferred_drinks') or ''):continue
                     linked=c.execute("SELECT user_id FROM concierge_customers WHERE customer_id=? AND active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'",(r['customer_id'],)).fetchone()
                     if not linked:continue
                     text=f"{r['guest_name']}様、本日、常連様限定でプレミアム隠し酒「{sake['name']}」をご用意しております。\n\n{sake['description']}\n\nご注文の際は、常連様担当スタッフまでお申し付けください。"
@@ -150,13 +169,18 @@ def plan(app,now=None):
     finally:c.close()
 
 
-def enqueue_thanks(c,app,r,payment_key):
+def thanks_text(c,app,r):
     en=r.get('booking_language')=='en'
     text=f"Dear {r['guest_name']},\n\nThank you very much for your payment. We sincerely appreciate your patronage." if en else f"{r['guest_name']}様\n\nこのたびはお支払いいただき、誠にありがとうございます。日頃のご愛顧に、心より御礼申し上げます。"
     if r.get('customer_id'):
         upcoming=c.execute("SELECT * FROM reservations WHERE customer_id=? AND id!=? AND status='CONFIRMED' AND source IN ('DIRECT','CONCIERGE_LINE') AND visit_at>? ORDER BY visit_at LIMIT 1",(r['customer_id'],r['id'],datetime.now(bot.JST).strftime('%Y-%m-%dT%H:%M'))).fetchone()
         if upcoming:text+=('\n\nYour next reservation:\n' if en else '\n\n次回のご予約も承っております。\n')+summary(app,dict(upcoming))
-    insert(c,'thanks:'+payment_key,r['id'],'thanks',{'text':text})
+    return text
+
+
+def enqueue_thanks(c,app,r,payment_key,paid_at=None):
+    text=thanks_text(c,app,r)
+    insert(c,'thanks:'+payment_key,r['id'],'thanks',{'text':text},due=(paid_at if paid_at is not None else r.get('care_paid_at') or parse_time(r.get('payment_confirmed_at')))+4*3600)
 
 
 def payment_event(app,event):
@@ -174,8 +198,9 @@ def payment_event(app,event):
             rows=c.execute("SELECT * FROM reservations WHERE square_order_id=? AND status='CONFIRMED'",(order,)).fetchall() if order else []
             r=dict(rows[0]) if len(rows)==1 else None
             amount=(current.get('amount_money') or {}).get('amount',0)
-            c.execute('INSERT INTO guest_payments VALUES(?,?,?,?,?)',(pid,r['id'] if r else None,amount,'COMPLETED',time.time()))
-            if r and bot.setting(c,'care_enabled')=='1':enqueue_thanks(c,app,r,'reservation:'+str(r['id']))
+            paid_at=parse_time(current.get('updated_at') or current.get('created_at'))
+            c.execute('INSERT INTO guest_payments(id,reservation_id,amount,state,created,paid_at) VALUES(?,?,?,?,?,?)',(pid,r['id'] if r else None,amount,'COMPLETED',time.time(),paid_at))
+            if r and bot.setting(c,'care_enabled')=='1':enqueue_thanks(c,app,r,'reservation:'+str(r['id']),paid_at)
     finally:c.close()
 
 
@@ -191,7 +216,7 @@ def deliver(app):
         c=connect(app)
         try:
             if bot.setting(c,'care_enabled')!='1':return
-            rows=c.execute("SELECT * FROM guest_jobs WHERE state IN ('pending','blocked') ORDER BY created LIMIT 30").fetchall()
+            rows=c.execute("SELECT * FROM guest_jobs WHERE state IN ('pending','blocked') AND due<=? ORDER BY created LIMIT 30",(time.time(),)).fetchall()
             for job in rows:
                 body=json.loads(job['body']);r=None
                 if job['reservation_id']:
@@ -200,6 +225,10 @@ def deliver(app):
                     if not r or r['status']!='CONFIRMED' or body.get('visit_at') and body['visit_at']!=r['visit_at']:
                         with c:c.execute("UPDATE guest_jobs SET state='cancelled' WHERE id=?",(job['id'],))
                         continue
+                if job['kind']=='reminder' and datetime.now(bot.JST).hour<12:continue
+                if job['kind']=='thanks':
+                    body['text']=thanks_text(c,app,r)
+                    with c:c.execute('UPDATE guest_jobs SET body=? WHERE id=?',(json.dumps(body,ensure_ascii=False),job['id']))
                 if job['kind']=='reminder' and r['visit_at'][:10]!=(datetime.now(bot.JST).date()+timedelta(days=3)).isoformat():
                     with c:c.execute("UPDATE guest_jobs SET state='cancelled' WHERE id=?",(job['id'],))
                     continue
@@ -207,9 +236,9 @@ def deliver(app):
                     sake=c.execute('SELECT * FROM premium_sake WHERE id=?',(body['sake_id'],)).fetchone()
                     eligible=sake and sake['approved'] and sake['stock']>0 and sake['day']==datetime.now(bot.JST).date().isoformat()
                     if eligible and job['kind']=='sake':
-                        person=c.execute('SELECT alcohol_service,preferred_drinks FROM customers WHERE id=?',(r['customer_id'],)).fetchone()
+                        person=c.execute('SELECT alcohol_service,preferred_drinks,soft_drink_only FROM customers WHERE id=?',(r['customer_id'],)).fetchone()
                         recipient=c.execute('SELECT active,stopped FROM concierge_customers WHERE user_id=?',(body['user_id'],)).fetchone()
-                        eligible=person and person[0]=='可' and not re.search('ソフトドリンク|ノンアル|飲まない|飲酒しない',person[1] or '') and recipient and recipient['active'] and not recipient['stopped'] and r['visit_at']>datetime.now(bot.JST).strftime('%Y-%m-%dT%H:%M')
+                        eligible=person and person[2]!='1' and person[0]=='可' and not re.search('ソフトドリンク|ノンアル|飲まない|飲酒しない',person[1] or '') and recipient and recipient['active'] and not recipient['stopped'] and r['visit_at']>datetime.now(bot.JST).strftime('%Y-%m-%dT%H:%M')
                     if not eligible:
                         with c:c.execute("UPDATE guest_jobs SET state='cancelled' WHERE id=?",(job['id'],))
                         continue
@@ -250,7 +279,7 @@ def deliver(app):
 def loop(app):
     while True:
         try:
-            plan(app);deliver(app)
+            drain_stock(app);sync_requests(app);plan(app);deliver(app)
         except Exception:pass
         time.sleep(60)
 
@@ -269,9 +298,9 @@ def validate_delivery(c,delivery_id):
         sake=c.execute('SELECT * FROM premium_sake WHERE id=?',(body['sake_id'],)).fetchone()
         if not sake or not sake['approved'] or sake['stock']<=0 or sake['day']!=now.date().isoformat():return False
         if job['kind']=='sake':
-            customer=c.execute('SELECT alcohol_service,preferred_drinks FROM customers WHERE id=?',(r['customer_id'],)).fetchone()
+            customer=c.execute('SELECT alcohol_service,preferred_drinks,soft_drink_only FROM customers WHERE id=?',(r['customer_id'],)).fetchone()
             recipient=c.execute('SELECT active,stopped FROM concierge_customers WHERE user_id=?',(body['user_id'],)).fetchone()
-            if not customer or customer[0]!='可' or re.search('ソフトドリンク|ノンアル|飲まない|飲酒しない',customer[1] or '') or not recipient or not recipient['active'] or recipient['stopped'] or r['visit_at']<=now.strftime('%Y-%m-%dT%H:%M'):return False
+            if not customer or customer[2]=='1' or customer[0]!='可' or re.search('ソフトドリンク|ノンアル|飲まない|飲酒しない',customer[1] or '') or not recipient or not recipient['active'] or recipient['stopped'] or r['visit_at']<=now.strftime('%Y-%m-%dT%H:%M'):return False
     return True
 
 
@@ -290,7 +319,93 @@ def link_payment(app,data):
             if amount.get('amount',0)<row['amount']:raise ValueError('コース総額未満の決済です。分割精算はスタッフが全額の支払いを確認してください')
             previous=c.execute('SELECT reservation_id FROM guest_payments WHERE id=?',(pid,)).fetchone()
             if previous and previous[0] not in (None,rid):raise ValueError('別の予約に紐付く決済です')
-            c.execute("INSERT INTO guest_payments VALUES(?,?,?,'COMPLETED',?) ON CONFLICT(id) DO UPDATE SET reservation_id=excluded.reservation_id",(pid,rid,amount['amount'],time.time()))
-            if bot.setting(c,'care_enabled')=='1':enqueue_thanks(c,app,dict(row),'reservation:'+str(rid))
+            paid_at=parse_time(payment.get('updated_at') or payment.get('created_at'))
+            c.execute("INSERT INTO guest_payments(id,reservation_id,amount,state,created,paid_at) VALUES(?,?,?,'COMPLETED',?,?) ON CONFLICT(id) DO UPDATE SET reservation_id=excluded.reservation_id",(pid,rid,amount['amount'],time.time(),paid_at))
+            if bot.setting(c,'care_enabled')=='1':enqueue_thanks(c,app,dict(row),'reservation:'+str(rid),paid_at)
             return {'ok':True,'message':'決済と予約を紐付けました。課金は実行していません。'}
+    finally:c.close()
+
+
+def ready_delivery(c,delivery_id):
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='guest_jobs'").fetchone():return True
+    if 'due' not in {r['name'] for r in c.execute('PRAGMA table_info(guest_jobs)')}:return False
+    job=c.execute('SELECT due,kind FROM guest_jobs WHERE delivery_id=?',(delivery_id,)).fetchone()
+    if not job:return True
+    if job['kind']=='reminder' and datetime.now(bot.JST).hour<12:return False
+    return job['due']<=time.time()
+
+
+def sync_requests(app):
+    """Reservation fields are the source of truth; private owner handoff only."""
+    c=connect(app)
+    try:
+        with c:
+            c.execute('CREATE TABLE IF NOT EXISTS booking_consultations(id TEXT PRIMARY KEY,request_id TEXT NOT NULL,notified INTEGER NOT NULL DEFAULT 0)')
+            now=datetime.now(bot.JST).strftime('%Y-%m-%dT%H:%M')
+            for record in c.execute("SELECT * FROM reservations WHERE visit_at>=? AND status IN ('CONFIRMED','PENDING','INVOICED') AND (coalesce(guest_note,'')!='' OR coalesce(celebration_items,'')!='' OR coalesce(plate_message,'')!='')",(now,)).fetchall():
+                r=dict(record)
+                body=f"予約番号 {r['id']} ／ {r['guest_name']}様 ／ {r['visit_at']}\nお祝い：{r.get('celebration_items') or 'なし'}\nプレート：{r.get('plate_message') or 'なし'}\n記念日・食事制限等のご希望：{r.get('guest_note') or 'なし'}\n特別対応は朝倉確認待ちです。"
+                key=hashlib.sha256(body.encode()).hexdigest();qid='reservation-'+key[:24]
+                linked=c.execute('SELECT user_id FROM concierge_customers WHERE customer_id=? AND active=1 ORDER BY user_id LIMIT 1',(r.get('customer_id'),)).fetchone()
+                recipient=linked[0] if linked else 'booking:'+str(r['id'])
+                c.execute('INSERT OR IGNORE INTO concierge_requests(id,user_id,body,created,status) VALUES(?,?,?,?,?)',(qid,recipient,body,time.time(),'未回答' if linked else '朝倉確認待ち（予約連絡先へ回答）'))
+                c.execute('INSERT OR IGNORE INTO booking_consultations(id,request_id) VALUES(?,?)',(key,qid))
+            owner=bot.setting(c,'owner')
+            if owner:
+                for row in c.execute('SELECT b.id,r.body FROM booking_consultations b JOIN concierge_requests r ON r.id=b.request_id WHERE b.notified=0').fetchall():
+                    bot.enqueue(c,owner,[bot.text_message('【予約ページからのご相談】\n'+row['body'],False)],channel='owner',kind='request')
+                    c.execute('UPDATE booking_consultations SET notified=1 WHERE id=?',(row['id'],))
+    finally:c.close()
+
+
+def stock_schema(c):
+    c.execute("CREATE TABLE IF NOT EXISTS sake_stock_inbox(id TEXT PRIMARY KEY,body TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending')")
+
+
+def receive_stock(db,events):
+    """Called only after verification of the work LINE signature."""
+    import line_delivery
+    c=bot.connect(db)
+    try:
+        with c:
+            stock_schema(c)
+            for event in events:
+                source=event.get('source',{});message=event.get('message',{})
+                text=message.get('text','')
+                if source.get('type')!='group' or source.get('groupId')!=line_delivery.TARGET or event.get('type')!='message' or message.get('type')!='text':continue
+                if not isinstance(text,str) or not text.startswith('隠し酒登録'):continue
+                if len(text)>1000:text='隠し酒登録\n入力が長すぎます'
+                c.execute('INSERT OR IGNORE INTO sake_stock_inbox(id,body) VALUES(?,?)',(event['webhookEventId'],text))
+    finally:c.close()
+
+
+def drain_stock(app):
+    import line_delivery
+    c=connect(app)
+    try:
+        with c:
+            stock_schema(c)
+            for row in c.execute("SELECT * FROM sake_stock_inbox WHERE state='pending' LIMIT 20").fetchall():
+                try:
+                    parts=row['body'].strip().splitlines()
+                    if parts[0].strip()!='隠し酒登録':raise ValueError()
+                    fields={}
+                    for part in parts[1:]:
+                        if not part.strip():continue
+                        pair=re.fullmatch(r'(銘柄|在庫|提供日)\s*[:：]\s*(.+)',part.strip())
+                        if not pair or pair[1] in fields:raise ValueError()
+                        fields[pair[1]]=pair[2].strip()
+                    if set(fields)!={'銘柄','在庫','提供日'} or not 1<=len(fields['銘柄'])<=150:raise ValueError()
+                    count=re.fullmatch(r'(\d{1,4})\s*杯?',fields['在庫'])
+                    if not count:raise ValueError()
+                    day=datetime.strptime(fields['提供日'],'%Y-%m-%d').date()
+                    if not datetime.now(bot.JST).date()<=day<=datetime.now(bot.JST).date()+timedelta(days=365):raise ValueError()
+                    identity=hashlib.sha256(('work-line-sake:'+row['id']).encode()).hexdigest()[:32]
+                    c.execute('INSERT OR IGNORE INTO premium_sake VALUES(?,?,?,?,?,?,?,0)',(identity,fields['銘柄'],'','','[]',int(count[1]),str(day)))
+                    message=f"隠し酒の下書きを登録しました。\n{fields['銘柄']} ／ {count[1]}杯 ／ {day}\n管理画面で店舗写真・商品説明を確認し、公開してください。\n{app.APP_BASE_URL}/concierge"
+                    state='draft'
+                except ValueError:
+                    state='invalid';message='隠し酒の下書きは登録されていません。次の形式で1銘柄ずつ送信してください。\n隠し酒登録\n銘柄：蔵元・商品名\n在庫：6杯\n提供日：YYYY-MM-DD\n提供日は本日から1年以内、在庫は0〜9999杯で指定してください。'
+                bot.enqueue(c,line_delivery.TARGET,[bot.text_message(message,False)],channel='owner',kind='stock-draft')
+                c.execute('UPDATE sake_stock_inbox SET state=? WHERE id=?',(state,row['id']))
     finally:c.close()

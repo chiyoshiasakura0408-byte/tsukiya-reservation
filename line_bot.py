@@ -78,6 +78,8 @@ def receive(db, raw, signature):
             c.execute('INSERT OR REPLACE INTO line_connection_state VALUES (?,?)', ('last_verified_at', now))
     finally:
         c.close()
+    import guest_service
+    guest_service.receive_stock(db, events)
     concierge.pair_owner(db, events)
     return 200, {'ok': True, 'received': received}
 
