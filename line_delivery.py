@@ -60,6 +60,36 @@ def image_path(db, name, expiry, signature):
     path = Path(db).parent / 'line-images' / name
     return path if path.is_file() else None
 
+def briefing_html(db, day, font_data):
+    """Portrait report; keep personal contact details out of the group image."""
+    from html import escape
+    c = connect(db)
+    try:
+        rows = [dict(r) for r in c.execute("SELECT guest_name,party_size,visit_at,seating_area,status,celebration_items,plate_message FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,seating_area,id", (day,))]
+    finally:
+        c.close()
+    labels = {'COUNTER':'本店・カウンター','PRIVATE1':'別邸・個室①','PRIVATE2':'別邸・個室②','PRIVATE3':'別邸・個室③'}
+    statuses = {'CONFIRMED':'予約確定','INVOICED':'請求済み','PENDING':'未決済','ERROR':'要確認'}
+    cards = []
+    for row in rows:
+        time_label = escape(row['visit_at'][11:16])
+        seat = escape(labels.get(row['seating_area'], row['seating_area'] or '席未設定'))
+        status = escape(statuses.get(row['status'],row['status']))
+        request = escape(row['celebration_items'] or '')
+        plate = escape(row['plate_message'] or '')
+        extra = ('<aside>リクエスト：'+request+('<br>プレート：'+plate if plate else '')+'</aside>') if request else ''
+        cards.append(f'<article><div class="meta">{time_label}　{seat}</div><div class="guest">{escape(row["guest_name"])} 様 <b>{row["party_size"]}名</b></div><div class="status">{status}</div>{extra}</article>')
+    content = ''.join(cards) or '<article class="empty">本日の登録予約はありません</article>'
+    total = sum(r['party_size'] for r in rows)
+    return f'''<!doctype html><html lang="ja"><meta charset="utf-8"><style>
+    @font-face{{font-family:TsukiyaJP;src:url(data:font/otf;base64,{font_data}) format("opentype");font-display:block}}
+    *{{box-sizing:border-box}}body{{margin:0;background:#f5f2ec;color:#102b45;font-family:TsukiyaJP,sans-serif}}
+    main{{width:720px;padding:32px}}h1{{font-size:34px;margin:0 0 12px}}header{{border-bottom:3px solid #b69b65;padding-bottom:22px;margin-bottom:24px}}
+    .date{{font-size:30px}}.total{{font-size:25px;margin-top:12px}}article{{background:white;border:1px solid #d9d4c9;border-radius:16px;padding:24px;margin:16px 0;break-inside:avoid}}
+    .meta{{font-size:25px}}.guest{{font-size:32px;margin:12px 0;overflow-wrap:anywhere}}b{{white-space:nowrap}}.status{{font-size:23px;color:#496451}}aside{{font-size:25px;background:#fff3cd;padding:14px;margin-top:16px;overflow-wrap:anywhere}}.empty{{font-size:28px}}footer{{font-size:20px;color:#647080;margin-top:24px}}
+    </style><main><header><h1>西天満 つきや｜本日のご予約</h1><div class="date">{escape(day)}</div><div class="total">{len(rows)}組・{total}名（未決済を含む）</div></header>{content}<footer>送信時点の予約情報です。変更は予約管理画面をご確認ください。</footer></main></html>'''
+
+
 def capture(db, day, port, admin, base_url):
     os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH', '0')
     from playwright.sync_api import sync_playwright
@@ -71,23 +101,35 @@ def capture(db, day, port, admin, base_url):
             old.unlink(missing_ok=True)
     stem = uuid.uuid4().hex
     original = folder / (stem + '-original.jpg')
+    font = folder / 'NotoSansCJKjp-Regular.otf'
+    if not font.exists():
+        req = urllib.request.Request('https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf')
+        with urllib.request.urlopen(req, timeout=60) as response:
+            data = response.read(25_000_000)
+        if data[:4] != b'OTTO' or len(data) < 1_000_000:
+            raise RuntimeError('日本語フォントを取得できませんでした')
+        temp = font.with_suffix('.tmp')
+        temp.write_bytes(data)
+        temp.replace(font)
+    import base64
+    font_data = base64.b64encode(font.read_bytes()).decode('ascii')
+    markup = briefing_html(db, day, font_data)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=['--disable-dev-shm-usage'])
         try:
-            context = browser.new_context(viewport={'width':1440, 'height':1000})
-            expiry = str(int(time.time()) + 120)
-            sig = hmac.new(admin.encode(), expiry.encode(), hashlib.sha256).hexdigest()
-            context.add_cookies([{'name':'tsukiya_session','value':expiry+'.'+sig,'url':f'http://127.0.0.1:{port}/','httpOnly':True,'sameSite':'Strict'}])
+            context = browser.new_context(viewport={'width':720, 'height':400}, device_scale_factor=2)
             page = context.new_page()
-            page.goto(f'http://127.0.0.1:{port}/reservations?snapshot=1&date={day}', wait_until='networkidle', timeout=60000)
-            page.wait_for_selector('body[data-snapshot-ready="true"]', timeout=60000)
-            page.screenshot(path=str(original), full_page=True, type='jpeg', quality=85)
+            page.set_content(markup, wait_until='load')
+            page.evaluate('document.fonts.ready')
+            if not page.evaluate("document.fonts.check(\'24px TsukiyaJP\')"):
+                raise RuntimeError('日本語フォントの読み込みに失敗しました')
+            page.locator('main').screenshot(path=str(original), type='jpeg', quality=95)
         finally:
             browser.close()
     preview = folder / (stem + '-preview.jpg')
     with Image.open(original) as img:
-        img.thumbnail((1000,1000))
-        img.convert('RGB').save(preview, quality=75)
+        img.thumbnail((1440,2400))
+        img.convert('RGB').save(preview, quality=85)
     if original.stat().st_size > 10_000_000 or preview.stat().st_size > 1_000_000:
         raise RuntimeError('予約表の画像サイズが上限を超えています')
     expiry = int(time.time()) + 48 * 3600
