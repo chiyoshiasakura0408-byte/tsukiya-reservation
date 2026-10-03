@@ -4,6 +4,7 @@ import line_bot
 import concierge
 import concierge_booking
 import instagram_concierge
+import guest_service
 import line_delivery
 import line_receipts
 import sys
@@ -332,7 +333,7 @@ def con():
         updated_at TEXT NOT NULL
     )""")
     customer_cols = {row["name"] for row in c.execute("PRAGMA table_info(customers)")}
-    for field in ("allergies", "disliked_foods", "preferred_seat", "preferred_drinks", "preferred_crab", "return_transport"):
+    for field in ("allergies", "disliked_foods", "preferred_seat", "preferred_drinks", "preferred_crab", "return_transport", "alcohol_service"):
         if field not in customer_cols:
             c.execute(f"ALTER TABLE customers ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
     c.execute("CREATE INDEX IF NOT EXISTS reservations_customer_idx ON reservations(customer_id)")
@@ -1633,6 +1634,7 @@ def process_square_event(event, raw):
     if event_type in ("booking.created", "booking.updated"):
         import_booking(event)
 
+    guest_service.payment_event(sys.modules[__name__], event)
     c = con()
     confirmed = None
     try:
@@ -1862,6 +1864,25 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        if p.startswith("/concierge-media/"):
+            name = p.rsplit("/",1)[-1]
+            if not re.fullmatch(r"[0-9a-f]{32}\.jpg", name):
+                return self.send_error(404)
+            path = Path(DB).parent / "concierge-media" / name
+            if not path.is_file():
+                return self.send_error(404)
+            content=path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type","image/jpeg")
+            self.send_header("Content-Length",str(len(content)))
+            self.send_header("X-Content-Type-Options","nosniff")
+            self.end_headers()
+            self.wfile.write(content)
+            return
+        if p == "/api/guest-service/status":
+            if not self.auth():
+                return self.send_json({"error":"unauthorized"},401)
+            return self.send_json(guest_service.status(sys.modules[__name__]),headers={"Cache-Control":"no-store"})
         if p == "/webhooks/instagram":
             challenge = instagram_concierge.verify(parse_qs(u.query))
             if challenge is None:
@@ -2068,7 +2089,7 @@ class Handler(
                 sync_customers(c)
                 if p == "/api/customers":
                     rows = [dict(row) for row in c.execute("""SELECT c.id,c.name,c.company_name,c.receipt_name,c.phone,c.email,c.note,
-                        c.allergies,c.disliked_foods,c.preferred_seat,c.preferred_drinks,c.preferred_crab,c.return_transport,
+                        c.allergies,c.disliked_foods,c.preferred_seat,c.preferred_drinks,c.preferred_crab,c.return_transport,c.alcohol_service,
                         COUNT(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN 1 END) AS visit_count,
                         MAX(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN r.visit_at END) AS last_visit
                         FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id
@@ -2076,7 +2097,7 @@ class Handler(
                     return self.send_json(rows)
                 customer_id = int(p.rsplit("/", 1)[1])
                 row = c.execute("""SELECT id,name,company_name,receipt_name,phone,email,note,
-                    allergies,disliked_foods,preferred_seat,preferred_drinks,preferred_crab,return_transport FROM customers WHERE id=?""", (customer_id,)).fetchone()
+                    allergies,disliked_foods,preferred_seat,preferred_drinks,preferred_crab,return_transport,alcohol_service FROM customers WHERE id=?""", (customer_id,)).fetchone()
                 if not row:
                     return self.send_json({"error": "顧客が見つかりません"}, 404)
                 visits = [dict(v) for v in c.execute("""SELECT id,visit_at,party_size,course_name,seating_area,status,
@@ -2322,6 +2343,22 @@ class Handler(
             self.path
         ).path
 
+        if p == "/api/guest-service/configure":
+            if not self.auth():
+                return self.send_json({"error":"unauthorized"},401)
+            if self.headers.get("X-Tsukiya-Action") != "guest-service":
+                return self.send_json({"error":"invalid request"},403)
+            try:
+                if self.headers.get("Transfer-Encoding") or not 0 < int(self.headers.get("Content-Length", "0")) <= 12*1024*1024:
+                    return self.send_json({"error":"入力が長すぎます"},400)
+                self.connection.settimeout(30)
+                data=self.read_json()
+                return self.send_json(guest_service.configure(sys.modules[__name__],data),headers={"Cache-Control":"no-store"})
+            except (ValueError,TypeError,AttributeError) as exc:
+                return self.send_json({"error":str(exc)},400)
+            except Exception:
+                return self.send_json({"error":"処理を完了できませんでした"},503)
+
         if p in ("/api/concierge/booking-info", "/api/concierge/book"):
             try:
                 if self.headers.get("Transfer-Encoding") or not 0 < int(self.headers.get("Content-Length", "0")) <= 16384:
@@ -2462,7 +2499,7 @@ class Handler(
                           {"name": 100, "company_name": 150, "receipt_name": 150,
                            "phone": 50, "email": 254, "note": 2000,
                            "allergies": 1000, "disliked_foods": 1000,
-                           "preferred_seat": 500, "preferred_drinks": 1000, "preferred_crab": 1000, "return_transport": 1000})
+                           "preferred_seat": 500, "preferred_drinks": 1000, "preferred_crab": 1000, "return_transport": 1000, "alcohol_service": 10})
                 if not x or any(k not in fields or not isinstance(v, str) or len(v) > fields[k]
                                 for k, v in x.items()):
                     raise ValueError("入力項目または文字数を確認してください")
@@ -3295,6 +3332,7 @@ class Handler(
 if __name__ == "__main__":
     c = con()
     c.close()
+    threading.Thread(target=guest_service.loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=concierge.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=expiry_loop, daemon=True).start()
     threading.Thread(target=line_receipts.loop, args=(DB,), daemon=True).start()

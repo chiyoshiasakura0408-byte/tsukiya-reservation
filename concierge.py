@@ -18,7 +18,7 @@ from urllib.parse import urlencode, urlparse
 LOCK = threading.RLock()
 DELIVERY_LOCK = threading.Lock()
 JST = timezone(timedelta(hours=9))
-MENU = ['空席確認', 'コース・料金', '写真', '動画', 'お品書き', '朝倉へ相談', '配信再開', '配信停止']
+MENU = ['空席確認', 'コース・料金', '写真', '動画', 'お品書き', '来店案内', '記念日・食事の相談', '忘れ物', '朝倉へ相談', '配信再開', '配信停止']
 
 
 def connect(db):
@@ -192,6 +192,20 @@ def pair_owner(db, events):
 
 def respond(c, user, command, lookup, courses, base_url):
     cat = catalog(c)
+    if command in ('記念日・食事の相談','忘れ物'):
+        c.execute("UPDATE concierge_customers SET state='request' WHERE user_id=?",(user,))
+        return [text_message('ご来店日・お名前と、詳しい内容をお聞かせください。朝倉へ確認のうえ、ご案内いたします。')]
+    if command=='来店案内':
+        return [text_message('18時と20時30分の二部制でございます。お時間に合わせてお越しくださいませ。個室は別邸（大阪市北区西天満3-8-7）で、本店とは別の建物です。ご予約確定メールの来店先をご確認ください。')]
+    if any(k in command for k in ('道順','場所','住所','アクセス','何時','来店時間','お品書きの案内','記念日','花束','食事制限','アレルギー','タクシー','忘れ物')):
+        if any(k in command for k in ('道順','場所','住所','アクセス')):
+            return [text_message('個室は別邸（大阪市北区西天満3-8-7）にございます。本店とは別の建物ですので、ご予約確定メールの来店先をご確認ください。ご不明でしたら「朝倉へ相談」よりご予約日をお知らせください。')]
+        if '来店時間' in command or '何時' in command:
+            return [text_message('18時と20時30分の二部制で、一斉にお料理をご提供しております。ご予約のお時間に合わせてお越しくださいませ。')]
+        if 'お品書き' in command:
+            command='お品書き'
+        else:
+            c.execute("UPDATE concierge_customers SET state='request' WHERE user_id=?",(user,))
     if command.startswith('お客様連携 '):
         return [text_message(link_customer(c, user, command))]
     if command == '配信停止':
@@ -333,8 +347,6 @@ def deliver(db):
     with DELIVERY_LOCK:
         c = connect(db)
         try:
-            if setting(c, 'enabled') != '1' and setting(c, 'instagram_enabled') != '1':
-                return
             with c:
                 queue_arrivals(c)
             rows = c.execute("SELECT * FROM concierge_outbox WHERE state='pending' AND next_try<=? ORDER BY created LIMIT 10", (time.time(),)).fetchall()
@@ -342,6 +354,11 @@ def deliver(db):
                 current = c.execute('SELECT state FROM concierge_outbox WHERE id=?', (row['id'],)).fetchone()
                 if not current or current['state'] != 'pending':
                     continue
+                if row['kind'] == 'guest-service':
+                    import guest_service
+                    if not guest_service.validate_delivery(c,row['id']):
+                        with c:c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE id=?",(row['id'],))
+                        continue
                 if time.time() - row['created'] > 23*3600:
                     with c:
                         c.execute("UPDATE concierge_outbox SET state='failed',error='retry window expired' WHERE id=?", (row['id'],))
