@@ -24,7 +24,7 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):d.deliver(self.db,1,'admin','https://example.com','2026-10-04')
             d.deliver(self.db,1,'admin','https://example.com','2026-10-04')
             self.assertEqual(api.call_args_list[1],api.call_args_list[2])
-            self.assertEqual(capture.call_count,1)
+            self.assertEqual(capture.call_count,2)
     def test_wrong_group_fails_closed(self):
         c=d.connect(self.db);c.execute('DELETE FROM line_sources');c.commit();c.close()
         with patch.object(d,'api') as api:

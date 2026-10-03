@@ -60,7 +60,7 @@ def image_path(db, name, expiry, signature):
     path = Path(db).parent / 'line-images' / name
     return path if path.is_file() else None
 
-def briefing_html(db, day, font_data):
+def briefing_html(db, day, font_data, session=None):
     """Portrait report; keep personal contact details out of the group image."""
     from html import escape
     c = connect(db)
@@ -68,6 +68,8 @@ def briefing_html(db, day, font_data):
         rows = [dict(r) for r in c.execute("SELECT guest_name,party_size,visit_at,seating_area,status,celebration_items,plate_message FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,seating_area,id", (day,))]
     finally:
         c.close()
+    if session is not None:
+        rows = [r for r in rows if ('18:00' if r['visit_at'][11:16] < '20:30' else '20:30') == session]
     labels = {'COUNTER':'本店・カウンター','PRIVATE1':'別邸・個室①','PRIVATE2':'別邸・個室②','PRIVATE3':'別邸・個室③'}
     statuses = {'CONFIRMED':'予約確定','INVOICED':'請求済み','PENDING':'未決済','ERROR':'要確認'}
     cards = []
@@ -87,10 +89,10 @@ def briefing_html(db, day, font_data):
     main{{width:720px;padding:32px}}h1{{font-size:34px;margin:0 0 12px}}header{{border-bottom:3px solid #b69b65;padding-bottom:22px;margin-bottom:24px}}
     .date{{font-size:30px}}.total{{font-size:25px;margin-top:12px}}article{{background:white;border:1px solid #d9d4c9;border-radius:16px;padding:24px;margin:16px 0;break-inside:avoid}}
     .meta{{font-size:25px}}.guest{{font-size:32px;margin:12px 0;overflow-wrap:anywhere}}b{{white-space:nowrap}}.status{{font-size:23px;color:#496451}}aside{{font-size:25px;background:#fff3cd;padding:14px;margin-top:16px;overflow-wrap:anywhere}}.empty{{font-size:28px}}footer{{font-size:20px;color:#647080;margin-top:24px}}
-    </style><main><header><h1>西天満 つきや｜本日のご予約</h1><div class="date">{escape(day)}</div><div class="total">{len(rows)}組・{total}名（未決済を含む）</div></header>{content}<footer>送信時点の予約情報です。変更は予約管理画面をご確認ください。</footer></main></html>'''
+    </style><main><header><h1>西天満 つきや｜本日のご予約</h1><div class="date">{escape(day)}　{escape(session or '')}</div><div class="total">{len(rows)}組・{total}名（未決済を含む）</div></header>{content}<footer>送信時点の予約情報です。変更は予約管理画面をご確認ください。</footer></main></html>'''
 
 
-def capture(db, day, port, admin, base_url):
+def capture(db, day, port, admin, base_url, session=None):
     os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH', '0')
     from playwright.sync_api import sync_playwright
     from PIL import Image
@@ -113,7 +115,7 @@ def capture(db, day, port, admin, base_url):
         temp.replace(font)
     import base64
     font_data = base64.b64encode(font.read_bytes()).decode('ascii')
-    markup = briefing_html(db, day, font_data)
+    markup = briefing_html(db, day, font_data, session)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=['--disable-dev-shm-usage'])
         try:
@@ -172,7 +174,7 @@ def deliver(db, port, admin, base_url, day=None):
                     payload = json.loads(row['payload'])
                 else:
                     api('info')  # Validate token before generating the screenshot.
-                    payload = {'to':TARGET,'messages':[message(db,day),capture(db,day,port,admin,base_url)]}
+                    payload = {'to':TARGET,'messages':[message(db,day)] + [capture(db,day,port,admin,base_url,session) for session in ('18:00','20:30')]}
                     c.execute("UPDATE line_deliveries SET payload=?,state='READY',updated=? WHERE day=?", (json.dumps(payload),time.time(),day))
                     c.commit()
                 api('message/push',payload,row['retry_key'])
