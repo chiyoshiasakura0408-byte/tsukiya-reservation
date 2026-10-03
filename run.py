@@ -2,6 +2,8 @@ from email.utils import formataddr, parseaddr
 import refunds
 import line_bot
 import concierge
+import concierge_booking
+import instagram_concierge
 import line_delivery
 import line_receipts
 import sys
@@ -330,7 +332,7 @@ def con():
         updated_at TEXT NOT NULL
     )""")
     customer_cols = {row["name"] for row in c.execute("PRAGMA table_info(customers)")}
-    for field in ("allergies", "disliked_foods", "preferred_seat", "preferred_drinks"):
+    for field in ("allergies", "disliked_foods", "preferred_seat", "preferred_drinks", "preferred_crab", "return_transport"):
         if field not in customer_cols:
             c.execute(f"ALTER TABLE customers ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
     c.execute("CREATE INDEX IF NOT EXISTS reservations_customer_idx ON reservations(customer_id)")
@@ -1281,7 +1283,7 @@ def send_confirmation(r):
     msg = EmailMessage()
 
     english = r["booking_language"] == "en"
-    direct = r["source"] == "DIRECT"
+    direct = r["source"] in ("DIRECT", "CONCIERGE_LINE")
     confirmation_ja = "下記の内容にてご予約を確定いたしました。\nお料理代・お飲み物代は当日店舗にてお支払いください。" if direct else "ご入金を確認し、\n下記の内容にてご予約を確定いたしました。"
     confirmation_en = "Your reservation is confirmed. Please pay for your course and beverages at the restaurant on the day of your visit." if direct else "We have received your full payment and confirmed your reservation."
     msg["Subject"] = ("Nishitenma Tsukiya | Reservation Confirmed" if english
@@ -1853,10 +1855,27 @@ class Handler(
             + ("; Secure" if secure else "")
         )
 
+    def log_request(self, code="-", size="-"):
+        self.log_message('"%s %s %s" %s %s', self.command, urlparse(self.path).path, self.request_version, str(code), str(size))
+
     def do_GET(self):
         u = urlparse(self.path)
         p = u.path
 
+        if p == "/webhooks/instagram":
+            challenge = instagram_concierge.verify(parse_qs(u.query))
+            if challenge is None:
+                return self.send_json({"error": "verification failed"}, 403)
+            content = challenge.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(content)
+            return
+        if p == "/concierge/book":
+            return self.send_html((BASE / "public" / "concierge-book.html").read_text(), loader=False)
         if p == "/concierge":
             if not self.auth():
                 return self.redirect("/login")
@@ -1866,7 +1885,7 @@ class Handler(
                 return self.send_json({"error": "unauthorized"}, 401)
             return self.send_json(concierge.status(DB), headers={"Cache-Control": "no-store"})
         if p == "/webhooks/concierge":
-            return self.send_json({"service": "tsukiya-customer-concierge", "version": 1})
+            return self.send_json({"service": "tsukiya-customer-concierge", "version": 2})
 
         if p.startswith("/line-image/"):
             q = parse_qs(u.query)
@@ -2023,6 +2042,24 @@ class Handler(
                 return self.redirect("/login")
             return self.send_html((BASE / "public" / "customers.html").read_text(encoding="utf-8"))
 
+        card_path = re.fullmatch(r"/api/customers/(\d+)/square-cards", p)
+        if card_path:
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            c = con()
+            try:
+                ids = [r[0] for r in c.execute("SELECT DISTINCT square_customer_id FROM reservations WHERE customer_id=? AND square_customer_id IS NOT NULL AND square_customer_id!=''", (int(card_path[1]),))]
+            finally:
+                c.close()
+            if len(ids) != 1:
+                return self.send_json({"status": "not_linked" if not ids else "needs_matching", "cards": [], "message": "Square顧客との対応をSquare管理画面で確認してください。カード未登録と断定するものではありません。"}, headers={"Cache-Control": "no-store"})
+            try:
+                cards = square("/v2/cards?" + urlencode({"customer_id": ids[0], "include_disabled": "false"})).get("cards", [])
+                safe = [{"brand": r.get("card_brand"), "last4": r.get("last_4")} for r in cards if r.get("customer_id") == ids[0] and r.get("enabled") is True]
+                return self.send_json({"status": "checked", "cards": safe, "message": "保存済みカードの確認のみです。請求は実行していません。"}, headers={"Cache-Control": "no-store"})
+            except Exception:
+                return self.send_json({"error": "Squareのカード情報を確認できませんでした。"}, 502)
+
         if p == "/api/customers" or re.fullmatch(r"/api/customers/\d+", p):
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
@@ -2031,7 +2068,7 @@ class Handler(
                 sync_customers(c)
                 if p == "/api/customers":
                     rows = [dict(row) for row in c.execute("""SELECT c.id,c.name,c.company_name,c.receipt_name,c.phone,c.email,c.note,
-                        c.allergies,c.disliked_foods,c.preferred_seat,c.preferred_drinks,
+                        c.allergies,c.disliked_foods,c.preferred_seat,c.preferred_drinks,c.preferred_crab,c.return_transport,
                         COUNT(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN 1 END) AS visit_count,
                         MAX(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN r.visit_at END) AS last_visit
                         FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id
@@ -2039,7 +2076,7 @@ class Handler(
                     return self.send_json(rows)
                 customer_id = int(p.rsplit("/", 1)[1])
                 row = c.execute("""SELECT id,name,company_name,receipt_name,phone,email,note,
-                    allergies,disliked_foods,preferred_seat,preferred_drinks FROM customers WHERE id=?""", (customer_id,)).fetchone()
+                    allergies,disliked_foods,preferred_seat,preferred_drinks,preferred_crab,return_transport FROM customers WHERE id=?""", (customer_id,)).fetchone()
                 if not row:
                     return self.send_json({"error": "顧客が見つかりません"}, 404)
                 visits = [dict(v) for v in c.execute("""SELECT id,visit_at,party_size,course_name,seating_area,status,
@@ -2285,7 +2322,20 @@ class Handler(
             self.path
         ).path
 
-        if p in ("/webhooks/concierge", "/api/concierge/configure"):
+        if p in ("/api/concierge/booking-info", "/api/concierge/book"):
+            try:
+                if self.headers.get("Transfer-Encoding") or not 0 < int(self.headers.get("Content-Length", "0")) <= 16384:
+                    return self.send_json({"error": "invalid request"}, 400)
+                self.connection.settimeout(10)
+                data = self.read_json()
+                result = concierge_booking.booking(sys.modules[__name__], data.get("token"), data if p.endswith("/book") else None)
+                return self.send_json(result, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+            except (ValueError, TypeError, AttributeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            except Exception:
+                return self.send_json({"error": "一時的に処理できません。同じ画面から再度ご確認ください。"}, 503)
+
+        if p in ("/webhooks/concierge", "/webhooks/instagram", "/api/concierge/configure"):
             admin = p == "/api/concierge/configure"
             if admin and not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
@@ -2302,6 +2352,9 @@ class Handler(
                 if admin:
                     result = concierge.configure(DB, json.loads(raw))
                     return self.send_json(result, headers={"Cache-Control": "no-store"})
+                if p == "/webhooks/instagram":
+                    code, result = instagram_concierge.receive(DB, raw, self.headers.get("X-Hub-Signature-256", ""), concierge_availability, PUBLIC_COURSES, APP_BASE_URL or "https://tsukiya-reservation.onrender.com")
+                    return self.send_json(result, code, headers={"Cache-Control": "no-store"})
                 code, result = concierge.receive(DB, raw, self.headers.get("X-Line-Signature", ""), concierge_availability, PUBLIC_COURSES, APP_BASE_URL or "https://tsukiya-reservation.onrender.com")
                 return self.send_json(result, code, headers={"Cache-Control": "no-store"})
             except (ValueError, TypeError, AttributeError) as exc:
@@ -2409,7 +2462,7 @@ class Handler(
                           {"name": 100, "company_name": 150, "receipt_name": 150,
                            "phone": 50, "email": 254, "note": 2000,
                            "allergies": 1000, "disliked_foods": 1000,
-                           "preferred_seat": 500, "preferred_drinks": 1000})
+                           "preferred_seat": 500, "preferred_drinks": 1000, "preferred_crab": 1000, "return_transport": 1000})
                 if not x or any(k not in fields or not isinstance(v, str) or len(v) > fields[k]
                                 for k, v in x.items()):
                     raise ValueError("入力項目または文字数を確認してください")

@@ -18,7 +18,7 @@ from urllib.parse import urlencode, urlparse
 LOCK = threading.RLock()
 DELIVERY_LOCK = threading.Lock()
 JST = timezone(timedelta(hours=9))
-MENU = ['空席確認', 'コース・料金', '写真', '動画', 'お品書き', '朝倉へ相談', '入荷案内を受け取る', '配信停止']
+MENU = ['空席確認', 'コース・料金', '写真', '動画', 'お品書き', '朝倉へ相談', '配信再開', '配信停止']
 
 
 def connect(db):
@@ -31,6 +31,19 @@ def connect(db):
     CREATE TABLE IF NOT EXISTS concierge_requests (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,body TEXT NOT NULL,created REAL NOT NULL,status TEXT NOT NULL DEFAULT '未回答',delivery_id TEXT);
     CREATE TABLE IF NOT EXISTS concierge_outbox (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,channel TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',created REAL NOT NULL,next_try REAL NOT NULL,attempts INTEGER DEFAULT 0,error TEXT);
     ''')
+    columns = {r['name'] for r in c.execute('PRAGMA table_info(concierge_customers)')}
+    if 'customer_id' not in columns:
+        c.execute('ALTER TABLE concierge_customers ADD COLUMN customer_id INTEGER')
+    if 'stopped' not in columns:
+        c.execute('ALTER TABLE concierge_customers ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0')
+        # Preserve explicit historical stop requests when upgrading the old opt-in flow.
+        c.execute("UPDATE concierge_customers SET stopped=1 WHERE user_id IN (SELECT user_id FROM concierge_outbox WHERE payload LIKE '%案内の配信を停止しました%')")
+    c.executescript("""
+    CREATE TABLE IF NOT EXISTS concierge_links(hash TEXT PRIMARY KEY,customer_id INTEGER NOT NULL,expires REAL NOT NULL,used INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS concierge_proposals(hash TEXT PRIMARY KEY,user_id TEXT NOT NULL,slot TEXT NOT NULL,expires REAL NOT NULL,reservation_id INTEGER);
+    CREATE TABLE IF NOT EXISTS concierge_arrivals(id TEXT PRIMARY KEY,body TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending');
+    """)
+    c.commit()
     return c
 
 
@@ -44,13 +57,15 @@ def put(c, key, value):
 
 
 def text_message(text, menu=True):
-    message = {'type': 'text', 'text': text[:4900]}
+    message = {'type': 'text', 'text': elegant(text)[:4900]}
     if menu:
         message['quickReply'] = {'items': [{'type': 'action', 'action': {'type': 'message', 'label': label, 'text': label}} for label in MENU]}
     return message
 
 
 def enqueue(c, user, messages, channel='customer', kind='reply'):
+    if user.startswith('ig:') and channel == 'customer':
+        channel = 'instagram'
     key = str(uuid.uuid4())
     c.execute('INSERT INTO concierge_outbox(id,user_id,channel,kind,payload,created,next_try) VALUES (?,?,?,?,?,?,?)',
               (key, user, channel, kind, json.dumps(messages, ensure_ascii=False), time.time(), time.time()))
@@ -83,7 +98,22 @@ def configure(db, data):
                     put(c, 'pair_hash', hashlib.sha256(code.encode()).hexdigest())
                     put(c, 'pair_expires', time.time() + 600)
                     return {'pair_command': 'つきや朝倉連携 ' + code, 'expires_in': 600}
-                if action == 'enable':
+                if action == 'customer-link':
+                    customer_id = data.get('customer_id')
+                    if type(customer_id) is not int or not c.execute('SELECT id FROM customers WHERE id=?', (customer_id,)).fetchone():
+                        raise ValueError('顧客を選択してください')
+                    code = secrets.token_urlsafe(18)
+                    c.execute('INSERT INTO concierge_links VALUES (?,?,?,0)', (hashlib.sha256(code.encode()).hexdigest(), customer_id, time.time()+86400))
+                    return {'command': 'お客様連携 ' + code, 'expires_in': 86400}
+                if action == 'instagram-enable':
+                    import instagram_concierge
+                    if not instagram_concierge.configured() or not setting(c, 'instagram_verified') or not setting(c,'owner') or not os.getenv('LINE_CHANNEL_ACCESS_TOKEN'):
+                        raise ValueError('Instagramの資格情報・Webhook検証・朝倉さん連携が必要です')
+                    put(c, 'instagram_enabled', '1')
+                elif action == 'instagram-disable':
+                    put(c, 'instagram_enabled', '0')
+                    c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE channel='instagram' AND state='pending'")
+                elif action == 'enable':
                     if not (os.getenv('CONCIERGE_LINE_CHANNEL_SECRET') and os.getenv('CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN') and setting(c, 'verified')):
                         raise ValueError('お客様用LINEの資格情報とWebhook検証が必要です')
                     if os.getenv('CONCIERGE_LINE_CHANNEL_SECRET') == os.getenv('LINE_CHANNEL_SECRET'):
@@ -93,10 +123,10 @@ def configure(db, data):
                     put(c, 'enabled', '1')
                 elif action == 'disable':
                     put(c, 'enabled', '0')
-                    c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE state='pending'")
+                    c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE channel!='instagram' AND state='pending'")
                 elif action == 'catalog':
                     new = {}
-                    for key, maximum in [('crab', 100), ('menu', 3000)]:
+                    for key, maximum in [('crab', 100), ('origin', 100), ('arrival_date', 10), ('menu', 3000), ('sake', 150), ('menu_en', 3000)]:
                         value = data.get(key, '')
                         if not isinstance(value, str) or len(value) > maximum:
                             raise ValueError('入力文字数を確認してください')
@@ -106,13 +136,16 @@ def configure(db, data):
                     if bool(new['video']) != bool(new['preview']):
                         raise ValueError('動画にはサムネイル画像URLも必要です')
                     previous = catalog(c)
-                    changed = bool(new['crab']) and new['crab'] != previous.get('crab')
+                    changed = bool(new['crab']) and any(new[k] != previous.get(k, '') for k in ('crab', 'origin', 'arrival_date'))
+                    if new['crab']:
+                        if not new['origin'] or not new['arrival_date']:
+                            raise ValueError('蟹の産地と入荷日を入力してください')
+                        date.fromisoformat(new['arrival_date'])
                     put(c, 'catalog', json.dumps(new, ensure_ascii=False))
-                    if changed and data.get('announce') is True:
-                        if setting(c, 'enabled') != '1':
-                            raise ValueError('配信を有効にしてからお知らせしてください')
-                        for row in c.execute('SELECT user_id FROM concierge_customers WHERE active=1 AND subscribed=1'):
-                            enqueue(c, row[0], [text_message('西天満つきやより、蟹のお知らせです。\n今回の蟹：' + new['crab'] + '\nコース詳細や空席は下のメニューからご確認ください。')], kind='announcement')
+                    if changed:
+                        event_id = hashlib.sha256(json.dumps([new[k] for k in ('crab','origin','arrival_date')],ensure_ascii=False).encode()).hexdigest()
+                        c.execute('INSERT OR IGNORE INTO concierge_arrivals(id,body) VALUES (?,?)', (event_id, json.dumps(new, ensure_ascii=False)))
+                    queue_arrivals(c)
                 elif action == 'answer':
                     body = data.get('body', '')
                     if not isinstance(body, str) or not 1 <= len(body.strip()) <= 2000:
@@ -120,9 +153,11 @@ def configure(db, data):
                     row = c.execute('SELECT * FROM concierge_requests WHERE id=?', (data.get('id'),)).fetchone()
                     if not row or row['status'] != '未回答':
                         raise ValueError('未回答のご相談が見つかりません')
-                    if setting(c, 'enabled') != '1':
+                    if row['user_id'].startswith('ig:') and len(body.strip())>950:
+                        raise ValueError('Instagramへの回答は950文字以内で入力してください')
+                    if setting(c, 'instagram_enabled' if row['user_id'].startswith('ig:') else 'enabled') != '1':
                         raise ValueError('配信が停止中です')
-                    delivery_id = enqueue(c, row['user_id'], [text_message('朝倉からの回答です。\n' + body.strip())], kind='answer')
+                    delivery_id = enqueue(c, row['user_id'], [text_message(body.strip())], kind='answer')
                     c.execute("UPDATE concierge_requests SET status='回答送信待ち',delivery_id=? WHERE id=?", (delivery_id, row['id']))
                 else:
                     raise ValueError('操作が不正です')
@@ -157,16 +192,18 @@ def pair_owner(db, events):
 
 def respond(c, user, command, lookup, courses, base_url):
     cat = catalog(c)
+    if command.startswith('お客様連携 '):
+        return [text_message(link_customer(c, user, command))]
     if command == '配信停止':
-        c.execute('UPDATE concierge_customers SET subscribed=0 WHERE user_id=?', (user,))
+        c.execute('UPDATE concierge_customers SET subscribed=0,stopped=1 WHERE user_id=?', (user,))
         c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE user_id=? AND kind='announcement' AND state='pending'", (user,))
         return [text_message('蟹の変更・入荷案内の配信を停止しました。空席確認・ご予約は引き続きご利用いただけます。')]
-    if command == '入荷案内を受け取る':
-        c.execute('UPDATE concierge_customers SET subscribed=1 WHERE user_id=?', (user,))
+    if command in ('配信再開', '入荷案内を受け取る'):
+        c.execute('UPDATE concierge_customers SET subscribed=1,stopped=0 WHERE user_id=?', (user,))
         return [text_message('蟹の変更・入荷案内をお届けします。「配信停止」でいつでも停止できます。')]
     if command == 'コース・料金':
         description = '\n\n'.join(f'{name}\nお一人様 ¥{price:,}（税込）' for name, price in courses.values())
-        return [text_message(description + '\n\nお料理代は事前決済、お飲み物代は当日のお支払いです。提供期間と空席は「空席確認」でご確認ください。')]
+        return [text_message(description + '\n\nLINEコンシェルジュからのご予約は前受けなしで承ります。お支払いはご来店時にお願いいたします。提供期間と空席は「空席確認」でご確認ください。')]
     if command in ('写真', '動画', 'お品書き'):
         if command == '写真' and cat.get('photo'):
             return [{'type': 'image', 'originalContentUrl': cat['photo'], 'previewImageUrl': cat['photo']}]
@@ -195,14 +232,22 @@ def respond(c, user, command, lookup, courses, base_url):
             return [text_message(f'{day}・{party}名様は、満席または受付期間外です。別の日付をお送りいただくか、朝倉へご相談ください。')]
         actions = []
         for slot in slots[:4]:
-            query = urlencode({'course': slot['course'], 'date': str(day), 'party_size': party, 'area': slot['area'], 'time': slot['time']})
-            actions.append({'type': 'uri', 'label': slot['time'] + (' 個室' if slot['area'] == 'PRIVATE' else ' カウンター'), 'uri': base_url + '/book?' + query})
-        return [text_message(f'{day}・{party}名様の空席が見つかりました。お料理代合計 ¥{courses[slots[0]["course"]][1]*party:,}（税込）。\n空席は変動します。以下からお客様情報の入力・事前決済へお進みください。決済完了後にご予約確定となります。'),
-                {'type': 'template', 'altText': '空席を選んで予約へ進む', 'template': {'type': 'buttons', 'text': 'ご希望のお席・時間をお選びください', 'actions': actions}}]
+            token = secrets.token_urlsafe(32)
+            proposal = {**slot, 'date':str(day), 'party_size':party}
+            c.execute('INSERT INTO concierge_proposals(hash,user_id,slot,expires) VALUES (?,?,?,?)', (hashlib.sha256(token.encode()).hexdigest(), user, json.dumps(proposal), time.time()+3600))
+            actions.append({'type': 'uri', 'label': slot['time'] + (' 個室' if slot['area'] == 'PRIVATE' else ' カウンター'), 'uri': base_url + '/concierge/book#' + token})
+        personal = preference_message(c, user, cat)
+        if personal:
+            c.execute('UPDATE concierge_customers SET state=? WHERE user_id=?', ('preference:'+str(day)+' '+str(party)+'名様\n'+personal, user))
+        return [text_message(f'{day}・{party}名様のお席をご案内できます。お料理代は合計 ¥{courses[slots[0]["course"]][1]*party:,}（税込）でございます。\nLINEコンシェルジュからは前受けなしでご予約いただけます。以下より内容をご確認のうえ、お申し込みください。' + ('\n\n'+personal if personal else '')),
+                {'type': 'template', 'altText': 'お席をお選びください', 'template': {'type': 'buttons', 'text': 'ご希望のお席・お時間をお選びください', 'actions': actions}}]
     if command == '朝倉へ相談':
         c.execute("UPDATE concierge_customers SET state='request' WHERE user_id=?", (user,))
         return [text_message('ご希望日時・お名前・ご要望をお送りください。内容を店舗管理画面に保存し、朝倉へ取り次ぎます。アレルギー等の対応可否は朝倉からの回答をお待ちください。')]
     state = c.execute('SELECT state FROM concierge_customers WHERE user_id=?', (user,)).fetchone()[0]
+    if state.startswith('preference:') and command not in ('メニュー', 'キャンセル'):
+        command = 'ご案内内容：'+state.removeprefix('preference:')+'\nお客様のご返答：'+command
+        state = 'request'
     if state == 'request' and command not in ('メニュー', 'キャンセル'):
         if len(command) > 2000:
             return [text_message('ご相談は2000文字以内でお送りください。')]
@@ -214,7 +259,7 @@ def respond(c, user, command, lookup, courses, base_url):
             enqueue(c, owner, [text_message('【常連様からのご相談】受付 ' + request_id + '\n' + command + '\n回答はこちら：' + base_url + '/concierge', False)], channel='owner', kind='request')
         return [text_message('ご相談を受け付けました（受付番号 ' + request_id + '）。朝倉の確認・回答をお待ちください。この時点では予約・特別対応は確定していません。')]
     c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
-    return [text_message('西天満つきやの予約コンシェルジュです。下のメニューから空席確認・コース案内・ご相談をお選びください。')]
+    return [text_message('西天満つきやのコンシェルジュでございます。お席のご相談やお料理のご案内を承ります。下のメニューよりお選びください。')]
 
 
 def receive(db, raw, signature, lookup, courses, base_url):
@@ -256,8 +301,7 @@ def receive(db, raw, signature, lookup, courses, base_url):
         try:
             with c:
                 put(c, 'verified', datetime.now(JST).isoformat())
-                if setting(c, 'enabled') != '1':
-                    return 200, {'ok': True, 'enabled': False}
+                enabled = setting(c, 'enabled') == '1'
                 for e in events:
                     if not c.execute('INSERT OR IGNORE INTO concierge_events VALUES (?,?)', (e['webhookEventId'], time.time())).rowcount:
                         continue
@@ -274,7 +318,10 @@ def receive(db, raw, signature, lookup, courses, base_url):
                         continue
                     c.execute('INSERT INTO concierge_customers(user_id) VALUES (?) ON CONFLICT(user_id) DO UPDATE SET active=1', (user,))
                     command = msg.get('text', 'メニュー').strip()
-                    enqueue(c, user, respond(c, user, command, cached_lookup, courses, base_url))
+                    if enabled:
+                        enqueue(c, user, respond(c, user, command, cached_lookup, courses, base_url))
+                    elif command == '配信停止':
+                        c.execute('UPDATE concierge_customers SET stopped=1,subscribed=0 WHERE user_id=?', (user,))
         finally:
             c.close()
     return 200, {'ok': True}
@@ -286,17 +333,25 @@ def deliver(db):
     with DELIVERY_LOCK:
         c = connect(db)
         try:
-            if setting(c, 'enabled') != '1':
+            if setting(c, 'enabled') != '1' and setting(c, 'instagram_enabled') != '1':
                 return
+            with c:
+                queue_arrivals(c)
             rows = c.execute("SELECT * FROM concierge_outbox WHERE state='pending' AND next_try<=? ORDER BY created LIMIT 10", (time.time(),)).fetchall()
             for row in rows:
                 current = c.execute('SELECT state FROM concierge_outbox WHERE id=?', (row['id'],)).fetchone()
-                if setting(c, 'enabled') != '1' or not current or current['state'] != 'pending':
+                if not current or current['state'] != 'pending':
                     continue
                 if time.time() - row['created'] > 23*3600:
                     with c:
                         c.execute("UPDATE concierge_outbox SET state='failed',error='retry window expired' WHERE id=?", (row['id'],))
                         c.execute("UPDATE concierge_requests SET status='回答送信失敗' WHERE delivery_id=?", (row['id'],))
+                    continue
+                if row['channel'] == 'instagram':
+                    import instagram_concierge
+                    instagram_concierge.deliver_row(c, row)
+                    continue
+                if row['channel'] == 'customer' and setting(c, 'enabled') != '1':
                     continue
                 name = 'LINE_CHANNEL_ACCESS_TOKEN' if row['channel'] == 'owner' else 'CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN'
                 token = os.getenv(name, '')
@@ -326,10 +381,10 @@ def status(db):
     with LOCK:
         c = connect(db)
         try:
-            return {'enabled': setting(c, 'enabled') == '1', 'verified_at': setting(c, 'verified'), 'owner_linked': bool(setting(c, 'owner')),
+            return {'enabled': setting(c, 'enabled') == '1', 'instagram_enabled': setting(c, 'instagram_enabled')=='1', 'instagram_verified':setting(c,'instagram_verified'), 'instagram_configured': all(os.getenv(k) for k in ('INSTAGRAM_APP_SECRET','INSTAGRAM_VERIFY_TOKEN','INSTAGRAM_ACCESS_TOKEN','INSTAGRAM_ACCOUNT_ID','INSTAGRAM_GRAPH_VERSION')), 'verified_at': setting(c, 'verified'), 'owner_linked': bool(setting(c, 'owner')),
                     'secret_configured': bool(os.getenv('CONCIERGE_LINE_CHANNEL_SECRET')), 'token_configured': bool(os.getenv('CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN')),
                     'owner_token_configured': bool(os.getenv('LINE_CHANNEL_ACCESS_TOKEN')), 'catalog': catalog(c),
-                    'subscribers': c.execute('SELECT count(*) FROM concierge_customers WHERE active=1 AND subscribed=1').fetchone()[0],
+                    'subscribers': c.execute("SELECT count(*) FROM concierge_customers WHERE active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'").fetchone()[0], 'arrivals_pending': c.execute("SELECT count(*) FROM concierge_arrivals WHERE state='pending'").fetchone()[0],
                     'requests': [dict(r) for r in c.execute('SELECT id,body,created,status FROM concierge_requests ORDER BY created DESC LIMIT 100')],
                     'delivery': [dict(r) for r in c.execute('SELECT kind,state,count(*) AS count FROM concierge_outbox GROUP BY kind,state')]}
         finally:
@@ -343,3 +398,65 @@ def loop(db):
         except Exception:
             pass  # Never log tokens, guest texts or request bodies.
         time.sleep(2)
+
+
+def elegant(text):
+    return re.sub(r'[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]', '', text)
+
+
+def link_customer(c, user, command):
+    code = command.removeprefix('お客様連携 ').strip()
+    hashed = hashlib.sha256(code.encode()).hexdigest()
+    row = c.execute('SELECT * FROM concierge_links WHERE hash=? AND used=0 AND expires>?', (hashed, time.time())).fetchone()
+    if not row:
+        return '連携情報を確認できませんでした。恐れ入りますが、店舗へお問い合わせください。'
+    c.execute('UPDATE concierge_links SET used=1 WHERE hash=?', (hashed,))
+    c.execute('UPDATE concierge_customers SET customer_id=? WHERE user_id=?', (row['customer_id'], user))
+    return 'お客様情報との連携が完了いたしました。今後は、お好みに合わせてご案内いたします。'
+
+
+def profile(c, user):
+    linked = c.execute('SELECT customer_id FROM concierge_customers WHERE user_id=?', (user,)).fetchone()
+    if not linked or not linked[0]:
+        return {}
+    row = c.execute('SELECT * FROM customers WHERE id=?', (linked[0],)).fetchone()
+    return dict(row) if row else {}
+
+
+def preference_message(c, user, cat):
+    p = profile(c, user)
+    parts = []
+    if p.get('preferred_seat') and '個室' in p['preferred_seat']:
+        parts.append('このたびも、いつもの個室をご希望でしょうか。空き状況を確認のうえ、ご用意いたします。')
+    elif p.get('id'):
+        visits = c.execute("SELECT seating_area FROM reservations WHERE customer_id=? AND status='CONFIRMED' AND visit_at<? ORDER BY visit_at DESC LIMIT 3", (p['id'], datetime.now(JST).strftime('%Y-%m-%dT%H:%M'))).fetchall()
+        if len(visits)>=2 and all((r[0] or '').startswith('PRIVATE') for r in visits):
+            parts.append('お席は、いつもの個室でよろしいでしょうか。空き状況を確認いたします。')
+    if 'タクシー' in p.get('return_transport', ''):
+        parts.append('お帰りのタクシーをお手配いたしましょうか。ご希望のお時間がございましたらお申し付けください。')
+    if '日本酒' in p.get('preferred_drinks', '') and cat.get('sake'):
+        parts.append('日本酒がお好きなお客様に、今回新たにご用意した「'+cat['sake']+'」もご紹介できればと存じます。')
+    return '\n'.join(parts)
+
+
+def announcement(c, user, cat):
+    p = profile(c, user)
+    greeting = p.get('name', '') + '様\n\n' if p.get('name') else ''
+    d = date.fromisoformat(cat['arrival_date'])
+    arrived = d <= datetime.now(JST).date()
+    favorite = p.get('preferred_crab', '')
+    matched = favorite and (favorite in cat['crab'] or ('ずわい' in favorite and any(k in cat['crab'] for k in ('ずわい', 'ズワイ', '松葉'))))
+    lead = 'お待たせいたしました。' if matched else 'いつも西天満つきやをご愛顧いただき、誠にありがとうございます。\n'
+    origin = cat['origin'].removesuffix('産')
+    arrival = f"{origin}産{cat['crab']}が{d.month}月{d.day}日より" + ('入荷しております。' if arrived else '入荷いたします。')
+    return greeting + lead + arrival + '\n常連のお客様に先行して、ご予約の受付を開始いたします。ご希望の日程・人数をお知らせいただけましたら、お席をご案内いたします。' + ('\n\n'+preference_message(c,user,cat) if p else '')
+
+
+def queue_arrivals(c):
+    if setting(c, 'enabled') != '1':
+        return
+    for event in c.execute("SELECT * FROM concierge_arrivals WHERE state='pending'").fetchall():
+        cat = json.loads(event['body'])
+        for row in c.execute("SELECT user_id FROM concierge_customers WHERE active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'").fetchall():
+            enqueue(c, row[0], [text_message(announcement(c,row[0],cat))], kind='announcement')
+        c.execute("UPDATE concierge_arrivals SET state='queued' WHERE id=?", (event['id'],))

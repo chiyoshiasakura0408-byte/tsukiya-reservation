@@ -40,15 +40,15 @@ class ConciergeTests(unittest.TestCase):
         self.send('メニュー','a'); self.send('メニュー','a')
         self.assertEqual(len(self.rows('concierge_outbox')),1)
 
-    def test_opt_in_change_and_stop(self):
+    def test_automatic_change_and_stop(self):
         self.send('メニュー')
-        bot.configure(self.db,{'action':'catalog','crab':'蟹A','announce':True})
-        self.assertFalse(any(x['kind']=='announcement' for x in self.rows('concierge_outbox')))
+        bot.configure(self.db,{'action':'catalog','crab':'蟹A','origin':'北海道','arrival_date':'2026-11-10'})
+        self.assertTrue(any(x['kind']=='announcement' for x in self.rows('concierge_outbox')))
         self.send('入荷案内を受け取る')
-        for _ in range(2): bot.configure(self.db,{'action':'catalog','crab':'蟹B','announce':True})
-        self.assertEqual(sum(x['kind']=='announcement' for x in self.rows('concierge_outbox')),1)
+        for _ in range(2): bot.configure(self.db,{'action':'catalog','crab':'蟹B','origin':'北海道','arrival_date':'2026-11-10'})
+        self.assertEqual(sum(x['kind']=='announcement' for x in self.rows('concierge_outbox')),2)
         self.send('配信停止')
-        self.assertEqual([x['state'] for x in self.rows('concierge_outbox') if x['kind']=='announcement'],['cancelled'])
+        self.assertEqual([x['state'] for x in self.rows('concierge_outbox') if x['kind']=='announcement'],['cancelled','cancelled'])
 
     def test_private_owner_pairing_only(self):
         result=bot.configure(self.db,{'action':'pair'})
@@ -81,7 +81,8 @@ class ConciergeTests(unittest.TestCase):
         self.send(day+' 2名',lookup=lookup)
         payload=json.loads(self.rows('concierge_outbox')[-1]['payload'])
         self.assertIn('¥120,000',payload[0]['text'])
-        self.assertIn('party_size=2',payload[1]['template']['actions'][0]['uri'])
+        self.assertIn('/concierge/book#',payload[1]['template']['actions'][0]['uri'])
+        self.assertNotIn('事前決済',payload[0]['text'])
         def unavailable(d,p): raise RuntimeError()
         self.send(day+' 2名',lookup=unavailable)
         self.assertIn('確認できません',json.loads(self.rows('concierge_outbox')[-1]['payload'])[0]['text'])
@@ -106,7 +107,7 @@ class ConciergeTests(unittest.TestCase):
             if day<today: day=day.replace(year=day.year+1)
             self.send(str(day)+' 2名',lookup=run.concierge_availability)
             payload=json.loads(self.rows('concierge_outbox')[-1]['payload'])
-            self.assertIn('空席が見つかりました',payload[0]['text'])
+            self.assertIn('お席をご案内できます',payload[0]['text'])
 
     def test_retry_uses_same_key_and_409_is_accepted(self):
         import urllib.error
@@ -125,9 +126,10 @@ class ConciergeTests(unittest.TestCase):
             self.assertEqual(call.call_args.args[0].get_header('X-line-retry-key'),first['id'])
         self.assertEqual(self.rows('concierge_outbox')[0]['state'],'accepted')
 
-    def test_catalog_rollback_on_disabled_announcement(self):
+    def test_arrival_waits_until_enabled(self):
         bot.configure(self.db,{'action':'disable'})
-        with self.assertRaises(ValueError):bot.configure(self.db,{'action':'catalog','crab':'新しい蟹','announce':True})
-        self.assertEqual(bot.status(self.db)['catalog'],{})
+        bot.configure(self.db,{'action':'catalog','crab':'新しい蟹','origin':'北海道','arrival_date':'2026-11-10'})
+        self.assertEqual(bot.status(self.db)['arrivals_pending'],1)
+
 
 if __name__=='__main__': unittest.main()
