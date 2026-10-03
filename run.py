@@ -2,6 +2,7 @@ from email.utils import formataddr, parseaddr
 import refunds
 import line_bot
 import line_delivery
+import line_receipts
 import sys
 import os
 import re
@@ -1858,7 +1859,7 @@ class Handler(
         if p == "/api/line/status":
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
-            return self.send_json({**line_bot.status(DB), **line_delivery.status(DB)}, headers={"Cache-Control": "no-store"})
+            return self.send_json({**line_bot.status(DB), **line_delivery.status(DB), **line_receipts.status(DB)}, headers={"Cache-Control": "no-store"})
 
         if p == "/webhooks/line":
             return self.send_json({"service": "tsukiya-line-webhook", "version": 1,
@@ -2253,6 +2254,28 @@ class Handler(
         p = urlparse(
             self.path
         ).path
+
+        if p == "/api/line/receipt-content":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if self.headers.get("Transfer-Encoding") or not 0 < length <= 512:
+                    return self.send_json({"error":"invalid request"},400)
+                self.connection.settimeout(15)
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    return self.send_json({"error":"invalid request"},400)
+                code, data, mime = line_receipts.content(DB,raw,self.headers.get("X-Tsukiya-Receipt-Signature", ""))
+                if code != 200:
+                    return self.send_json({"error":"receipt unavailable"},code)
+                self.send_response(200)
+                self.send_header("Content-Type",mime)
+                self.send_header("Content-Length",str(len(data)))
+                self.send_header("Cache-Control","private, no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            except Exception:
+                return self.send_json({"error":"receipt unavailable"},503)
 
         if p in ("/api/line/test", "/api/line/enable", "/api/line/disable"):
             if not self.auth():
@@ -3150,6 +3173,7 @@ if __name__ == "__main__":
     c = con()
     c.close()
     threading.Thread(target=expiry_loop, daemon=True).start()
+    threading.Thread(target=line_receipts.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=line_delivery.loop, args=(DB, PORT, ADMIN_TOKEN, APP_BASE_URL), daemon=True).start()
 
     print(
@@ -3163,3 +3187,4 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
+
