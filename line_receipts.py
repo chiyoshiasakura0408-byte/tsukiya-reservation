@@ -55,10 +55,10 @@ def drain(db):
             if not row: return
             try:
                 secret = bridge_secret(db)
-                if not secret: raise RuntimeError('bridge not configured')
+                if not secret or not bridge_secret(db,'receiver_token'): raise RuntimeError('bridge not configured')
                 stamp = str(int(time.time()))
                 signature = base64.b64encode(hmac.new(secret.encode(),b'tsukiya-receipt-relay-v1\n'+stamp.encode()+b'\n'+row[1],hashlib.sha256).digest()).decode()
-                req = urllib.request.Request(RELAY, data=row[1], headers={'Content-Type':'application/json','X-Tsukiya-Relay-Signature':signature,'X-Tsukiya-Relay-Time':stamp})
+                req = urllib.request.Request(RELAY, data=row[1], headers={'OAI-Sites-Authorization':'Bearer '+bridge_secret(db,'receiver_token'),'Content-Type':'application/json','X-Tsukiya-Relay-Signature':signature,'X-Tsukiya-Relay-Time':stamp})
                 with urllib.request.urlopen(req, timeout=15) as r:
                     if r.status != 200: raise RuntimeError()
                 c.execute("UPDATE receipt_relay SET state='forwarded',body=X'',signature='',error=NULL WHERE id=?", (row[0],))
@@ -108,21 +108,24 @@ def status(db):
         schema(c)
         counts=dict(c.execute('SELECT state,COUNT(*) FROM receipt_relay GROUP BY state'))
         error=c.execute('SELECT error FROM receipt_relay WHERE error IS NOT NULL ORDER BY created DESC LIMIT 1').fetchone()
-        return {'receipt_import_enabled':bool(bridge_secret(db)),'receipt_relay':counts,'receipt_relay_error':error[0] if error else None}
+        return {'receipt_import_enabled':bool(bridge_secret(db) and bridge_secret(db,'receiver_token')),'receipt_relay':counts,'receipt_relay_error':error[0] if error else None}
     finally:c.close()
 
-def bridge_secret(db):
+def bridge_secret(db, key="secret"):
     c=sqlite3.connect(db,timeout=30)
     try:
         schema(c)
-        row=c.execute("SELECT value FROM receipt_bridge_config WHERE key='secret'").fetchone()
+        row=c.execute("SELECT value FROM receipt_bridge_config WHERE key=?",(key,)).fetchone()
         return row[0] if row else ''
     finally:c.close()
 
-def configure(db,secret):
+def configure(db,secret,receiver_token):
     if not isinstance(secret,str) or not re.fullmatch(r'[0-9a-f]{64}',secret):raise ValueError('invalid key')
+    if not isinstance(receiver_token,str) or not 16<=len(receiver_token)<=8192 or any(ord(ch)<33 or ord(ch)>126 for ch in receiver_token):raise ValueError('invalid receiver credential')
     c=sqlite3.connect(db,timeout=30)
     try:
         schema(c)
-        with c:c.execute("INSERT INTO receipt_bridge_config VALUES('secret',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(secret,))
+        with c:
+            c.execute("INSERT INTO receipt_bridge_config VALUES('secret',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(secret,))
+            c.execute("INSERT INTO receipt_bridge_config VALUES('receiver_token',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(receiver_token,))
     finally:c.close()

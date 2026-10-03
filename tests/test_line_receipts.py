@@ -3,7 +3,7 @@ from unittest.mock import patch,MagicMock
 import line_bot,line_receipts as r
 class RelayTests(unittest.TestCase):
  def setUp(self):
-  self.tmp=tempfile.TemporaryDirectory();self.db=self.tmp.name+'/db';self.env=patch.dict(os.environ,{'LINE_CHANNEL_SECRET':'test','LINE_CHANNEL_ACCESS_TOKEN':'token'});self.env.start();r.configure(self.db,"a"*64)
+  self.tmp=tempfile.TemporaryDirectory();self.db=self.tmp.name+'/db';self.env=patch.dict(os.environ,{'LINE_CHANNEL_SECRET':'test','LINE_CHANNEL_ACCESS_TOKEN':'token'});self.env.start();r.configure(self.db,"a"*64,"test-service-token")
  def tearDown(self):self.env.stop();self.tmp.cleanup()
  def receive(self,mid='123',group=r.GROUP,kind='message'):
   event={'webhookEventId':'e'+mid+kind,'type':kind,'timestamp':int(time.time()*1000),'source':{'type':'group','groupId':group},'message':{'id':mid,'type':'image'},'unsend':{'messageId':mid}}

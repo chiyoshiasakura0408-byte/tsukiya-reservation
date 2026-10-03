@@ -2262,11 +2262,11 @@ class Handler(
                 return self.send_json({"error":"invalid request"},403)
             try:
                 length=int(self.headers.get("Content-Length", "0"))
-                if self.headers.get("Transfer-Encoding") or not 0 < length <= 512:
+                if self.headers.get("Transfer-Encoding") or not 0 < length <= 16384:
                     return self.send_json({"error":"invalid request"},400)
                 self.connection.settimeout(10)
                 data=json.loads(self.rfile.read(length))
-                line_receipts.configure(DB,data.get("secret"))
+                line_receipts.configure(DB,data.get("secret"),data.get("receiver_token"))
                 return self.send_json({"ok":True})
             except (ValueError,TypeError,AttributeError):
                 return self.send_json({"error":"invalid request"},400)
