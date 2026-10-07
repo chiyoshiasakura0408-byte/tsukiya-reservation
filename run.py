@@ -1910,6 +1910,8 @@ class Handler(
             self.end_headers()
             self.wfile.write(content)
             return
+        if p == "/api/public/course-catalog":
+            return self.send_json(concierge.concierge_menu.catalog(), headers={"Access-Control-Allow-Origin": "*"})
         if p == "/concierge/en":
             return self.send_html((BASE / "public" / "concierge-en.html").read_text(encoding="utf-8"), loader=False)
         if p == "/concierge/book":

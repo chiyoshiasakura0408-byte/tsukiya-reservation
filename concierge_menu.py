@@ -1,5 +1,7 @@
 """LINE calendar and course presentation, using registered course/catalog data only."""
 import calendar
+import json
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
 JST = timezone(timedelta(hours=9))
@@ -21,7 +23,8 @@ def course_windows(courses, today):
 
 
 def current_courses(courses):
-    windows = course_windows(courses, datetime.now(JST).date())
+    registered = {item['id']:(item['name'],item['price']) for item in catalog()['courses'] if item['online_booking'] and item['id'] in courses}
+    windows = course_windows(registered, datetime.now(JST).date())
     lines = ['【ただいまのコース】', '現在ご予約を承っているコースと、ご来店いただける期間です。']
     lines += [f'{name}\n{start:%Y年%m月%d日}〜{end:%Y年%m月%d日}\nお一人様 ¥{price:,}（税込）' for start, end, name, price in windows]
     if not windows:
@@ -31,15 +34,15 @@ def current_courses(courses):
     return '\n\n'.join(lines)
 
 
+def catalog():
+    return json.loads((Path(__file__).parent / 'course_catalog.json').read_text(encoding='utf-8'))
+
+
 def annual_courses(courses):
     lines = ['【年間スケジュール】', '年間のコーススケジュール']
-    for key in ('matsuba-fukahire',):
-        if key in courses:
-            lines.append('1月1日〜3月20日\n' + courses[key][0])
-    lines.append('3月21日〜11月9日\nこの期間のコース・提供時期は、VIP担当にお問い合わせください。')
-    if 'matsuba-seko' in courses:
-        lines.append('11月10日〜12月31日\n' + courses['matsuba-seko'][0])
-    lines.append('入荷状況により内容が変わる場合がございます。\n現在受付中のコースは「ただいまのコース」でご確認ください。')
+    for item in catalog()['courses']:
+        lines.append(item['period'] + '\n' + item['name'] + f"\nお一人様 ¥{item['price']:,}（税込）")
+    lines.append('季節の目安です。入荷状況により、ご提供期間・内容が変わる場合がございます。\n現在受付中のコースは「ただいまのコース」でご確認ください。')
     return '\n\n'.join(lines)
 
 
@@ -97,3 +100,4 @@ def calendar_message(month=None):
     if nav:
         bubble['footer'] = {'type': 'box', 'layout': 'horizontal', 'contents': nav}
     return {'type': 'flex', 'altText': f'空席案内：{shown.year}年{shown.month}月のカレンダーから日付をお選びください', 'contents': bubble}
+

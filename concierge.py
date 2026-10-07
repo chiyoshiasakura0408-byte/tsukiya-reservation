@@ -226,7 +226,7 @@ def respond(c, user, command, lookup, courses, base_url):
         details = ['【コース内容】']
         if cat.get('crab'):
             details.append(cat['crab'])
-        details.append(cat.get('menu') or '詳しいお品書きは、ただいま準備中でございます。\nVIP担当へお気軽にお問い合わせください。')
+        details.append(cat.get('menu') or '\n\n'.join(item['name'] + '\n' + item['description'] for item in concierge_menu.catalog()['courses'] if item['online_booking'] and item['description']))
         if cat.get('menu_url'):
             details.append(cat['menu_url'])
         if not cat.get('photo'):

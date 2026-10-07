@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "courses": [
+    {
+      "id": "matsuba-fukahire",
+      "name": "松葉蟹と名物ふかひれあんかけおまかせコース",
+      "name_en": "Matsuba Snow Crab & Signature Shark Fin Omakase",
+      "period": "1月1日〜3月20日",
+      "period_en": "January 1 – March 20",
+      "price": 60000,
+      "online_booking": true,
+      "description": "松葉蟹に、名物ふかひれあんかけを合わせたおまかせコース。"
+    },
+    {
+      "id": "hairy",
+      "name": "超特大毛蟹おまかせコース",
+      "name_en": "Extra-Large Hairy Crab Omakase",
+      "period": "3月〜5月",
+      "period_en": "March – May",
+      "price": 50000,
+      "online_booking": false,
+      "description": ""
+    },
+    {
+      "id": "zuwaigani",
+      "name": "活ずわい蟹おまかせコース",
+      "name_en": "Live Snow Crab Omakase",
+      "period": "7月〜9月",
+      "period_en": "July – September",
+      "price": 40000,
+      "online_booking": false,
+      "description": ""
+    },
+    {
+      "id": "tarabagani",
+      "name": "活たらば蟹おまかせコース",
+      "name_en": "Live King Crab Omakase",
+      "period": "9月〜11月",
+      "period_en": "September – November",
+      "price": 40000,
+      "online_booking": false,
+      "description": ""
+    },
+    {
+      "id": "matsuba-seko",
+      "name": "松葉蟹、せこ蟹おまかせコース",
+      "name_en": "Matsuba Snow Crab & Seko Crab Omakase",
+      "period": "11月10日〜12月31日",
+      "period_en": "November 10 – December 31",
+      "price": 60000,
+      "online_booking": true,
+      "description": "松葉蟹とせこ蟹をお楽しみいただくおまかせコース。"
+    }
+  ]
+}
