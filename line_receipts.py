@@ -146,9 +146,20 @@ def configure(db,secret,receiver_token):
             c.execute("INSERT INTO receipt_bridge_config VALUES('receiver_token',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(receiver_token,))
     finally:c.close()
 
+def review_recipient(db):
+    # Only the authenticated owner-pairing flow may establish this destination.
+    import concierge
+    c=concierge.connect(db)
+    try:
+        owner=concierge.setting(c,'owner')
+        return owner if re.fullmatch(r'U[0-9a-f]{32}',owner or '') else ''
+    finally:c.close()
+
 def drain_reviews(db):
     token=os.getenv('LINE_CHANNEL_ACCESS_TOKEN','').strip()
     if not token:return
+    recipient=review_recipient(db)
+    if not recipient:return  # Keep pending; never fall back to the group.
     c=sqlite3.connect(db,timeout=30)
     try:
         schema(c)
@@ -159,7 +170,7 @@ def drain_reviews(db):
         row=c.execute("SELECT n.message_id,n.retry_key,n.notice_text FROM receipt_review_notices n JOIN receipt_images i ON i.message_id=n.message_id WHERE n.state='pending' AND n.next_try<=? AND i.cancelled=0 ORDER BY n.created LIMIT 1",(now,)).fetchone()
         if not row:return
         text=row[2] or '【つきや経理・伝票の確認依頼】\nLINEで受信した写真に確認が必要です。経理画面で内容をご確認ください。\nhttps://tsukiya-daily-finance.chiyoshi-a-0408.chatgpt.site'
-        req=urllib.request.Request('https://api.line.me/v2/bot/message/push',data=json.dumps({'to':GROUP,'messages':[{'type':'text','text':text}]}).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json','X-Line-Retry-Key':row[1]})
+        req=urllib.request.Request('https://api.line.me/v2/bot/message/push',data=json.dumps({'to':recipient,'messages':[{'type':'text','text':text}]}).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json','X-Line-Retry-Key':row[1]})
         sent=False
         try:
             with urllib.request.urlopen(req,timeout=10) as response:sent=response.status==200
