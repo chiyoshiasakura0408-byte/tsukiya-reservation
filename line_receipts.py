@@ -1,4 +1,4 @@
-"""Durable signed relay to finance; no group messages are sent."""
+"""Durable signed receipt relay and review notifications to the linked group."""
 import base64
 import hashlib
 import hmac
@@ -21,6 +21,7 @@ def schema(c):
     c.execute('CREATE TABLE IF NOT EXISTS receipt_relay(id TEXT PRIMARY KEY, body BLOB NOT NULL, signature TEXT NOT NULL, created REAL NOT NULL, next_try REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT \'pending\', error TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS receipt_images(message_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, created REAL NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0)')
     c.execute('CREATE INDEX IF NOT EXISTS receipt_relay_pending ON receipt_relay(state,next_try)')
+    c.execute("CREATE TABLE IF NOT EXISTS receipt_review_notices(message_id TEXT PRIMARY KEY, retry_key TEXT NOT NULL, created REAL NOT NULL, next_try REAL NOT NULL, state TEXT NOT NULL DEFAULT 'pending')")
 
 def enqueue(c, raw, signature, payload):
     schema(c)
@@ -70,7 +71,9 @@ def drain(db):
 
 def loop(db):
     while True:
-        try: drain(db)
+        try:
+            drain(db)
+            drain_reviews(db)
         except Exception: pass
         time.sleep(5)
 
@@ -90,6 +93,14 @@ def content(db, raw, signature):
         allowed=c.execute('SELECT 1 FROM receipt_images WHERE message_id=? AND group_id=? AND cancelled=0 AND created>?',(mid,GROUP,time.time()-7*86400)).fetchone()
     finally:c.close()
     if not allowed:return 404,b'',''
+    if x.get('action') == 'review_notice':
+        import uuid
+        c=sqlite3.connect(db,timeout=30)
+        try:
+            with c:
+                c.execute('INSERT OR IGNORE INTO receipt_review_notices(message_id,retry_key,created,next_try) VALUES(?,?,?,?)',(mid,str(uuid.uuid4()),time.time(),time.time()))
+        finally:c.close()
+        return 200,b'{"queued":true}','application/json'
     token=os.getenv('LINE_CHANNEL_ACCESS_TOKEN','').strip()
     if not token:return 503,b'',''
     try:
@@ -128,4 +139,26 @@ def configure(db,secret,receiver_token):
         with c:
             c.execute("INSERT INTO receipt_bridge_config VALUES('secret',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(secret,))
             c.execute("INSERT INTO receipt_bridge_config VALUES('receiver_token',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(receiver_token,))
+    finally:c.close()
+
+def drain_reviews(db):
+    token=os.getenv('LINE_CHANNEL_ACCESS_TOKEN','').strip()
+    if not token:return
+    c=sqlite3.connect(db,timeout=30)
+    try:
+        schema(c)
+        now=time.time()
+        with c:
+            # LINE retry keys expire after 24h; stop before re-delivery becomes possible.
+            c.execute("UPDATE receipt_review_notices SET state='expired' WHERE state='pending' AND created<?",(now-23*3600,))
+        row=c.execute("SELECT n.message_id,n.retry_key FROM receipt_review_notices n JOIN receipt_images i ON i.message_id=n.message_id WHERE n.state='pending' AND n.next_try<=? AND i.cancelled=0 ORDER BY n.created LIMIT 1",(now,)).fetchone()
+        if not row:return
+        text='【つきや経理・伝票の確認依頼】\nLINEで受信した写真に確認が必要です。経理画面で内容をご確認ください。\nhttps://tsukiya-daily-finance.chiyoshi-a-0408.chatgpt.site'
+        req=urllib.request.Request('https://api.line.me/v2/bot/message/push',data=json.dumps({'to':GROUP,'messages':[{'type':'text','text':text}]}).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json','X-Line-Retry-Key':row[1]})
+        sent=False
+        try:
+            with urllib.request.urlopen(req,timeout=10) as response:sent=response.status==200
+        except urllib.error.HTTPError as e:sent=e.code==409 and bool(e.headers.get('x-line-accepted-request-id'))
+        except Exception:pass
+        with c:c.execute("UPDATE receipt_review_notices SET state=?,next_try=? WHERE message_id=?",('sent' if sent else 'pending',now+60,row[0]))
     finally:c.close()
