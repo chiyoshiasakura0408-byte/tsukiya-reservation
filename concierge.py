@@ -110,7 +110,7 @@ def configure(db, data):
                 if action == 'instagram-enable':
                     import instagram_concierge
                     if not instagram_concierge.configured() or not setting(c, 'instagram_verified') or not setting(c,'owner') or not os.getenv('LINE_CHANNEL_ACCESS_TOKEN'):
-                        raise ValueError('Instagramの資格情報・Webhook検証・朝倉さん連携が必要です')
+                        raise ValueError('Instagramの資格情報・Webhook検証・VIP担当連携が必要です')
                     put(c, 'instagram_enabled', '1')
                 elif action == 'instagram-disable':
                     put(c, 'instagram_enabled', '0')
@@ -121,7 +121,7 @@ def configure(db, data):
                     if os.getenv('CONCIERGE_LINE_CHANNEL_SECRET') == os.getenv('LINE_CHANNEL_SECRET'):
                         raise ValueError('お客様用と業務用のLINEは別チャネルにしてください')
                     if not setting(c, 'owner') or not os.getenv('LINE_CHANNEL_ACCESS_TOKEN'):
-                        raise ValueError('朝倉さんの個人LINE連携が必要です')
+                        raise ValueError('VIP担当の個人LINE連携が必要です')
                     put(c, 'enabled', '1')
                 elif action == 'disable':
                     put(c, 'enabled', '0')
@@ -200,7 +200,7 @@ def pair_owner(db, events):
 
 def respond(c, user, command, lookup, courses, base_url):
     cat = catalog(c)
-    command = {'空席': '空席案内', '空席確認': '空席案内', 'コース・料金': 'ただいまのコース',
+    command = {'予約': '空席案内', 'ご予約': '空席案内', '空席': '空席案内', '空席確認': '空席案内', 'コース・料金': 'ただいまのコース',
                '朝倉へ相談': 'VIP担当に相談', '写真': 'コース内容', '動画': 'コース内容', 'お品書き': 'コース内容',
                '蟹の時期': '年間スケジュール', '空席・ご予約': '空席案内', 'お料理・お品書き': 'コース内容'}.get(command, command)
     if command in MENU or command.startswith(('calendar:', 'visit:')):
@@ -241,7 +241,7 @@ def respond(c, user, command, lookup, courses, base_url):
         return messages
     if command in ('記念日・食事の相談','忘れ物'):
         c.execute("UPDATE concierge_customers SET state='request' WHERE user_id=?",(user,))
-        return [text_message('ご来店日・お名前と、詳しい内容をお聞かせください。朝倉へ確認のうえ、ご案内いたします。')]
+        return [text_message('ご来店日・お名前と、詳しい内容をお聞かせください。VIP担当へ確認のうえ、ご案内いたします。')]
     if command=='来店案内':
         return [text_message('18時と20時30分の二部制でございます。お時間に合わせてお越しくださいませ。個室は別邸（大阪市北区西天満3-8-7）で、本店とは別の建物です。ご予約確定メールの来店先をご確認ください。')]
     if any(k in command for k in ('道順','場所','住所','アクセス','何時','来店時間','お品書きの案内','記念日','花束','食事制限','アレルギー','タクシー','忘れ物')):
@@ -277,7 +277,7 @@ def respond(c, user, command, lookup, courses, base_url):
         except Exception:
             return [text_message('現在、空席を確認できません。少し後にお試しいただくか、「VIP担当に相談」からお問い合わせください。')]
         if not slots:
-            return [text_message(f'{day}・{party}名様は、満席または受付期間外です。別の日付をお送りいただくか、朝倉へご相談ください。')]
+            return [text_message(f'{day}・{party}名様は、満席または受付期間外です。別の日付をお送りいただくか、VIP担当へご相談ください。')]
         actions = []
         for slot in slots[:4]:
             token = secrets.token_urlsafe(32)
@@ -291,7 +291,7 @@ def respond(c, user, command, lookup, courses, base_url):
                 {'type': 'template', 'altText': 'お席をお選びください', 'template': {'type': 'buttons', 'text': 'ご希望のお席・お時間をお選びください', 'actions': actions}}]
     if command == 'VIP担当に相談':
         c.execute("UPDATE concierge_customers SET state='request' WHERE user_id=?", (user,))
-        return [text_message('ご希望日時・お名前・ご要望をお送りください。VIP担当の朝倉へ取り次ぎます。アレルギー等の対応可否は朝倉からの回答をお待ちください。')]
+        return [text_message('ご希望日時・お名前・ご要望をお送りください。VIP担当へ取り次ぎます。アレルギー等の対応可否はVIP担当からの回答をお待ちください。')]
     state = c.execute('SELECT state FROM concierge_customers WHERE user_id=?', (user,)).fetchone()[0]
     if state.startswith('preference:') and command not in ('メニュー', 'キャンセル'):
         command = 'ご案内内容：'+state.removeprefix('preference:')+'\nお客様のご返答：'+command
@@ -305,7 +305,7 @@ def respond(c, user, command, lookup, courses, base_url):
         owner = setting(c, 'owner')
         if owner:
             enqueue(c, owner, [text_message('【常連様からのご相談】受付 ' + request_id + '\n' + command + '\n回答はこちら：' + base_url + '/concierge', False)], channel='owner', kind='request')
-        return [text_message('ご相談を受け付けました（受付番号 ' + request_id + '）。朝倉の確認・回答をお待ちください。この時点では予約・特別対応は確定していません。')]
+        return [text_message('ご相談を受け付けました（受付番号 ' + request_id + '）。VIP担当の確認・回答をお待ちください。この時点では予約・特別対応は確定していません。')]
     c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
     return [text_message('西天満つきやのコンシェルジュでございます。\n\nお席のご相談や、お料理のご案内を承ります。\n\nご希望の項目を、下の「ご案内メニュー」からお選びください ↓')]
 

@@ -344,11 +344,11 @@ def sync_requests(app):
             now=datetime.now(bot.JST).strftime('%Y-%m-%dT%H:%M')
             for record in c.execute("SELECT * FROM reservations WHERE visit_at>=? AND status IN ('CONFIRMED','PENDING','INVOICED') AND (coalesce(guest_note,'')!='' OR coalesce(celebration_items,'')!='' OR coalesce(plate_message,'')!='')",(now,)).fetchall():
                 r=dict(record)
-                body=f"予約番号 {r['id']} ／ {r['guest_name']}様 ／ {r['visit_at']}\nお祝い：{r.get('celebration_items') or 'なし'}\nプレート：{r.get('plate_message') or 'なし'}\n記念日・食事制限等のご希望：{r.get('guest_note') or 'なし'}\n特別対応は朝倉確認待ちです。"
+                body=f"予約番号 {r['id']} ／ {r['guest_name']}様 ／ {r['visit_at']}\nお祝い：{r.get('celebration_items') or 'なし'}\nプレート：{r.get('plate_message') or 'なし'}\n記念日・食事制限等のご希望：{r.get('guest_note') or 'なし'}\n特別対応はVIP担当確認待ちです。"
                 key=hashlib.sha256(body.encode()).hexdigest();qid='reservation-'+key[:24]
                 linked=c.execute('SELECT user_id FROM concierge_customers WHERE customer_id=? AND active=1 ORDER BY user_id LIMIT 1',(r.get('customer_id'),)).fetchone()
                 recipient=linked[0] if linked else 'booking:'+str(r['id'])
-                c.execute('INSERT OR IGNORE INTO concierge_requests(id,user_id,body,created,status) VALUES(?,?,?,?,?)',(qid,recipient,body,time.time(),'未回答' if linked else '朝倉確認待ち（予約連絡先へ回答）'))
+                c.execute('INSERT OR IGNORE INTO concierge_requests(id,user_id,body,created,status) VALUES(?,?,?,?,?)',(qid,recipient,body,time.time(),'未回答' if linked else 'VIP担当確認待ち（予約連絡先へ回答）'))
                 c.execute('INSERT OR IGNORE INTO booking_consultations(id,request_id) VALUES(?,?)',(key,qid))
             owner=bot.setting(c,'owner')
             if owner:

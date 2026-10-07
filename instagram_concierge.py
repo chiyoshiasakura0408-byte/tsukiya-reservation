@@ -42,7 +42,7 @@ def handoff(c,user,body,lang,base):
     owner=bot.setting(c,'owner')
     if owner:
         bot.enqueue(c,owner,[bot.text_message('【Instagramからのご相談】'+request_id+'\n回答言語：'+lang+'\n'+body[:2000]+'\n'+base+'/concierge',False)],channel='owner',kind='request')
-    return 'Thank you for your message. I will pass your request to Asakura for personal attention. Please await our reply; this message does not confirm a reservation or a special arrangement.' if lang=='en' else 'お問い合わせを承りました。朝倉に確認のうえ、ご案内いたします。ご予約や特別な手配は、回答をお待ちくださいますようお願い申し上げます。'
+    return 'Thank you for your message. I will pass your request to our VIP concierge for personal attention. Please await our reply; this message does not confirm a reservation or a special arrangement.' if lang=='en' else 'お問い合わせを承りました。VIP担当に確認のうえ、ご案内いたします。ご予約や特別な手配は、回答をお待ちくださいますようお願い申し上げます。'
 
 
 def respond(c,user,text,lang,courses,base,slots=None):
@@ -69,7 +69,7 @@ def respond(c,user,text,lang,courses,base,slots=None):
         return (text_en+('\n'+cat['menu_en'] if cat.get('menu_en') else '')) if en else text_ja+('\n'+cat['menu'] if cat.get('menu') else '')
     if any(k in lower for k in ('photo','video','写真','動画')):
         links=[cat.get(k) for k in ('photo','video') if cat.get(k)]
-        return ('Please enjoy a preview of our cuisine.\n' if en else 'お料理の写真・動画をご案内いたします。\n')+'\n'.join(links) if links else ('Our photographs and videos are being prepared. Asakura will be pleased to assist with details.' if en else '写真・動画はただいま準備中でございます。')
+        return ('Please enjoy a preview of our cuisine.\n' if en else 'お料理の写真・動画をご案内いたします。\n')+'\n'.join(links) if links else ('Our photographs and videos are being prepared. our VIP concierge will be pleased to assist with details.' if en else '写真・動画はただいま準備中でございます。')
     if any(k in lower for k in ('address','location','direction','where','アクセス','場所')):
         return 'Our private rooms are in the Bettei annex at 3-8-7 Nishitenma, Kita-ku, Osaka, separate from the main restaurant. Please check the venue in your confirmation email. If you are unsure, please send your reservation date and name, and we will confirm your destination.' if en else '個室は本店とは別の建物、別邸（大阪市北区西天満3-8-7）にございます。ご予約確定メールの来店先をご確認ください。ご不明でしたら、ご予約日とお名前をお知らせください。'
     if lower.strip() in ('hello','hi','good evening','menu','こんにちは','こんばんは','メニュー','english','日本語'):
