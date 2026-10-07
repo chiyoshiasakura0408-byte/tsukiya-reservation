@@ -2,9 +2,14 @@
 import json
 import threading
 import uuid
+import hmac
+import time
+from collections import deque
 from email.message import EmailMessage
 
 LOCK = threading.Lock()
+AUTH_LOCK = threading.Lock()
+AUTH_FAILURES = deque()
 DELAY = 'カード明細への反映には通常さらに2〜7営業日ほどかかる場合があります。'
 GUIDE = '''残高不足の場合の対応手順：
 1. 登録メールアドレスから square-jp@help-messaging.squareup.com へ連絡。
@@ -15,12 +20,19 @@ GUIDE = '''残高不足の場合の対応手順：
 再実行前にSquareで元の返金状況を確認してください。処理中・結果未確認の返金に重ねて別の返金を行わないでください。
 公式手順：https://squareup.com/help/jp/ja/article/8496-troubleshoot-customer-refund'''
 LABELS = {'QUEUED':'返金受付', 'SUBMITTING':'返金結果確認中', 'PENDING':'返金処理中', 'COMPLETED':'Square返金処理完了', 'MANUAL':'返金対応待ち', 'FAILED':'返金対応待ち', 'REJECTED':'返金対応待ち', 'NONE':'返金対象なし'}
+LABELS['AWAITING_APPROVAL'] = '朝倉承認待ち'
 
 def schema(c):
     c.execute('''CREATE TABLE IF NOT EXISTS cancellation_refunds(
         reservation_id INTEGER PRIMARY KEY, fee INTEGER NOT NULL, amount INTEGER NOT NULL,
         status TEXT NOT NULL, request_key TEXT NOT NULL, payload TEXT, refund_id TEXT,
         error TEXT, created_at TEXT NOT NULL)''')
+    columns = {r[1] for r in c.execute('PRAGMA table_info(cancellation_refunds)')}
+    for name, kind in [('approved_at','TEXT'),('approved_by','TEXT'),('approved_amount','INTEGER')]:
+        if name not in columns:
+            c.execute(f'ALTER TABLE cancellation_refunds ADD COLUMN {name} {kind}')
+    # Old, unsubmitted jobs must also wait for an owner decision.
+    c.execute("UPDATE cancellation_refunds SET status='AWAITING_APPROVAL' WHERE status='QUEUED' AND approved_at IS NULL")
     c.execute('''CREATE TABLE IF NOT EXISTS refund_notices(
         reservation_id INTEGER NOT NULL, stage TEXT NOT NULL, audience TEXT NOT NULL,
         status TEXT NOT NULL, PRIMARY KEY(reservation_id,stage,audience))''')
@@ -28,13 +40,47 @@ def schema(c):
 def enqueue(c, r, fee, now):
     paid = r['payment_source'] in ('SQUARE', 'BANK')
     amount = max(0, r['amount'] - fee) if paid else 0
-    status = ('QUEUED' if r['payment_source']=='SQUARE' else 'MANUAL') if amount else 'NONE'
+    status = ('AWAITING_APPROVAL' if r['payment_source']=='SQUARE' else 'MANUAL') if amount else 'NONE'
     c.execute('INSERT OR IGNORE INTO cancellation_refunds(reservation_id,fee,amount,status,request_key,created_at) VALUES(?,?,?,?,?,?)',
               (r['id'], fee, amount, status, str(uuid.uuid4()), now))
 
 def public(c, rid):
     r = c.execute('SELECT fee,amount,status FROM cancellation_refunds WHERE reservation_id=?',(rid,)).fetchone()
     return dict(r) if r else {'fee':0,'amount':0,'status':'MANUAL'}
+
+def approval_configured(app):
+    secret = app.REFUND_APPROVAL_SECRET
+    return len(secret) >= 20 and secret not in (app.ADMIN_TOKEN, app.STAFF_LOGIN_PIN)
+
+def approve(app, rid, supplied, expected_amount):
+    if not approval_configured(app):
+        return 503, {'error':'朝倉専用の返金承認パスワードが未設定です。返金は停止しています。'}
+    with AUTH_LOCK:
+        now = time.monotonic()
+        while AUTH_FAILURES and AUTH_FAILURES[0] <= now - 900:
+            AUTH_FAILURES.popleft()
+        if len(AUTH_FAILURES) >= 5:
+            return 429, {'error':'承認認証の試行が多すぎます。15分後に再試行してください。'}
+        if not isinstance(supplied, str) or not hmac.compare_digest(supplied.encode(), app.REFUND_APPROVAL_SECRET.encode()):
+            AUTH_FAILURES.append(now)
+            return 403, {'error':'返金承認パスワードが違います。'}
+    c = app.con()
+    try:
+        c.execute('BEGIN IMMEDIATE')
+        job = c.execute('SELECT * FROM cancellation_refunds WHERE reservation_id=?',(rid,)).fetchone()
+        r = c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone()
+        if not job or not r:
+            return 404, {'error':'返金対象が見つかりません。'}
+        if (job['status'] != 'AWAITING_APPROVAL' or r['status'] != 'CANCELLED'
+                or r['payment_source'] != 'SQUARE' or job['amount'] <= 0
+                or type(expected_amount) is not int or job['amount'] != expected_amount
+                or job['payload'] or job['refund_id']):
+            return 409, {'error':'返金状況または金額が変わりました。再読み込みして確認してください。'}
+        c.execute("UPDATE cancellation_refunds SET status='QUEUED', approved_at=?, approved_by='朝倉', approved_amount=amount WHERE reservation_id=?",(app.now_iso(),rid))
+        c.commit()
+        return 200, {'ok':True,'status':'QUEUED'}
+    finally:
+        c.close()
 
 def update(app, rid, **values):
     c=app.con()
@@ -79,6 +125,8 @@ def process(app):
             notify(app,job,r,job['status'])
             try:
                 if job['status']=='QUEUED':
+                    if not job['approved_at'] or job['approved_amount'] != job['amount']:
+                        raise ValueError('返金承認を確認できません。返金を停止しました。')
                     invoice=app.square('/v2/invoices/'+r['square_invoice_id'])['invoice']
                     if invoice.get('status')!='PAID' or not invoice.get('order_id'):
                         raise ValueError('請求書の全額決済を確認できません。Squareで確認してください。')
@@ -95,6 +143,8 @@ def process(app):
                     update(app,rid,payload=json.dumps(payload),status='SUBMITTING')
                     job['payload']=json.dumps(payload); job['status']='SUBMITTING'
                 if job['status']=='SUBMITTING':
+                    if not job['approved_at'] or job['approved_amount'] != job['amount']:
+                        raise ValueError('旧処理または承認不一致です。Squareで返金結果を確認してください。再送信していません。')
                     # Persisted exact request/key survives a timeout or process restart.
                     response=app.square('/v2/refunds',json.loads(job['payload']))['refund']
                     update(app,rid,refund_id=response['id'],status=response['status'],error=None)

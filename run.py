@@ -39,6 +39,7 @@ DB = DATA_DIR / "tsukiya.sqlite"
 
 PORT = int(os.getenv("PORT", "10000"))
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+REFUND_APPROVAL_SECRET = os.getenv("REFUND_APPROVAL_SECRET", "")
 STAFF_LOGIN_PIN = "7777"
 SESSION_COOKIE = "tsukiya_session"
 SESSION_SECONDS = 12 * 60 * 60
@@ -1295,8 +1296,8 @@ def send_confirmation(r):
     msg["To"] = r["email"]
 
     cancel_link = cancellation_url(r)
-    cancel_ja = ("ご予約のキャンセルはこちら\n" + cancel_link + "\nリンク先で内容とキャンセル規定をご確認のうえ、お手続きください。キャンセル規定に基づき返金対象額を計算します。Squareカード決済は原則自動返金し、銀行振込・処理できない場合は店舗で対応します。カード明細への反映には通常さらに2〜7営業日ほどかかる場合があります。") if cancel_link else "キャンセルをご希望の場合は店舗へお問い合わせください。"
-    cancel_en = ("Cancel your reservation:\n" + cancel_link + "\nReview the cancellation policy before confirming. Eligible Square card payments are refunded automatically. Bank transfers and exceptions require assistance from the restaurant. Card statements may take a further 2–7 business days to reflect refunds.") if cancel_link else "Please contact the restaurant to cancel your reservation."
+    cancel_ja = ("ご予約のキャンセルはこちら\n" + cancel_link + "\nリンク先で内容とキャンセル規定をご確認のうえ、お手続きください。キャンセル規定に基づき返金対象額を計算します。Squareカード決済は店舗責任者の確認・承認後に返金し、銀行振込・処理できない場合は店舗で対応します。カード明細への反映には通常さらに2〜7営業日ほどかかる場合があります。") if cancel_link else "キャンセルをご希望の場合は店舗へお問い合わせください。"
+    cancel_en = ("Cancel your reservation:\n" + cancel_link + "\nReview the cancellation policy before confirming. Eligible Square card payments are refunded after approval by the restaurant owner. Bank transfers and exceptions require assistance from the restaurant. Card statements may take a further 2–7 business days to reflect refunds.") if cancel_link else "Please contact the restaurant to cancel your reservation."
     if english:
         seat_en = "Private Room" if str(r["seating_area"]).startswith("PRIVATE") else "Counter"
         msg.set_content(
@@ -1717,6 +1718,18 @@ class Handler(
     BaseHTTPRequestHandler
 ):
 
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(30)
+
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Referrer-Policy", "no-referrer")
+        if urlparse(self.path).path.startswith("/api/"):
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def log_message(
         self,
         fmt,
@@ -1940,9 +1953,9 @@ class Handler(
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
             c = con()
-            rows = [dict(r) for r in c.execute("SELECT f.*,r.guest_name FROM cancellation_refunds f JOIN reservations r ON r.id=f.reservation_id ORDER BY f.created_at DESC")]
+            rows = [dict(r) for r in c.execute("SELECT f.*,r.guest_name,r.visit_at,r.cancellation_reason FROM cancellation_refunds f JOIN reservations r ON r.id=f.reservation_id ORDER BY f.created_at DESC")]
             c.close()
-            return self.send_json({"refunds": rows, "guide": refunds.GUIDE}, 200, {"Cache-Control": "no-store"})
+            return self.send_json({"refunds": rows, "guide": refunds.GUIDE, "approval_configured": refunds.approval_configured(sys.modules[__name__])}, 200, {"Cache-Control": "no-store"})
         if p == "/cancel-reservation":
             return self.send_html((BASE / "public" / "cancel.html").read_text(encoding="utf-8"), loader=False)
         if p == "/loading-test":
@@ -2347,6 +2360,18 @@ class Handler(
         p = urlparse(
             self.path
         ).path
+
+        # Reject ambiguous framing before any handler reads or acts on a body.
+        lengths = self.headers.get_all("Content-Length", [])
+        limit = 4096 if p == "/api/login" else 12 * 1024 * 1024
+        if (self.headers.get("Transfer-Encoding") is not None
+                or len(lengths) > 1
+                or (lengths and not re.fullmatch(r"[0-9]{1,10}", lengths[0]))):
+            self.close_connection = True
+            return self.send_json({"error": "invalid request framing"}, 400)
+        if lengths and int(lengths[0]) > limit:
+            self.close_connection = True
+            return self.send_json({"error": "request too large"}, 413)
 
         if p == "/api/guest-service/configure":
             if not self.auth():
@@ -2761,6 +2786,23 @@ class Handler(
             reconcile_reservations()
             return self.send_json({"ok": True})
 
+        approval_match = re.fullmatch(r"/api/refunds/(\d+)/approve", p)
+        if approval_match:
+            if not self.auth():
+                return self.send_json({"error":"unauthorized"}, 401)
+            if self.headers.get('X-Tsukiya-Action') != 'approve-refund':
+                return self.send_json({"error":"invalid request"}, 403)
+            if int(self.headers.get('Content-Length', '0')) > 4096:
+                return self.send_json({"error":"入力が長すぎます"}, 413)
+            try:
+                data = self.read_json()
+                if not isinstance(data, dict):
+                    raise ValueError()
+                status, result = refunds.approve(sys.modules[__name__], int(approval_match[1]), data.get('secret'), data.get('amount'))
+            except (ValueError, UnicodeError):
+                return self.send_json({"error":"入力内容を確認してください"}, 400)
+            return self.send_json(result, status)
+
         if p == "/api/login":
             if not ADMIN_TOKEN:
                 return self.send_json({"error": "管理者パスワードが未設定です"}, 503)
@@ -2774,8 +2816,14 @@ class Handler(
                 limited = len(failures) >= LOGIN_MAX_FAILURES
             if limited:
                 return self.send_json({"error": "ログイン試行が多すぎます。15分後に再試行してください"}, 429)
-            supplied = str(self.read_json().get("password") or "")
-            if not hmac.compare_digest(supplied, STAFF_LOGIN_PIN):
+            try:
+                credentials = self.read_json()
+                if not isinstance(credentials, dict) or not isinstance(credentials.get("password"), str):
+                    raise ValueError("invalid credentials")
+                supplied = credentials["password"]
+            except (ValueError, UnicodeError):
+                return self.send_json({"error": "入力内容を確認してください"}, 400)
+            if not hmac.compare_digest(supplied.encode("utf-8"), STAFF_LOGIN_PIN.encode("utf-8")):
                 with LOGIN_LOCK:
                     LOGIN_FAILURES.setdefault(ip, deque()).append(time.monotonic())
                 return self.send_json({"error": "パスワードが違います"}, 401)
@@ -3372,5 +3420,3 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
-
-

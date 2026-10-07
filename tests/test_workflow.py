@@ -1,4 +1,5 @@
 import json
+from email.message import Message
 import os
 import tempfile
 import threading
@@ -523,6 +524,7 @@ class WorkflowTest(unittest.TestCase):
             c.execute("UPDATE reservations SET status='CONFIRMED',source=?,payment_source=?,payment_confirmed_at='paid-at' WHERE id=?", (source, payment, rid))
             c.commit(); c.close()
             handler = run.Handler.__new__(run.Handler)
+            handler.headers = Message()
             handler.path = f"/api/reservations/{rid}/cancel"
             handler.auth = lambda: True
             handler.send_json = lambda data, status=200: (status, data)
@@ -546,6 +548,7 @@ class WorkflowTest(unittest.TestCase):
     def test_cancel_rejects_unauthenticated_and_unverified_payment(self):
         rid = self.reservation()
         handler = run.Handler.__new__(run.Handler)
+        handler.headers = Message()
         handler.path = f"/api/reservations/{rid}/cancel"
         handler.send_json = lambda data, status=200: (status, data)
         handler.auth = lambda: False
