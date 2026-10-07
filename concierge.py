@@ -304,7 +304,7 @@ def respond(c, user, command, lookup, courses, base_url):
         c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
         owner = setting(c, 'owner')
         if owner:
-            enqueue(c, owner, [text_message('【常連様からのご相談】受付 ' + request_id + '\n' + command + '\n回答はこちら：' + base_url + '/concierge', False)], channel='owner', kind='request')
+            enqueue(c, owner, [text_message('【常連様からのご相談】受付 ' + request_id + '\n' + (profile(c, user).get('name', '未連携のお客様') + '様\n') + command + '\n回答はこちら：' + base_url + '/concierge', False)], channel='owner', kind='request')
         return [text_message('ご相談を受け付けました（受付番号 ' + request_id + '）。VIP担当の確認・回答をお待ちください。この時点では予約・特別対応は確定していません。')]
     c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
     return [text_message('西天満つきやのコンシェルジュでございます。\n\nお席のご相談や、お料理のご案内を承ります。\n\nご希望の項目を、下の「ご案内メニュー」からお選びください ↓')]
@@ -437,7 +437,7 @@ def status(db):
                     'secret_configured': bool(os.getenv('CONCIERGE_LINE_CHANNEL_SECRET')), 'token_configured': bool(os.getenv('CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN')),
                     'owner_token_configured': bool(os.getenv('LINE_CHANNEL_ACCESS_TOKEN')), 'catalog': catalog(c),
                     'subscribers': c.execute("SELECT count(*) FROM concierge_customers WHERE active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'").fetchone()[0], 'arrivals_pending': c.execute("SELECT count(*) FROM concierge_arrivals WHERE state='pending'").fetchone()[0],
-                    'requests': [dict(r) for r in c.execute('SELECT id,body,created,status FROM concierge_requests ORDER BY created DESC LIMIT 100')],
+                    'requests': [{**dict(r), 'customer_name': profile(c, r['user_id']).get('name', '')} for r in c.execute('SELECT id,user_id,body,created,status FROM concierge_requests ORDER BY created DESC LIMIT 100')],
                     'delivery': [dict(r) for r in c.execute('SELECT kind,state,count(*) AS count FROM concierge_outbox GROUP BY kind,state')]}
         finally:
             c.close()

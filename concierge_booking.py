@@ -69,7 +69,7 @@ def booking(app, token, data=None):
         rid = cursor.lastrowid
         c.execute('UPDATE reservations SET celebration_items=?,plate_message=? WHERE id=?',(celebrations,plate,rid))
         c.execute('UPDATE concierge_proposals SET reservation_id=? WHERE hash=?',(rid,hashed))
-        concierge.enqueue(c,proposal['user_id'],[concierge.text_message(f"ご予約を承りました。\n{slot['date']} {slot['time']}・{party}名様\n受付番号 {rid}\n前受けのお支払いはございません。ご来店を心よりお待ち申し上げております。")])
+        concierge.enqueue(c,proposal['user_id'],[concierge.text_message(f"{concierge.profile(c, proposal['user_id']).get('name') or fields['guest_name']}様\nご予約を承りました。\n{slot['date']} {slot['time']}・{party}名様\n受付番号 {rid}\n前受けのお支払いはございません。ご来店を心よりお待ち申し上げております。")])
         row = dict(c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone())
         c.commit()
     finally:
