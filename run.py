@@ -2,6 +2,7 @@ from email.utils import formataddr, parseaddr
 import refunds
 import line_bot
 import concierge
+import english_concierge
 import concierge_booking
 import instagram_concierge
 import guest_service
@@ -1909,6 +1910,8 @@ class Handler(
             self.end_headers()
             self.wfile.write(content)
             return
+        if p == "/concierge/en":
+            return self.send_html((BASE / "public" / "concierge-en.html").read_text(encoding="utf-8"), loader=False)
         if p == "/concierge/book":
             return self.send_html((BASE / "public" / "concierge-book.html").read_text(), loader=False)
         if p == "/concierge":
@@ -2373,6 +2376,21 @@ class Handler(
             self.close_connection = True
             return self.send_json({"error": "request too large"}, 413)
 
+        if p == "/api/public/english-concierge":
+            if self.headers.get("X-Tsukiya-Action") != "english-concierge":
+                return self.send_json({"error": "Invalid request."}, 403)
+            if not lengths or not 0 < int(lengths[0]) <= 12000:
+                self.close_connection = True
+                return self.send_json({"error": "Your enquiry is too long."}, 413)
+            try:
+                self.connection.settimeout(15)
+                code, result = english_concierge.handle(DB, self.read_json(), self.client_address[0], APP_BASE_URL)
+                return self.send_json(result, code)
+            except (ValueError, TypeError, UnicodeDecodeError):
+                return self.send_json({"error": "Please check your name, enquiry and consent, then try again."}, 400)
+            except Exception:
+                return self.send_json({"error": "We could not process your enquiry. Please try again."}, 503)
+
         if p == "/api/guest-service/configure":
             if not self.auth():
                 return self.send_json({"error":"unauthorized"},401)
@@ -2421,9 +2439,9 @@ class Handler(
                     return self.send_json(result, headers={"Cache-Control": "no-store"})
                 if p == "/webhooks/instagram":
                     code, result = instagram_concierge.receive(DB, raw, self.headers.get("X-Hub-Signature-256", ""), concierge_availability, PUBLIC_COURSES, APP_BASE_URL or "https://tsukiya-reservation.onrender.com")
-                    return self.send_json(result, code, headers={"Cache-Control": "no-store"})
+                    return self.send_json(result, code)
                 code, result = concierge.receive(DB, raw, self.headers.get("X-Line-Signature", ""), concierge_availability, PUBLIC_COURSES, APP_BASE_URL or "https://tsukiya-reservation.onrender.com")
-                return self.send_json(result, code, headers={"Cache-Control": "no-store"})
+                return self.send_json(result, code)
             except (ValueError, TypeError, AttributeError) as exc:
                 return self.send_json({"error": str(exc) if admin else "invalid request"}, 400)
             except Exception:
@@ -3420,3 +3438,4 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
+

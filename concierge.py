@@ -155,6 +155,10 @@ def configure(db, data):
                     row = c.execute('SELECT * FROM concierge_requests WHERE id=?', (data.get('id'),)).fetchone()
                     if not row or row['status'] != '未回答':
                         raise ValueError('未回答のご相談が見つかりません')
+                    if row['user_id'].startswith('web:'):
+                        import english_concierge
+                        english_concierge.answer(c, row, body)
+                        return {'ok': True}
                     if row['user_id'].startswith('booking:'):
                         raise ValueError('予約に登録された連絡先へ回答してください')
                     if row['user_id'].startswith('ig:') and len(body.strip())>950:
@@ -508,3 +512,4 @@ def queue_arrivals(c):
         for row in c.execute("SELECT user_id FROM concierge_customers WHERE active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'").fetchall():
             enqueue(c, row[0], [text_message(announcement(c,row[0],cat))], kind='announcement')
         c.execute("UPDATE concierge_arrivals SET state='queued' WHERE id=?", (event['id'],))
+
