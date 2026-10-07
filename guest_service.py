@@ -155,7 +155,7 @@ def plan(app,now=None):
             today=now.date().isoformat()
             for sake in c.execute('SELECT * FROM premium_sake WHERE day=? AND approved=1 AND stock>0',(today,)).fetchall():
                 if now.hour>=9:
-                    staff='【本日の常連様限定・プレミアム隠し酒】\n'+sake['name']+'\n'+sake['description']+'\n登録在庫：'+str(sake['stock'])+'\nご注文は常連様担当スタッフへ。提供前に在庫をご確認ください。'
+                    staff='【本日のVIP限定・プレミアム隠し酒】\n'+sake['name']+'\n'+sake['description']+'\n登録在庫：'+str(sake['stock'])+'\nご注文はVIP担当スタッフへ。提供前に在庫をご確認ください。'
                     insert(c,'sake-staff:'+today+':'+sake['id'],None,'staff-sake',{'text':staff,'photo':sake['photo'],'sake_id':sake['id'],'day':today})
                 if now.hour<12:continue
                 rows=c.execute("SELECT r.*,c.preferred_drinks,c.alcohol_service,c.soft_drink_only FROM reservations r JOIN customers c ON c.id=r.customer_id WHERE r.status='CONFIRMED' AND substr(r.visit_at,1,10)=? AND r.visit_at>?",(today,now.strftime('%Y-%m-%dT%H:%M'))).fetchall()
@@ -164,7 +164,7 @@ def plan(app,now=None):
                     if r['soft_drink_only']=='1' or r['alcohol_service']!='可' or re.search('ソフトドリンク|ノンアル|飲まない|飲酒しない',r.get('preferred_drinks') or ''):continue
                     linked=c.execute("SELECT user_id FROM concierge_customers WHERE customer_id=? AND active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'",(r['customer_id'],)).fetchone()
                     if not linked:continue
-                    text=f"{r['guest_name']}様、本日、常連様限定でプレミアム隠し酒「{sake['name']}」をご用意しております。\n\n{sake['description']}\n\nご注文の際は、常連様担当スタッフまでお申し付けください。"
+                    text=f"{r['guest_name']}様、本日、VIP限定でプレミアム隠し酒「{sake['name']}」をご用意しております。\n\n{sake['description']}\n\nご注文の際は、VIP担当スタッフまでお申し付けください。"
                     insert(c,'sake-guest:'+today+':'+sake['id']+':'+str(r['customer_id']),r['id'],'sake',{'text':text,'photo':sake['photo'],'user_id':linked[0],'sake_id':sake['id'],'day':today,'visit_at':r['visit_at']})
     finally:c.close()
 

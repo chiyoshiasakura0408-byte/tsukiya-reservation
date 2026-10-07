@@ -304,7 +304,7 @@ def respond(c, user, command, lookup, courses, base_url):
         c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
         owner = setting(c, 'owner')
         if owner:
-            enqueue(c, owner, [text_message('【常連様からのご相談】受付 ' + request_id + '\n' + (profile(c, user).get('name', '未連携のお客様') + '様\n') + command + '\n回答はこちら：' + base_url + '/concierge', False)], channel='owner', kind='request')
+            enqueue(c, owner, [text_message('【VIPからのご相談】受付 ' + request_id + '\n' + (profile(c, user).get('name', '未連携のお客様') + '様\n') + command + '\n回答はこちら：' + base_url + '/concierge', False)], channel='owner', kind='request')
         return [text_message('ご相談を受け付けました（受付番号 ' + request_id + '）。VIP担当の確認・回答をお待ちください。この時点では予約・特別対応は確定していません。')]
     c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
     return [text_message('西天満つきやのコンシェルジュでございます。\n\nお席のご相談や、お料理のご案内を承ります。\n\nご希望の項目を、下の「ご案内メニュー」からお選びください ↓')]
@@ -501,7 +501,7 @@ def announcement(c, user, cat):
     lead = 'お待たせいたしました。' if matched else 'いつも西天満つきやをご愛顧いただき、誠にありがとうございます。\n'
     origin = cat['origin'].removesuffix('産')
     arrival = f"{origin}産{cat['crab']}が{d.month}月{d.day}日より" + ('入荷しております。' if arrived else '入荷いたします。')
-    return greeting + lead + arrival + '\n常連のお客様に先行して、ご予約の受付を開始いたします。ご希望の日程・人数をお知らせいただけましたら、お席をご案内いたします。' + ('\n\n'+preference_message(c,user,cat) if p else '')
+    return greeting + lead + arrival + '\nVIPのお客様に先行して、ご予約の受付を開始いたします。ご希望の日程・人数をお知らせいただけましたら、お席をご案内いたします。' + ('\n\n'+preference_message(c,user,cat) if p else '')
 
 
 def queue_arrivals(c):
