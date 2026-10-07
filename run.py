@@ -6,6 +6,7 @@ import concierge_booking
 import instagram_concierge
 import guest_service
 import line_delivery
+import finance_links
 import line_receipts
 import sys
 import os
@@ -2103,6 +2104,8 @@ class Handler(
                 visits = [dict(v) for v in c.execute("""SELECT id,visit_at,party_size,course_name,seating_area,status,
                     amount,guest_note,celebration_items,plate_message,visit_note,companions
                     FROM reservations WHERE customer_id=? ORDER BY visit_at DESC,id DESC""", (customer_id,))]
+                for visit in visits:
+                    visit["receipts"] = finance_links.for_reservation(c,visit["id"])
                 return self.send_json({"customer": dict(row), "visits": visits})
             finally:
                 c.close()
@@ -2201,6 +2204,8 @@ class Handler(
                 )
             ]
 
+            for row in rows:
+                row["receipts"] = finance_links.for_reservation(c,row["id"])
             c.close()
 
             return self.send_json(rows)
@@ -2414,6 +2419,20 @@ class Handler(
                 return self.send_json({"ok":True})
             except (ValueError,TypeError,AttributeError):
                 return self.send_json({"error":"invalid request"},400)
+
+        if p == "/api/finance/receipt-link":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if self.headers.get("Transfer-Encoding") or not 0 < length <= 32768:
+                    return self.send_json({"error":"invalid request"},400)
+                self.connection.settimeout(15)
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    return self.send_json({"error":"invalid request"},400)
+                code, result = finance_links.sync(DB,raw,self.headers.get("X-Tsukiya-Receipt-Signature", ""),con,sync_customers)
+                return self.send_json(result,code,headers={"Cache-Control":"no-store"})
+            except Exception:
+                return self.send_json({"error":"receipt linking unavailable"},503)
 
         if p == "/api/line/receipt-content":
             try:
@@ -3353,4 +3372,5 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
+
 
