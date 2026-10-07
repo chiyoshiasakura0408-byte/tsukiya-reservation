@@ -23,6 +23,9 @@ def schema(c):
     c.execute('CREATE INDEX IF NOT EXISTS receipt_relay_pending ON receipt_relay(state,next_try)')
     c.execute("CREATE TABLE IF NOT EXISTS receipt_review_notices(message_id TEXT PRIMARY KEY, retry_key TEXT NOT NULL, created REAL NOT NULL, next_try REAL NOT NULL, state TEXT NOT NULL DEFAULT 'pending')")
 
+    if 'notice_text' not in {row[1] for row in c.execute('PRAGMA table_info(receipt_review_notices)')}:
+        c.execute("ALTER TABLE receipt_review_notices ADD COLUMN notice_text TEXT NOT NULL DEFAULT ''")
+
 def enqueue(c, raw, signature, payload):
     schema(c)
     relevant = []
@@ -94,11 +97,13 @@ def content(db, raw, signature):
     finally:c.close()
     if not allowed:return 404,b'',''
     if x.get('action') == 'review_notice':
+        notice_text=x.get('notice_text','')
+        if not isinstance(notice_text,str) or len(notice_text)>4000:return 400,b'',''
         import uuid
         c=sqlite3.connect(db,timeout=30)
         try:
             with c:
-                c.execute('INSERT OR IGNORE INTO receipt_review_notices(message_id,retry_key,created,next_try) VALUES(?,?,?,?)',(mid,str(uuid.uuid4()),time.time(),time.time()))
+                c.execute('INSERT OR IGNORE INTO receipt_review_notices(message_id,retry_key,created,next_try,notice_text) VALUES(?,?,?,?,?)',(mid,str(uuid.uuid4()),time.time(),time.time(),notice_text))
         finally:c.close()
         return 200,b'{"queued":true}','application/json'
     token=os.getenv('LINE_CHANNEL_ACCESS_TOKEN','').strip()
@@ -151,9 +156,9 @@ def drain_reviews(db):
         with c:
             # LINE retry keys expire after 24h; stop before re-delivery becomes possible.
             c.execute("UPDATE receipt_review_notices SET state='expired' WHERE state='pending' AND created<?",(now-23*3600,))
-        row=c.execute("SELECT n.message_id,n.retry_key FROM receipt_review_notices n JOIN receipt_images i ON i.message_id=n.message_id WHERE n.state='pending' AND n.next_try<=? AND i.cancelled=0 ORDER BY n.created LIMIT 1",(now,)).fetchone()
+        row=c.execute("SELECT n.message_id,n.retry_key,n.notice_text FROM receipt_review_notices n JOIN receipt_images i ON i.message_id=n.message_id WHERE n.state='pending' AND n.next_try<=? AND i.cancelled=0 ORDER BY n.created LIMIT 1",(now,)).fetchone()
         if not row:return
-        text='【つきや経理・伝票の確認依頼】\nLINEで受信した写真に確認が必要です。経理画面で内容をご確認ください。\nhttps://tsukiya-daily-finance.chiyoshi-a-0408.chatgpt.site'
+        text=row[2] or '【つきや経理・伝票の確認依頼】\nLINEで受信した写真に確認が必要です。経理画面で内容をご確認ください。\nhttps://tsukiya-daily-finance.chiyoshi-a-0408.chatgpt.site'
         req=urllib.request.Request('https://api.line.me/v2/bot/message/push',data=json.dumps({'to':GROUP,'messages':[{'type':'text','text':text}]}).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json','X-Line-Retry-Key':row[1]})
         sent=False
         try:
@@ -162,3 +167,4 @@ def drain_reviews(db):
         except Exception:pass
         with c:c.execute("UPDATE receipt_review_notices SET state=?,next_try=? WHERE message_id=?",('sent' if sent else 'pending',now+60,row[0]))
     finally:c.close()
+
