@@ -594,6 +594,7 @@ class WorkflowTest(unittest.TestCase):
                 body = {"date": day.isoformat(), "time": "18:00", "seating_area": "COUNTER",
                         "party_size": 2, "guest_name": "公開予約テスト", "phone": "09012345678",
                         "email": "public@example.com",
+                        "attribution": {"session_id":"12345678-1234-1234-1234-123456789abc", "source":"google_maps"},
                         "guest_note": "花束の予算は1万円", "celebration_items": ["花束"],
                         "amount": 1,
                         "request_id": "123e4567-e89b-12d3-a456-426614174000",
@@ -640,6 +641,11 @@ class WorkflowTest(unittest.TestCase):
                     run.process_square_event(event, json.dumps(event).encode())
                 self.assertEqual(self.get(first["reservation_id"])["status"], "CONFIRMED")
                 self.assertEqual(self.get(first["reservation_id"])["payment_source"], "SQUARE")
+                c=run.con()
+                attribution=c.execute("SELECT * FROM marketing_reservations WHERE reservation_id=?",(first["reservation_id"],)).fetchone()
+                self.assertEqual(attribution["source"],"google_maps")
+                self.assertEqual(c.execute("SELECT COUNT(*) FROM marketing_reservations WHERE reservation_id=?",(first["reservation_id"],)).fetchone()[0],1)
+                c.close()
         finally:
             run.SQUARE_TOKEN, run.SQUARE_LOCATION_ID = old_token, old_location
             server.shutdown()

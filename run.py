@@ -1,5 +1,6 @@
 from email.utils import formataddr, parseaddr
 import refunds
+import marketing
 import line_bot
 import concierge
 import english_concierge
@@ -186,6 +187,7 @@ def con():
     c = sqlite3.connect(DB, timeout=30)
     c.row_factory = sqlite3.Row
     refunds.schema(c)
+    marketing.schema(c)
 
     c.execute(
         """
@@ -1881,6 +1883,26 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        if p == "/attribution.js":
+            b = (BASE / "public" / "attribution.js").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers(); self.wfile.write(b)
+            return
+        if p in ("/marketing", "/api/marketing"):
+            if not self.auth():
+                return self.redirect("/login") if p == "/marketing" else self.send_json({"error":"unauthorized"},401)
+            if p == "/marketing":
+                return self.send_html((BASE / "public" / "marketing.html").read_text(),loader=False)
+            c=con()
+            try:
+                return self.send_json(marketing.report(c,parse_qs(u.query)),headers={"Cache-Control":"no-store"})
+            except ValueError as exc:
+                return self.send_json({"error":str(exc)},400)
+            finally: c.close()
+
         if p.startswith("/concierge-media/"):
             name = p.rsplit("/",1)[-1]
             if not re.fullmatch(r"[0-9a-f]{32}\.jpg", name):
@@ -2380,6 +2402,34 @@ class Handler(
             self.close_connection = True
             return self.send_json({"error": "request too large"}, 413)
 
+        if p in ("/api/public/marketing-event", "/api/marketing/update"):
+            private = p == "/api/marketing/update"
+            if private and not self.auth():
+                return self.send_json({"error":"unauthorized"},401)
+            allowed = {APP_BASE_URL.rstrip('/'), "https://tsukiya-reservation.onrender.com",
+                       "https://nishitenma-tsukiya-home.chiyoshi-a-0408.chatgpt.site"}
+            origin=self.headers.get("Origin", "")
+            if origin and origin not in allowed or (private and self.headers.get("X-Tsukiya-Action") != "marketing"):
+                return self.send_json({"error":"invalid origin or action"},403)
+            if not private and not origin:
+                return self.send_json({"error":"origin required"},403)
+            if not lengths or not 0 < int(lengths[0]) <= 1024:
+                self.close_connection=True
+                return self.send_json({"error":"invalid size"},400)
+            c=con()
+            try:
+                self.connection.settimeout(10)
+                data=self.read_json()
+                if private: marketing.update(c,data,now_iso())
+                elif not marketing.record(c,data,now_iso()):
+                    return self.send_json({"error":"rate limited"},429)
+                c.commit()
+                return self.send_json({"ok":True},headers={"Cache-Control":"no-store"})
+            except (ValueError,TypeError,UnicodeDecodeError) as exc:
+                c.rollback()
+                return self.send_json({"error":"invalid analytics request"},400)
+            finally: c.close()
+
         if p == "/api/public/english-concierge":
             if self.headers.get("X-Tsukiya-Action") != "english-concierge":
                 return self.send_json({"error": "Invalid request."}, 403)
@@ -2771,6 +2821,7 @@ class Handler(
                      150, "PENDING", request_id, ts, ts, ts, guest_note, celebration_items, plate_message)
                 )
                 rid = cur.lastrowid
+                marketing.bind(c,rid,x.get("attribution"),ts,test_booking)
                 c.commit()
                 row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
             finally:

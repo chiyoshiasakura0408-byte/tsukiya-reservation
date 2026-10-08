@@ -1,0 +1,11 @@
+# First-party reservation attribution
+
+`/marketing` and `/api/marketing?start=YYYY-MM-DD&end=YYYY-MM-DD` require existing staff authentication. Dates use Asia/Tokyo; maximum 367 days. Weekly reports can read this authenticated API with the same authorized session used for reservation management; do not publish credentials or use an unprotected endpoint.
+
+Homepage and Japanese/English booking pages use anonymous 30-minute session IDs; a coarse source is retained through the cross-domain reservation link. The event store never saves raw referrer URLs, UTM values, search terms, IPs, names, email or phone. Session IDs in outgoing reservation URLs are not authorization credentials. Source is observational/client supplied, never proof of ad causality. Browser refusal or Do Not Track produces unknown attribution. Google Maps identification requires the dedicated UTM link after public launch. No external profile links have been changed by this implementation.
+
+Public events: visit, booking_click, booking_start, once per session/event. Bounded payloads, fixed enums, origin allowlist, global ingestion rate limit. Booking creation binds attribution in the reservation transaction. Square payment completion is read from server-side payment_source/payment_confirmed_at, never trusted from browser events. Refund values come from cancellation_refunds; only COMPLETED is deducted as completed refund. Direct confirmed bookings without payment evidence are not counted as paid.
+
+Report reservations are grouped by acceptance date, with current status; events are grouped by event date. These are not a cohort conversion rate. Prepayments are not visit-date sales. Attendance is explicit staff confirmation, never inferred from elapsed date. Test endpoints, one-yen payments and test courses are excluded; staff can additionally exclude historical test bookings. Historical source is unknown. Session event totals with an excluded linked test booking are omitted.
+
+Homepage is currently owner-private. Preserve its audience; collection becomes representative only after user-authorized public launch. Staff previews without DNT can count as sessions; mark any linked test booking excluded. No real payments or customer messages are performed during validation.
