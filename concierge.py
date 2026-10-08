@@ -128,7 +128,7 @@ def configure(db, data):
                     c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE channel!='instagram' AND state='pending'")
                 elif action == 'catalog':
                     new = {}
-                    for key, maximum in [('crab', 100), ('origin', 100), ('arrival_date', 10), ('menu', 3000), ('sake', 150), ('menu_en', 3000)]:
+                    for key, maximum in [('crab', 100), ('origin', 100), ('arrival_date', 10), ('menu', 3000), ('notes', 1000), ('sake', 150), ('menu_en', 3000)]:
                         value = data.get(key, '')
                         if not isinstance(value, str) or len(value) > maximum:
                             raise ValueError('入力文字数を確認してください')
@@ -512,4 +512,5 @@ def queue_arrivals(c):
         for row in c.execute("SELECT user_id FROM concierge_customers WHERE active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'").fetchall():
             enqueue(c, row[0], [text_message(announcement(c,row[0],cat))], kind='announcement')
         c.execute("UPDATE concierge_arrivals SET state='queued' WHERE id=?", (event['id'],))
+
 

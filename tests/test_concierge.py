@@ -35,6 +35,12 @@ class ConciergeTests(unittest.TestCase):
         try: return [dict(row) for row in c.execute('SELECT * FROM '+table)]
         finally: c.close()
 
+    def test_catalog_notes_persist(self):
+        bot.configure(self.db,{'action':'catalog','notes':'コースに関する補足事項'})
+        c=bot.connect(self.db)
+        try: self.assertEqual(bot.catalog(c)['notes'],'コースに関する補足事項')
+        finally: c.close()
+
     def test_signature_and_dedup(self):
         self.assertEqual(bot.receive(self.db,b'{}','invalid',None,{},'' )[0],403)
         self.send('メニュー','a'); self.send('メニュー','a')
@@ -133,3 +139,4 @@ class ConciergeTests(unittest.TestCase):
 
 
 if __name__=='__main__': unittest.main()
+

@@ -68,6 +68,17 @@ class RefundTests(unittest.TestCase):
         run.customer_cancellation(token,True,True,120000)
         with patch.object(run,'square') as sq:refunds.process(run);sq.assert_not_called()
         self.assertEqual(self.job()['amount'],0)
+    def test_policy_switches_at_japan_midnight_three_days_before(self):
+        c=run.con();c.execute("UPDATE reservations SET visit_at='2026-11-11T18:00:00+09:00'");c.commit();r=dict(c.execute('SELECT * FROM reservations').fetchone());c.close()
+        token=run.cancellation_token(r)
+        for instant, expected in [('2026-11-07T23:59:59+09:00',0),('2026-11-08T00:00:00+09:00',120000),('2026-11-11T17:59:59+09:00',120000)]:
+            class Clock(datetime):
+                @classmethod
+                def now(cls,tz=None):
+                    return datetime.fromisoformat(instant).astimezone(tz)
+            with self.subTest(instant=instant), patch.object(run,'datetime',Clock):
+                self.assertEqual(run.customer_cancellation(token)[1]['fee'],expected)
+
     def test_bank_manual(self):
         c=run.con();c.execute("UPDATE reservations SET payment_source='BANK'");c.commit();c.close()
         run.customer_cancellation(self.token,True,True,0)
@@ -170,3 +181,4 @@ class RefundTests(unittest.TestCase):
             server.shutdown();server.server_close()
 
 if __name__=='__main__':unittest.main()
+
