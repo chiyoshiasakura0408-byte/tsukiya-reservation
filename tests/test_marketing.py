@@ -67,3 +67,47 @@ class MarketingTest(unittest.TestCase):
     req=urllib.request.Request(base+'/api/marketing?start=2026-10-08&end=2026-10-08',headers={'x-admin-token':'test-marketing'})
     self.assertIn('rows',json.load(urllib.request.urlopen(req)))
   finally:server.shutdown();server.server_close()
+ def test_weekly_archive_is_durable_idempotent_and_private(self):
+  c=run.con();rid=self.booking(c)
+  marketing.archive_due(c,datetime(2026,10,8,10,tzinfo=timezone.utc));c.commit();c.close()
+  c=run.con()
+  initial=marketing.archives(c,{'week':['initial']})['record']
+  self.assertEqual(initial['owner'],'AI SNS担当')
+  self.assertNotIn('reservations',initial)
+  marketing.archive_due(c,datetime(2026,10,11,23,59,tzinfo=timezone.utc))
+  self.assertEqual(len(marketing.archives(c,{'period':['weekly']})['records']),0)
+  marketing.archive_due(c,datetime(2026,10,12,0,0,tzinfo=timezone.utc))
+  saved=marketing.archives(c,{'week':['2026-10-05']})['record']
+  self.assertEqual(saved['end'],'2026-10-11')
+  c.execute("UPDATE reservations SET status='CANCELLED' WHERE id=?",(rid,))
+  marketing.archive_due(c,datetime(2026,10,12,1,tzinfo=timezone.utc))
+  self.assertEqual(marketing.archives(c,{'week':['2026-10-05']})['record'],saved)
+  marketing.archive_due(c,datetime(2026,10,26,0,tzinfo=timezone.utc))
+  self.assertEqual(len(marketing.archives(c,{'period':['weekly']})['records']),3)
+  self.assertNotIn('private name',json.dumps(marketing.archives(c,{'week':['initial']})))
+  c.close()
+ def test_marketing_page_hidden_and_archives_protected(self):
+  from pathlib import Path
+  for path in (Path(run.BASE)/'public').glob('*.html'):
+   self.assertNotIn('href="/marketing"',path.read_text())
+  self.assertFalse((Path(run.BASE)/'public/marketing.html').exists())
+  handler=run.Handler.__new__(run.Handler)
+  handler.path='/marketing';handler.redirect=lambda url:url
+  self.assertEqual(handler.do_GET(),'/reservations')
+  handler.path='/api/marketing/archives';handler.auth=lambda:False
+  handler.send_json=lambda body,status=200,**kwargs:(body,status)
+  self.assertEqual(handler.do_GET()[1],401)
+
+ def test_daily_monthly_yearly_boundaries_and_persistence(self):
+  c=run.con()
+  marketing.archive_due(c,datetime(2026,12,31,3,tzinfo=timezone.utc))
+  marketing.archive_due(c,datetime(2026,12,31,23,59,tzinfo=timezone.utc))
+  self.assertEqual(marketing.archives(c,{'period':['daily']})['records'],[])
+  marketing.archive_due(c,datetime(2027,1,1,0,tzinfo=timezone.utc));c.commit();c.close()
+  c=run.con()
+  for kind,key,end in [('daily','2026-12-31','2026-12-31'),('monthly','2026-12-01','2026-12-31'),('yearly','2026-01-01','2026-12-31')]:
+   record=marketing.archives(c,{'key':[kind+':'+key]})['record']
+   self.assertEqual(record['end'],end)
+   self.assertEqual(record['kind'],kind)
+   self.assertEqual(len(marketing.archives(c,{'period':[kind]})['records']),1)
+  c.close()

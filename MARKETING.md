@@ -1,6 +1,6 @@
 # First-party reservation attribution
 
-`/marketing` and `/api/marketing?start=YYYY-MM-DD&end=YYYY-MM-DD` require existing staff authentication. Dates use Asia/Tokyo; maximum 367 days. Weekly reports can read this authenticated API with the same authorized session used for reservation management; do not publish credentials or use an unprotected endpoint.
+The marketing UI has been removed; `/marketing` redirects to reservation management. `/api/marketing?start=YYYY-MM-DD&end=YYYY-MM-DD` requires existing staff authentication. Dates use Asia/Tokyo; maximum 367 days. Weekly reports can read this authenticated API with the same authorized session used for reservation management; do not publish credentials or use an unprotected endpoint.
 
 Homepage and Japanese/English booking pages use anonymous 30-minute session IDs; a coarse source is retained through the cross-domain reservation link. The event store never saves raw referrer URLs, UTM values, search terms, IPs, names, email or phone. Session IDs in outgoing reservation URLs are not authorization credentials. Source is observational/client supplied, never proof of ad causality. Browser refusal or Do Not Track produces unknown attribution. Google Maps identification requires the dedicated UTM link after public launch. No external profile links have been changed by this implementation.
 
@@ -9,3 +9,9 @@ Public events: visit, booking_click, booking_start, once per session/event. Boun
 Report reservations are grouped by acceptance date, with current status; events are grouped by event date. These are not a cohort conversion rate. Prepayments are not visit-date sales. Attendance is explicit staff confirmation, never inferred from elapsed date. Test endpoints, one-yen payments and test courses are excluded; staff can additionally exclude historical test bookings. Historical source is unknown. Session event totals with an excluded linked test booking are omitted.
 
 Homepage is currently owner-private. Preserve its audience; collection becomes representative only after user-authorized public launch. Staff previews without DNT can count as sessions; mark any linked test booking excluded. No real payments or customer messages are performed during validation.
+
+
+## SNS担当の日別・週別・月別・年別保存
+The background archive worker stores initial partial snapshots on first startup and immutable daily, Monday–Sunday weekly, calendar-month and calendar-year summaries at 09:00 Asia/Tokyo after each period ends (checked every five minutes). The same durable SQLite disk as the reservations stores marketing_archives; no customer names/contact details or reservation-level rows are saved in these summaries. Missed runs catch up after restart and disclose their actual capture timestamp. Saved reports are not overwritten by later payments or refunds; the live report remains available separately.
+
+Authenticated retrieval: GET /api/marketing/archives lists snapshots (next_offset pagination). Filter period=daily|weekly|monthly|yearly. Retrieve key=daily:YYYY-MM-DD, key=YYYY-MM-DD (Monday), key=monthly:YYYY-MM-01, or key=yearly:YYYY-01-01. Initial partial keys are initial:daily, initial, initial:monthly, initial:yearly. Current or arbitrary periods remain accessible through /api/marketing?start=YYYY-MM-DD&end=YYYY-MM-DD. Use these for weekly finance meetings and on-demand requests to the AI SNS role. No additional dashboard or visible system navigation. Existing test exclusion/attendance update API remains authenticated; attendance is never inferred.

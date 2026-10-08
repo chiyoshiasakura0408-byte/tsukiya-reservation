@@ -12,6 +12,11 @@ LOCK = threading.Lock()
 RECENT = deque()
 
 def schema(c):
+    c.execute('CREATE TABLE IF NOT EXISTS marketing_archive_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+    c.execute('''CREATE TABLE IF NOT EXISTS marketing_archives(
+        archive_key TEXT PRIMARY KEY,kind TEXT NOT NULL,start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,captured_at TEXT NOT NULL,payload TEXT NOT NULL)''')
+
     c.execute('''CREATE TABLE IF NOT EXISTS marketing_sessions(
         id TEXT PRIMARY KEY, source TEXT NOT NULL, created_at TEXT NOT NULL)''')
     c.execute('''CREATE TABLE IF NOT EXISTS marketing_events(
@@ -115,3 +120,73 @@ def update(c,data,now):
             raise ValueError('本日以前の確定予約のみ来店確認できます')
         c.execute('UPDATE marketing_reservations SET attended_at=? WHERE reservation_id=?',(now if data['value'] else None,r['id']))
     else: raise ValueError('操作が不正です')
+
+# Immutable meeting snapshots live alongside the reservations on the durable disk.
+def archive_snapshot(c, key, kind, start, end, captured_at):
+    import json
+    result=report(c,{'start':[start],'end':[end]})
+    result.pop('reservations',None)  # Meeting records contain no customer-level records.
+    coverage=c.execute("SELECT value FROM marketing_archive_meta WHERE key='started_at'").fetchone()
+    result.update(owner='AI SNS担当',captured_at=captured_at,kind=kind,
+                  archive_started_at=coverage['value'] if coverage else captured_at,
+                  note='保存日時点の実績。計測開始前の流入元は不明。後日の決済・返金は最新集計と異なる場合があります。')
+    c.execute('INSERT OR IGNORE INTO marketing_archives VALUES(?,?,?,?,?,?)',
+              (key,kind,start,end,captured_at,json.dumps(result,ensure_ascii=False)))
+
+def archive_due(c, now=None):
+    now=now or datetime.now(timezone.utc)
+    jp=now.astimezone(timezone(timedelta(hours=9)))
+    c.execute("INSERT OR IGNORE INTO marketing_archive_meta VALUES('started_at',?)",(now.isoformat(),))
+    started=datetime.fromisoformat(c.execute("SELECT value FROM marketing_archive_meta WHERE key='started_at'").fetchone()['value']).astimezone(jp.tzinfo).date()
+    first={'daily':started,'weekly':started-timedelta(days=started.weekday()),
+           'monthly':started.replace(day=1),'yearly':started.replace(month=1,day=1)}
+    def following(day,kind):
+        if kind=='daily': return day+timedelta(days=1)
+        if kind=='weekly': return day+timedelta(days=7)
+        if kind=='monthly': return date(day.year+(day.month==12),day.month%12+1,1)
+        return date(day.year+1,1,1)
+    for kind,initial in first.items():
+        cursor='next_week' if kind=='weekly' else 'next_'+kind
+        c.execute('INSERT OR IGNORE INTO marketing_archive_meta VALUES(?,?)',(cursor,initial.isoformat()))
+        # Initial partial snapshots are explicit, never represented as completed periods.
+        baseline='initial' if kind=='weekly' else 'initial:'+kind
+        if not c.execute('SELECT 1 FROM marketing_archives WHERE archive_key=?',(baseline,)).fetchone():
+            archive_snapshot(c,baseline,'initial_'+kind,initial.isoformat(),started.isoformat(),now.isoformat())
+        day=date.fromisoformat(c.execute('SELECT value FROM marketing_archive_meta WHERE key=?',(cursor,)).fetchone()['value'])
+        for _ in range(366):
+            next_day=following(day,kind)
+            due=datetime.combine(next_day,datetime.min.time(),jp.tzinfo)+timedelta(hours=9)
+            if jp<due: break
+            key=day.isoformat() if kind=='weekly' else kind+':'+day.isoformat()
+            archive_snapshot(c,key,kind,day.isoformat(),(next_day-timedelta(days=1)).isoformat(),now.isoformat())
+            day=next_day
+            c.execute('UPDATE marketing_archive_meta SET value=? WHERE key=?',(day.isoformat(),cursor))
+
+def archives(c,q):
+    import json
+    key=q.get('key',q.get('week',['']))[0]
+    if key:
+        if not re.fullmatch(r'(?:initial(?::(?:daily|monthly|yearly))?|(?:(?:daily|monthly|yearly):)?[0-9]{4}-[0-9]{2}-[0-9]{2})',key): raise ValueError('invalid archive key')
+        row=c.execute('SELECT payload FROM marketing_archives WHERE archive_key=?',(key,)).fetchone()
+        return {'record':json.loads(row['payload']) if row else None}
+    offset=int(q.get('offset',['0'])[0])
+    if offset<0: raise ValueError('invalid offset')
+    kind=q.get('period',[''])[0]
+    if kind and kind not in ('daily','weekly','monthly','yearly'): raise ValueError('invalid period')
+    records=[dict(r) for r in c.execute('SELECT archive_key,kind,start_date,end_date,captured_at FROM marketing_archives WHERE (?="" OR kind=?) ORDER BY captured_at DESC,archive_key DESC LIMIT 101 OFFSET ?',(kind,kind,offset))]
+    return {'records':records[:100],'next_offset':offset+100 if len(records)>100 else None}
+
+def archive_loop(app):
+    while True:
+        c=None
+        try:
+            c=app.con()
+            c.execute('BEGIN IMMEDIATE')
+            archive_due(c)
+            c.commit()
+        except Exception as exc:
+            if c: c.rollback()
+            print('Marketing archive postponed:',type(exc).__name__)
+        finally:
+            if c: c.close()
+        time.sleep(300)

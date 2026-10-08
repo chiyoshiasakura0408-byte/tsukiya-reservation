@@ -1893,14 +1893,14 @@ class Handler(
             self.send_header("Content-Length", str(len(b)))
             self.end_headers(); self.wfile.write(b)
             return
-        if p in ("/marketing", "/api/marketing"):
+        if p == "/marketing":
+            return self.redirect("/reservations")
+        if p in ("/api/marketing", "/api/marketing/archives"):
             if not self.auth():
-                return self.redirect("/login") if p == "/marketing" else self.send_json({"error":"unauthorized"},401)
-            if p == "/marketing":
-                return self.send_html((BASE / "public" / "marketing.html").read_text(),loader=False)
+                return self.send_json({"error":"unauthorized"},401)
             c=con()
             try:
-                return self.send_json(marketing.report(c,parse_qs(u.query)),headers={"Cache-Control":"no-store"})
+                return self.send_json((marketing.archives if p.endswith("/archives") else marketing.report)(c,parse_qs(u.query)),headers={"Cache-Control":"no-store"})
             except ValueError as exc:
                 return self.send_json({"error":str(exc)},400)
             finally: c.close()
@@ -3499,6 +3499,7 @@ if __name__ == "__main__":
     threading.Thread(target=guest_service.loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=concierge.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=expiry_loop, daemon=True).start()
+    threading.Thread(target=marketing.archive_loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=line_receipts.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=line_delivery.loop, args=(DB, PORT, ADMIN_TOKEN, APP_BASE_URL), daemon=True).start()
 
