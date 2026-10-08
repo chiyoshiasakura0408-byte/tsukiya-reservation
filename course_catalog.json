@@ -35,10 +35,10 @@
       "id": "tarabagani",
       "name": "活たらば蟹おまかせコース",
       "name_en": "Live King Crab Omakase",
-      "period": "9月〜11月",
-      "period_en": "September – November",
-      "price": 40000,
-      "online_booking": false,
+      "period": "2026年10月15日〜11月9日",
+      "period_en": "October 15 – November 9, 2026",
+      "price": 45000,
+      "online_booking": true,
       "description": ""
     },
     {

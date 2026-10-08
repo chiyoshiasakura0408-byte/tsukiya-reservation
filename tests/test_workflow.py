@@ -16,6 +16,18 @@ import run
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_october_course_boundaries(self):
+        from datetime import date
+        for text, price in [("2026-10-14", None), ("2026-10-15", 45000),
+                            ("2026-11-09", 45000), ("2026-11-10", 60000),
+                            ("2027-03-20", 60000), ("2027-03-21", None)]:
+            day = date.fromisoformat(text)
+            result = run.bookable_course(day)
+            self.assertEqual(result[1] if result else None, price)
+        self.assertFalse(run.public_slot_allowed(date(2026,11,10), "18:00", "tarabagani"))
+        self.assertFalse(run.public_slot_allowed(date(2026,11,9), "18:00", "matsuba-seko"))
+        self.assertEqual(run.bookable_course(date(2026,10,15))[0], "活たらば蟹おまかせコース")
+
     def test_seat_blocks_and_private_auto_assignment(self):
         day = "2026-11-10"
         server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
@@ -581,7 +593,7 @@ class WorkflowTest(unittest.TestCase):
                 ) as response:
                     availability = json.load(response)
                 self.assertTrue(availability["days"][0]["slots"]["COUNTER"]["18:00"])
-                self.assertEqual(availability["price_per_person"], 60000)
+                self.assertEqual(availability["price_per_person"], run.bookable_course(day)[1])
                 self.assertTrue(availability["days"][0]["slots"]["PRIVATE1"]["18:00"])
                 self.assertFalse(availability["days"][0]["slots"]["PRIVATE3"]["18:00"])
                 with urllib.request.urlopen(
@@ -623,7 +635,7 @@ class WorkflowTest(unittest.TestCase):
                 self.assertEqual(invoice.call_count, 1)
                 row = self.get(first["reservation_id"])
                 self.assertEqual((row["amount"], row["status"], row["source"]),
-                                 (120000, "INVOICED", "WEB"))
+                                 (run.bookable_course(day)[1] * 2, "INVOICED", "WEB"))
                 self.assertEqual((row["guest_note"], row["celebration_items"]),
                                  ("花束の予算は1万円", "花束"))
                 self.assertIsNotNone(row["cancellation_policy_accepted_at"])

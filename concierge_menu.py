@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
 JST = timezone(timedelta(hours=9))
-PERIODS = {'matsuba-seko': (11, 10, 12, 31), 'matsuba-fukahire': (1, 1, 3, 20)}
+PERIODS = {'tarabagani': (10, 15, 11, 9), 'matsuba-seko': (11, 10, 12, 31), 'matsuba-fukahire': (1, 1, 3, 20)}
 
 
 def course_windows(courses, today):
@@ -16,6 +16,8 @@ def course_windows(courses, today):
             continue
         sm, sd, em, ed = PERIODS[key]
         for year in (today.year, today.year + 1):
+            if key == "tarabagani" and year != 2026:
+                continue
             start, finish = date(year, sm, sd), date(year, em, ed)
             if finish >= today and start <= end:
                 result.append((start, finish, name, price))

@@ -117,6 +117,7 @@ ROOMS = (
 PUBLIC_COURSE_PRICE = 60000  # 税込・1名あたり
 PUBLIC_PAYMENT_HOURS = 48
 PUBLIC_COURSES = {
+    "tarabagani": ("活たらば蟹おまかせコース", 45000),
     "matsuba-seko": ("松葉蟹、せこ蟹おまかせコース", PUBLIC_COURSE_PRICE),
     "matsuba-fukahire": ("松葉蟹と名物ふかひれあんかけおまかせコース", PUBLIC_COURSE_PRICE),
 }
@@ -150,15 +151,9 @@ def guest_requests(x):
 
 
 def public_slot_allowed(day, time_text, course=None):
-    """The public course is offered annually from Nov 10 through Mar 20."""
-    if not (day.month > 11 or (day.month == 11 and day.day >= 10)
-            or day.month < 3 or (day.month == 3 and day.day <= 20)):
-        return False
-    if course == "matsuba-seko" and day.month not in (11, 12):
-        return False
-    if course == "matsuba-fukahire" and day.month not in (1, 2, 3):
-        return False
-    if course is not None and course not in PUBLIC_COURSES:
+    """Validate the date-specific course before accepting a public booking."""
+    actual = bookable_course(day)
+    if actual is None or (course is not None and PUBLIC_COURSES.get(course) != actual):
         return False
     try:
         visit = datetime.fromisoformat(f"{day.isoformat()}T{time_text}")
@@ -171,6 +166,8 @@ def public_slot_allowed(day, time_text, course=None):
 
 def bookable_course(day):
     """Return the currently priced course for a staff phone reservation."""
+    if date(2026, 10, 15) <= day <= date(2026, 11, 9):
+        return PUBLIC_COURSES["tarabagani"]
     if day.month == 11 and day.day >= 10 or day.month == 12:
         return PUBLIC_COURSES["matsuba-seko"]
     if day.month in (1, 2) or day.month == 3 and day.day <= 20:
@@ -2026,8 +2023,8 @@ class Handler(
             english = p == "/book" and (parse_qs(u.query).get("lang") or [""])[0] == "en"
             page = (BASE / "public" / ("book-en.html" if english else "book.html")).read_text(encoding="utf-8")
             if p == "/book-test":
-                page = page.replace("1名様 60,000円（税込）", "決済テスト専用・1予約 1円（税込）")
-                page = page.replace("selected.party_size*60000", "1")
+                page = page.replace("<body>", "<body><p>決済テスト専用・1予約 1円（税込）</p>")
+                page = page.replace("selected.party_size*selected.price_per_person", "1")
                 page = page.replace("/api/public/reservations", "/api/test/reservations")
             return self.send_html(page)
 
@@ -2062,12 +2059,15 @@ class Handler(
                                 round_number if area == "COUNTER" else None, 150
                             )[0]
                             slots[area][time_text] = available
-                    days.append({"date": day.isoformat(), "slots": slots})
+                    priced = bookable_course(day)
+                    days.append({"date": day.isoformat(), "slots": slots,
+                                 "course_name": priced[0] if priced else None,
+                                 "price_per_person": priced[1] if priced else None})
             finally:
                 c.close()
             return self.send_json({
-                "days": days, "price_per_person": PUBLIC_COURSE_PRICE,
-                "course_name": PUBLIC_COURSES[course][0] if course else "松葉蟹おまかせコース"
+                "days": days, "price_per_person": days[0]["price_per_person"],
+                "course_name": days[0]["course_name"]
             })
 
         if p == "/":
@@ -2834,9 +2834,9 @@ class Handler(
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("WEB", name, phone, email, visit_at, party,
                      "決済テスト（お料理のご予約ではありません）" if test_booking else (
-                         PUBLIC_COURSES[course][0] if course else "松葉蟹おまかせコース"),
+                         bookable_course(day)[0]),
                      booking_language,
-                     1 if test_booking else party * PUBLIC_COURSE_PRICE,
+                     1 if test_booking else party * bookable_course(day)[1],
                      area, (1 if time_text == "18:00" else 2) if area == "COUNTER" else None,
                      150, "PENDING", request_id, ts, ts, ts, guest_note, celebration_items, plate_message)
                 )
