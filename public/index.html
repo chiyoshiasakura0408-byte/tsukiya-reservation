@@ -46,9 +46,10 @@ function showRefundApproval(r){
  const form=document.createElement('form'),label=document.createElement('label'),input=document.createElement('input'),message=document.createElement('p'),submit=document.createElement('button'),close=document.createElement('button');
  label.textContent='朝倉専用の返金承認パスワード';input.type='password';input.autocomplete='off';input.required=true;input.maxLength=512;label.append(input);message.setAttribute('role','status');submit.textContent='この金額の返金を承認';submit.type='submit';close.textContent='閉じる';close.type='button';close.onclick=()=>dialog.close();form.append(label,message,submit,close);dialog.append(heading,details,form);
  dialog.addEventListener('close',()=>{input.value='';dialog.remove()});
- form.onsubmit=async event=>{event.preventDefault();submit.disabled=true;try{const response=await fetch(`/api/refunds/${r.reservation_id}/approve`,{method:'POST',headers:{'Content-Type':'application/json','X-Tsukiya-Action':'approve-refund'},body:JSON.stringify({secret:input.value,amount:r.amount})});input.value='';const result=await response.json();if(!response.ok)throw new Error(result.error||'承認できませんでした');dialog.close();$('apiState').textContent='返金を承認しました。返金完了は状況欄で確認してください。';await loadRefunds()}catch(error){input.value='';message.textContent=error.message;submit.disabled=false}};
+ form.onsubmit=async event=>{event.preventDefault();submit.disabled=true;try{const response=await fetch(`/api/refunds/${r.reservation_id}/approve`,{method:'POST',headers:{'Content-Type':'application/json','X-Tsukiya-Action':'approve-refund'},body:JSON.stringify({secret:input.value,amount:r.amount})});input.value='';const result=await response.json();if(!response.ok)throw new Error(result.error||'承認できませんでした');dialog.close();$('apiState').textContent='返金を承認しました。返金完了は状況欄で確認してください。';await loadRefunds();document.dispatchEvent(new Event('refund-status-updated'))}catch(error){input.value='';message.textContent=error.message;submit.disabled=false}};
  document.body.append(dialog);dialog.showModal();input.focus();
 }
 </script></body></html>
+
 
 

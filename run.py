@@ -1786,6 +1786,8 @@ class Handler(
     ):
         if loader and "</head>" in text and "/crab-loader.js" not in text:
             text = text.replace("</head>", "<script>" + (BASE / "public" / "crab-loader.js").read_text() + "</script></head>", 1)
+        if 'aria-label="管理画面"' in text:
+            text += "<script>" + (BASE / "public" / "refund-badge.js").read_text() + "</script>"
         b = text.encode("utf-8")
 
         self.send_response(status)
@@ -1960,7 +1962,7 @@ class Handler(
             c = con()
             rows = [dict(r) for r in c.execute("SELECT f.*,r.guest_name,r.visit_at,r.cancellation_reason FROM cancellation_refunds f JOIN reservations r ON r.id=f.reservation_id ORDER BY f.created_at DESC")]
             c.close()
-            return self.send_json({"refunds": rows, "guide": refunds.GUIDE, "approval_configured": refunds.approval_configured(sys.modules[__name__])}, 200, {"Cache-Control": "no-store"})
+            return self.send_json({"refunds": rows, "action_required_count": refunds.action_required_count(rows), "guide": refunds.GUIDE, "approval_configured": refunds.approval_configured(sys.modules[__name__])}, 200, {"Cache-Control": "no-store"})
         if p == "/cancel-reservation":
             return self.send_html((BASE / "public" / "cancel.html").read_text(encoding="utf-8"), loader=False)
         if p == "/loading-test":
@@ -3440,4 +3442,5 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
+
 

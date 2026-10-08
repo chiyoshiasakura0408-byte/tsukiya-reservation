@@ -1,4 +1,6 @@
 """Durable cancellation refunds. Never submit a new key after an ambiguous result."""
+import re
+import concierge
 import json
 import threading
 import uuid
@@ -21,6 +23,40 @@ GUIDE = '''残高不足の場合の対応手順：
 公式手順：https://squareup.com/help/jp/ja/article/8496-troubleshoot-customer-refund'''
 LABELS = {'QUEUED':'返金受付', 'SUBMITTING':'返金結果確認中', 'PENDING':'返金処理中', 'COMPLETED':'Square返金処理完了', 'MANUAL':'返金対応待ち', 'FAILED':'返金対応待ち', 'REJECTED':'返金対応待ち', 'NONE':'返金対象なし'}
 LABELS['AWAITING_APPROVAL'] = '朝倉承認待ち'
+
+ACTION_REQUIRED = frozenset(('AWAITING_APPROVAL', 'MANUAL', 'FAILED', 'REJECTED'))
+
+def action_required_count(rows):
+    return sum(1 for row in rows if row['amount'] > 0 and row['status'] in ACTION_REQUIRED)
+
+def notify_owner(app, job, reservation):
+    """Queue one owner-only LINE per actionable state, atomically with deduplication."""
+    if not action_required_count([job]):
+        return
+    c = concierge.connect(app.DB)
+    try:
+        with c:
+            c.execute('BEGIN IMMEDIATE')
+            owner = concierge.setting(c, 'owner')
+            if not re.fullmatch(r'U[0-9a-f]{32}', owner or ''):
+                return  # Never substitute a group or a guessed personal account.
+            stage = job['status']
+            inserted = c.execute('INSERT OR IGNORE INTO refund_notices VALUES(?,?,?,?)',
+                (job['reservation_id'], stage, 'owner_line', 'QUEUED')).rowcount
+            if not inserted:
+                return
+            text = ('【つきや・返金対応のお知らせ】\n'
+                    f"予約 #{job['reservation_id']} {reservation['guest_name'][:200]} 様\n"
+                    f"来店予定：{reservation['visit_at']}\n"
+                    f"返金対象額：{job['amount']:,}円\n"
+                    f"状態：{LABELS.get(stage, stage)}\n"
+                    '決済管理で内容をご確認ください。\n'
+                    + app.APP_BASE_URL.rstrip('/') + '/#refundPanel')
+            concierge.enqueue(c, owner, [{'type': 'text', 'text': text}],
+                              channel='owner', kind='refund-action')
+    finally:
+        c.close()
+
 
 def schema(c):
     c.execute('''CREATE TABLE IF NOT EXISTS cancellation_refunds(
@@ -89,6 +125,10 @@ def update(app, rid, **values):
 
 def notify(app, job, reservation, stage):
     # SMTP errors can be ambiguous: retain a visible state rather than duplicate-send.
+    try:
+        notify_owner(app, job, reservation)
+    except Exception:
+        pass  # Retry on the next worker pass without blocking financial processing.
     for audience, recipient in [('store',app.MAIL_FROM),('guest',reservation['email'])]:
         if not recipient or not all((app.SMTP_HOST,app.SMTP_USER,app.SMTP_PASS,app.MAIL_FROM)):
             continue
@@ -157,3 +197,4 @@ def process(app):
             c=app.con(); current=dict(c.execute('SELECT * FROM cancellation_refunds WHERE reservation_id=?',(rid,)).fetchone()); c.close()
             notify(app,current,r,current['status'])
     finally: LOCK.release()
+
