@@ -1,4 +1,5 @@
 from email.utils import formataddr, parseaddr
+import business_cards
 import refunds
 import marketing
 import line_bot
@@ -337,6 +338,7 @@ def con():
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )""")
+    business_cards.init(c)
     customer_cols = {row["name"] for row in c.execute("PRAGMA table_info(customers)")}
     for field in ("allergies", "disliked_foods", "preferred_seat", "preferred_drinks", "preferred_crab", "return_transport", "alcohol_service", "soft_drink_only"):
         if field not in customer_cols:
@@ -2104,7 +2106,7 @@ class Handler(
         if p == "/customers":
             if not self.auth():
                 return self.redirect("/login")
-            return self.send_html((BASE / "public" / "customers.html").read_text(encoding="utf-8"))
+            return self.send_html((BASE / "public" / "customers.html").read_text(encoding="utf-8").replace('<script src="/public/business-cards.js"></script>', "<script>" + (BASE / "public" / "business-cards.js").read_text(encoding="utf-8") + "</script>"))
 
         card_path = re.fullmatch(r"/api/customers/(\d+)/square-cards", p)
         if card_path:
@@ -2136,7 +2138,7 @@ class Handler(
                         COUNT(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN 1 END) AS visit_count,
                         MAX(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN r.visit_at END) AS last_visit
                         FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id
-                        GROUP BY c.id HAVING COUNT(r.id)>0 ORDER BY c.id DESC""", (datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"),)*2)]
+                        GROUP BY c.id HAVING COUNT(r.id)>0 OR EXISTS (SELECT 1 FROM business_cards bc WHERE bc.customer_id=c.id) ORDER BY c.id DESC""", (datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"),)*2)]
                     return self.send_json(rows)
                 customer_id = int(p.rsplit("/", 1)[1])
                 row = c.execute("""SELECT id,name,company_name,receipt_name,phone,email,note,
@@ -2148,7 +2150,7 @@ class Handler(
                     FROM reservations WHERE customer_id=? ORDER BY visit_at DESC,id DESC""", (customer_id,))]
                 for visit in visits:
                     visit["receipts"] = finance_links.for_reservation(c,visit["id"])
-                return self.send_json({"customer": dict(row), "visits": visits})
+                return self.send_json({"customer": dict(row), "visits": visits, "business_cards": business_cards.list_for(c, customer_id)})
             finally:
                 c.close()
 
@@ -2601,6 +2603,24 @@ class Handler(
             except (ValueError, TypeError, json.JSONDecodeError):
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
             return self.send_json(data, status, {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+        if p in ("/api/business-cards/scan", "/api/business-cards/save"):
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if self.headers.get("X-Tsukiya-Action") != "business-cards":
+                return self.send_json({"error": "invalid request"}, 403)
+            try:
+                if self.headers.get("Transfer-Encoding") or not 0 < int(self.headers.get("Content-Length", "0")) <= 9*1024*1024:
+                    raise ValueError("写真のサイズが大きすぎます")
+                self.connection.settimeout(60)
+                data = self.read_json()
+                if not isinstance(data, dict): raise ValueError("入力内容を確認してください")
+                result = business_cards.scan(data) if p.endswith("/scan") else business_cards.save(sys.modules[__name__], data)
+                return self.send_json(result, headers={"Cache-Control": "no-store"})
+            except (ValueError, TypeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            except Exception:
+                return self.send_json({"error": "名刺の処理を完了できませんでした"}, 503)
 
         customer_path = re.fullmatch(r"/api/customers/(\d+)(?:/visits/(\d+))?", p)
         if customer_path:
