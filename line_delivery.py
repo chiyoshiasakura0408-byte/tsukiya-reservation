@@ -208,10 +208,11 @@ def capture(db, day, port, admin, base_url, session=None):
 def message(db, day):
     c = connect(db)
     try:
-        rows = c.execute("SELECT guest_name,celebration_items,plate_message,guest_note,visit_at FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,id", (day,)).fetchall()
+        rows = c.execute("SELECT guest_name,celebration_items,plate_message,guest_note,visit_at,party_size FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,id", (day,)).fetchall()
         date = datetime.strptime(day, '%Y-%m-%d')
         date_label = f'{date.year}年{date.month}月{date.day}日（{"月火水木金土日"[date.weekday()]}）'
-        lines = ['おはようございます。', date_label, '本日のご予約状況をお伝え致します。']
+        lines = ['おはようございます。', date_label, '本日のご予約状況をお伝え致します。',
+                 f'合計{len(rows)}組・{sum(r["party_size"] for r in rows)}名']
         requests = []
         for r in rows:
             details = [str(r[key] or '').strip() for key in ('celebration_items', 'plate_message', 'guest_note')]
