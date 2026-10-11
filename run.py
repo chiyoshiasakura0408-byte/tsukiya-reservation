@@ -8,7 +8,6 @@ import english_concierge
 import concierge_booking
 import vip_access
 import vip_slots
-import phone_calls
 import instagram_concierge
 import guest_service
 import line_delivery
@@ -1892,23 +1891,6 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
-        if p == "/calls":
-            if not self.auth():return self.redirect("/login")
-            return self.send_html((BASE / "public" / "calls.html").read_text(),loader=False)
-        if p == "/phone-call-banner.js":
-            if not self.auth():return self.send_json({"error":"unauthorized"},401)
-            b=(BASE / "public" / "phone-call-banner.js").read_bytes()
-            self.send_response(200);self.send_header("Content-Type","application/javascript; charset=utf-8")
-            self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(b)));self.end_headers();self.wfile.write(b)
-            return
-        if p == "/api/phone-calls" or re.fullmatch(r"/api/phone-calls/\d+",p):
-            if not self.auth():return self.send_json({"error":"unauthorized"},401)
-            try:
-                q=parse_qs(u.query)
-                result=phone_calls.list_calls(sys.modules[__name__],int(q.get("before",[0])[0]) or None,int(p.rsplit("/",1)[1]) if p!="/api/phone-calls" else None)
-                return self.send_json(result,headers={"Cache-Control":"no-store"})
-            except (ValueError,TypeError):return self.send_json({"error":"履歴の指定が不正です"},400)
-
         if p == "/attribution.js":
             b = (BASE / "public" / "attribution.js").read_bytes()
             self.send_response(200)
@@ -2432,30 +2414,6 @@ class Handler(
         if lengths and int(lengths[0]) > limit:
             self.close_connection = True
             return self.send_json({"error": "request too large"}, 413)
-
-        if p in ("/webhooks/voice/incoming","/webhooks/voice/status","/webhooks/voice/leg","/webhooks/voice/dial"):
-            try:
-                if self.path!=p or not lengths or not 0<int(lengths[0])<=16384 or self.headers.get("Content-Type","").split(";")[0]!="application/x-www-form-urlencoded":
-                    raise ValueError("invalid body")
-                self.connection.settimeout(10)
-                raw=self.rfile.read(int(lengths[0]))
-                if len(raw)!=int(lengths[0]):raise ValueError("incomplete body")
-                b=phone_calls.receive(sys.modules[__name__],p,raw,self.headers.get("X-Twilio-Signature",""))
-                self.send_response(200);self.send_header("Content-Type","application/xml; charset=utf-8")
-                self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(b)));self.end_headers();self.wfile.write(b)
-                return
-            except PermissionError:return self.send_json({"error":"invalid signature or destination"},403)
-            except (ValueError,TypeError,UnicodeError):return self.send_json({"error":"invalid event"},400)
-            except Exception:return self.send_json({"error":"voice event temporarily unavailable"},503)
-        if re.fullmatch(r"/api/phone-calls/\d+",p):
-            if not self.auth():return self.send_json({"error":"unauthorized"},401)
-            if self.headers.get("X-Tsukiya-Action")!="phone-calls":return self.send_json({"error":"invalid request"},403)
-            if not lengths or not 0<int(lengths[0])<=16384:return self.send_json({"error":"invalid size"},400)
-            try:
-                self.connection.settimeout(10)
-                result=phone_calls.update_call(sys.modules[__name__],int(p.rsplit("/",1)[1]),self.read_json())
-                return self.send_json(result,headers={"Cache-Control":"no-store"})
-            except (ValueError,TypeError):return self.send_json({"error":"着信履歴の入力を確認してください"},400)
 
         if p in ("/api/public/marketing-event", "/api/marketing/update"):
             private = p == "/api/marketing/update"
@@ -3163,18 +3121,15 @@ class Handler(
                 x = self.read_json()
                 if not isinstance(x, dict):
                     raise ValueError("入力形式が不正です")
-                call_id = x.get("call_id")
-                if call_id is not None and self.headers.get("X-Tsukiya-Action")!="phone-calls":
-                    return self.send_json({"error":"invalid request"},403)
-                linked_customer = x.get("customer_id") if direct or call_id is not None else None
+                linked_customer = x.get("customer_id") if direct else None
                 if linked_customer is not None and (type(linked_customer) is not int or linked_customer < 1):
                     raise ValueError("顧客を選び直してください")
                 request_id = str(x.get("request_id") or "")
-                if direct or call_id is not None:
+                if direct:
                     if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", request_id):
                         raise ValueError("画面を開き直して登録してください")
                     email = str(x.get("email") or "").strip()
-                    if (direct or email) and (len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email)):
+                    if len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
                         raise ValueError("確定メールを送るメールアドレスを入力してください")
                     if not isinstance(x.get("guest_name"), str) or not 1 <= len(x["guest_name"].strip()) <= 80:
                         raise ValueError("お名前を入力してください")
@@ -3257,14 +3212,12 @@ class Handler(
                 return self.send_json({"error": "この来店日に予約可能なコース・人数がありません"}, 400)
             amount = course[1] * party
 
-            c = phone_calls.connect(sys.modules[__name__]) if call_id is not None else con()
+            c = con()
 
             try:
                 c.execute("BEGIN IMMEDIATE")
-                phone_calls.validate_link(c,call_id)
-                booking_key=("direct:" if direct else "phone:")+request_id
-                if direct or call_id is not None:
-                    existing = c.execute("SELECT * FROM reservations WHERE public_request_id=?", (booking_key,)).fetchone()
+                if direct:
+                    existing = c.execute("SELECT * FROM reservations WHERE public_request_id=?", ("direct:" + request_id,)).fetchone()
                     if existing:
                         c.rollback()
                         c.close()
@@ -3352,13 +3305,12 @@ class Handler(
 
             c.execute("UPDATE reservations SET vip_through=? WHERE id=?",(int(through),cur.lastrowid))
 
-            if direct or call_id is not None:
+            if direct:
                 if linked_customer is None:
                     key = customer_match_key({"id": cur.lastrowid, "guest_name": x["guest_name"], "phone": x.get("phone"), "email": x.get("email")})
                     c.execute("INSERT OR IGNORE INTO customers(match_key,name,phone,email,created_at,updated_at) VALUES(?,?,?,?,?,?)", (key,x["guest_name"],x.get("phone") or "",x["email"],ts,ts))
                     linked_customer = c.execute("SELECT id FROM customers WHERE match_key=?", (key,)).fetchone()["id"]
-                c.execute("UPDATE reservations SET customer_id=?,public_request_id=?,staff_seen_at=? WHERE id=?", (linked_customer,booking_key,ts,cur.lastrowid))
-            phone_calls.attach(c,call_id,cur.lastrowid,linked_customer)
+                c.execute("UPDATE reservations SET customer_id=?,public_request_id=?,staff_seen_at=? WHERE id=?", (linked_customer,"direct:" + request_id,ts,cur.lastrowid))
             c.commit()
 
             row = dict(
@@ -3578,8 +3530,6 @@ class Handler(
 if __name__ == "__main__":
     c = con()
     c.close()
-    c = phone_calls.connect(sys.modules[__name__]); c.close()
-    threading.Thread(target=phone_calls.loop,args=(sys.modules[__name__],),daemon=True).start()
     threading.Thread(target=guest_service.loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=concierge.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=expiry_loop, daemon=True).start()
