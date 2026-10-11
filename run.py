@@ -1202,6 +1202,8 @@ def seating_label(r):
     area = r["seating_area"]
 
     if area == "COUNTER":
+        if dict(r).get("vip_through"):
+            return "カウンター 1部・2部通し"
         return (
             f"カウンター "
             f"{r['counter_round'] or ''}部"
