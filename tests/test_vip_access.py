@@ -59,7 +59,7 @@ class VipTests(unittest.TestCase):
     def approve(self,user='guest'):
         self.apply(user);code=self.decision(user);self.send('owner','VIP承認 '+code,work=True)
 
-    def proposal(self,user='guest',through=True,area='COUNTER',party=2):
+    def proposal(self,user='guest',through=True,area='PRIVATE',party=2):
         c=bot.connect(self.db)
         token=secrets.token_urlsafe(32)
         slot={'course':'matsuba-seko','date':str(self.day),'time':'18:00','area':area,'party_size':party,'through':through}
@@ -114,21 +114,27 @@ class VipTests(unittest.TestCase):
         c.close()
         with self.assertRaises(PermissionError):self.book(token,browser)
 
-    def test_counter_through_price_same_seats_rounds_idempotency_cancel(self):
-        self.approve();self.insert(party=2);self.insert(clock='20:30',party=3)
-        token=self.proposal();browser=self.verify(token);result=self.book(token,browser)
-        self.assertEqual(self.book(token,browser),result)
-        r=self.dbquery('SELECT * FROM reservations WHERE id=?',(result['reservation_id'],))[0]
-        self.assertEqual(r['amount'],120000);self.assertEqual(r['vip_seats'],'[4, 5]')
-        self.assertEqual(r['visit_at'],str(self.day)+'T19:17');self.assertEqual(r['duration_minutes'],223)
+    def test_new_counter_through_denied_existing_preserved(self):
+        self.approve();token=self.proposal(area='COUNTER');browser=self.verify(token)
+        with self.assertRaises(ValueError):self.book(token,browser)
+        rid=self.insert()
         c=run.con()
-        for clock,rnd,remain in [('18:00',1,4),('20:30',2,3)]:
+        with c:c.execute("UPDATE reservations SET vip_through=1,vip_seats='[1, 2]' WHERE id=?",(rid,))
+        for clock in ('18:00','20:30'):
             seats,_=vip_slots.counter_assignments(run,c,str(self.day),clock)
-            self.assertEqual([n for n,rid in seats.items() if rid==r['id']],[4,5])
-            self.assertTrue(run.availability_check(c,'COUNTER',str(self.day)+'T'+clock,remain,rnd)[0])
-            self.assertFalse(run.availability_check(c,'COUNTER',str(self.day)+'T'+clock,remain+1,rnd)[0])
-        with c:c.execute("UPDATE reservations SET status='CANCELLED' WHERE id=?",(r['id'],))
-        self.assertEqual(vip_slots.choose(run,c,str(self.day),'COUNTER',2),[4,5]);c.close()
+            self.assertEqual([n for n,r in seats.items() if r==rid],[1,2])
+        c.close()
+
+    def test_private_custom_price_duration_and_2030_normal(self):
+        self.approve();token=self.proposal();browser=self.verify(token)
+        result=self.book(token,browser,'18:30')
+        self.assertEqual(self.book(token,browser),result)
+        row=self.dbquery('SELECT * FROM reservations')[0]
+        self.assertEqual((row['amount'],row['vip_through'],row['duration_minutes']),(120000,1,270))
+        self.insert(area='PRIVATE2')
+        token=self.proposal();browser=self.verify(token);result=self.book(token,browser,'20:30')
+        row=self.dbquery('SELECT * FROM reservations WHERE id=?',(result['reservation_id'],))[0]
+        self.assertEqual((row['seating_area'],row['vip_through'],row['duration_minutes']),('PRIVATE2',0,150))
 
     def test_both_rounds_same_room_required(self):
         self.approve();self.insert(area='PRIVATE1',party=2);self.insert(area='PRIVATE2',clock='20:30',party=2)
@@ -147,17 +153,17 @@ class VipTests(unittest.TestCase):
         self.approve();token=self.proposal();browser=self.verify(token)
         for clock in ('17:59','23:00','25:00','18:00:00','abc'):
             with self.assertRaises(ValueError):self.book(token,browser,clock)
-        self.insert(clock='20:30',party=8)
+        self.insert(area='PRIVATE1',clock='20:30');self.insert(area='PRIVATE2',clock='20:30')
         with self.assertRaises(ValueError):self.book(token,browser)
 
     def test_signed_line_through_selection_only_approved(self):
         self.approve();self.send('guest',str(self.day)+' 2名 通し')
         rows=self.dbquery('SELECT slot FROM concierge_proposals')
-        self.assertEqual(len(rows),2);self.assertTrue(all(json.loads(r['slot'])['through'] for r in rows))
+        self.assertEqual(len(rows),1);self.assertTrue(all(json.loads(r['slot'])['through'] and json.loads(r['slot'])['area']=='PRIVATE' for r in rows))
         self.assertFalse(run.public_slot_allowed(self.day,'19:17','matsuba-seko'))
 
     def test_concurrent_booking_serializes_last_seats(self):
-        self.approve();self.insert(party=6)
+        self.approve();self.insert(area='PRIVATE1')
         tokens=[self.proposal(),self.proposal()];browsers=[self.verify(t) for t in tokens]
         def attempt(pair):
             try:return self.book(*pair)['reservation_id']
@@ -181,3 +187,33 @@ class VipTests(unittest.TestCase):
         hdr['Cookie']=cookie.split(';')[0]
         self.assertEqual(call('/api/concierge/booking-info',{'token':token},hdr)[0],200)
         self.assertEqual(call('/api/vip-access/decision',{'user_id':'guest','decision':'approved','customer_id':0},{'X-Tsukiya-Action':'vip-access'})[0],401)
+
+    def test_staff_phone_and_direct_custom_time(self):
+        server=ThreadingHTTPServer(('127.0.0.1',0),run.Handler)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
+        def call(path,data):
+            conn=http.client.HTTPConnection('127.0.0.1',server.server_port)
+            conn.request('POST',path,json.dumps(data),{'Content-Type':'application/json','x-admin-token':'test'})
+            r=conn.getresponse();result=r.status,json.loads(r.read());conn.close();return result
+        data={'guest_name':'電話予約','phone':'09012345678','email':'test@example.com','party_size':2,'visit_at':str(self.day)+'T19:00','seating_area':'PRIVATE','time_specified':True}
+        with patch.object(run,'ADMIN_TOKEN','test'):
+            status,row=call('/api/reservations/phone',data)
+            self.assertEqual(status,200,row)
+            self.assertEqual((row['vip_through'],row['duration_minutes'],row['status']),(1,240,'PENDING'))
+            status,dup=call('/api/reservations/phone',{**data,'seating_area':row['seating_area']})
+            self.assertEqual(status,400)
+            status,bad=call('/api/reservations/phone',{**data,'seating_area':'COUNTER'})
+            self.assertEqual(status,400)
+            data.update(visit_at=str(self.day)+'T18:30',request_id='12345678-1234-1234-1234-123456789abc')
+            status,direct=call('/api/reservations/direct',data)
+            self.assertEqual(status,200,direct)
+            self.assertEqual((direct['vip_through'],direct['duration_minutes'],direct['status']),(1,270,'CONFIRMED'))
+            self.assertEqual(call('/api/reservations/direct',data)[1]['id'],direct['id'])
+
+    def test_staff_2030_keeps_first_round_available(self):
+        c=run.con()
+        room,duration,through=vip_slots.staff_slot(run,c,'PRIVATE',str(self.day)+'T20:30',2)
+        self.assertEqual((duration,through),(150,False))
+        c.close();self.insert(area=room,clock='20:30')
+        c=run.con();self.assertTrue(run.availability_check(c,room,str(self.day)+'T18:00',2)[0]);c.close()

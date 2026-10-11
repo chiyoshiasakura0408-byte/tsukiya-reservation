@@ -45,6 +45,8 @@ def booking(app, token, data=None, browser=None):
         if not course:
             raise ValueError('このコースは現在ご案内しておりません。')
         through = slot.get('through') is True
+        if through and slot['area'] != 'PRIVATE':
+            raise ValueError('時間指定・通し予約は個室のみです。LINEからお席を選び直してください。')
         result = {**slot, 'course_name':course[0], 'amount':course[1]*slot['party_size'], 'prepayment_required':False}
         if data is None:
             return result
@@ -66,6 +68,7 @@ def booking(app, token, data=None, browser=None):
             if not vip_slots.valid_start(app,day,start,slot['course']):
                 raise ValueError('開始時刻は18:00〜22:59の未来の時刻をお選びください。閉店は23:00です。')
             slot['time']=start
+            through=start!='20:30'
         if not through and not app.public_slot_allowed(day, slot['time'], slot['course']):
             raise ValueError('この日時は現在ご予約いただけません。')
         area = slot['area']

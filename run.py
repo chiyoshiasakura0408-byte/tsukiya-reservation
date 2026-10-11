@@ -611,7 +611,7 @@ def send_confirmation_sms(reservation):
                 if claimed:
                     body = (f"西天満つきやです。{row['guest_name']}様\nご入金を確認し、ご予約を確定いたしました。\n"
                             f"日時：{row['visit_at'].replace('T', ' ')}\nお席：{customer_seating_label(row)}\n"
-                            f"人数：{row['party_size']}名様\n当店は一斉スタートでお料理をご提供します。ご来店時間をお守りください。\n当日は心を尽くしてお迎えいたします。")
+                            f"人数：{row['party_size']}名様\n" + ("ご指定の時刻から23時までお過ごしいただけます。" if row.get('vip_through') else "当店は一斉スタートでお料理をご提供します。ご来店時間をお守りください。") + "\n当日は心を尽くしてお迎えいたします。")
                     try:
                         result = send_sms(row["phone"], body=body + ("\n" + annex_message(row) if annex_message(row) else ""))
                         if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
@@ -2356,14 +2356,11 @@ class Handler(
             c = con()
 
             try:
-                ok, msg = availability_check(
-                    c,
-                    area,
-                    visit,
-                    party,
-                    rnd,
-                    dur
-                )
+                if (q.get("time_specified") or [""])[0] == "1":
+                    room, _, _ = vip_slots.staff_slot(sys.modules[__name__],c,area,visit,party)
+                    ok, msg = True, f"個室{room[-1]}に空きがあります（23:00まで）"
+                else:
+                    ok, msg = availability_check(c,area,visit,party,rnd,dur)
 
             except Exception as e:
                 ok = False
@@ -3208,7 +3205,9 @@ class Handler(
             except ValueError:
                 return self.send_json({"error": "来店日が不正です"}, 400)
             time_text = parse_dt(x["visit_at"]).strftime("%H:%M")
-            course = bookable_course(day) if public_slot_allowed(day, time_text) else None
+            time_specified = x.get("time_specified") is True
+            through = False
+            course = bookable_course(day) if time_specified or public_slot_allowed(day, time_text) else None
             if not course or not 1 <= party <= 20:
                 return self.send_json({"error": "この来店日に予約可能なコース・人数がありません"}, 400)
             amount = course[1] * party
@@ -3225,16 +3224,14 @@ class Handler(
                         return self.send_json(dict(existing))
                     if linked_customer is not None and not c.execute("SELECT id FROM customers WHERE id=?", (linked_customer,)).fetchone():
                         raise ValueError("顧客が見つかりません")
-                if area == "PRIVATE":
-                    area = next((room for room in ROOMS if public_party_allowed(room, party) and availability_check(c, room, x["visit_at"], party, None, dur)[0]), "PRIVATE")
-                ok, msg = availability_check(
-                    c,
-                    area,
-                    x["visit_at"],
-                    party,
-                    rnd,
-                    dur
-                )
+                if time_specified:
+                    area,dur,through = vip_slots.staff_slot(sys.modules[__name__],c,area,x["visit_at"],party)
+                    rnd = None
+                    ok,msg = True,"個室を確保できます"
+                else:
+                    if area == "PRIVATE":
+                        area = next((room for room in ROOMS if public_party_allowed(room, party) and availability_check(c, room, x["visit_at"], party, None, dur)[0]), "PRIVATE")
+                    ok,msg = availability_check(c,area,x["visit_at"],party,rnd,dur)
 
             except Exception as e:
                 c.rollback()
@@ -3305,6 +3302,8 @@ class Handler(
                     plate_message
                 )
             )
+
+            c.execute("UPDATE reservations SET vip_through=? WHERE id=?",(int(through),cur.lastrowid))
 
             if direct:
                 if linked_customer is None:

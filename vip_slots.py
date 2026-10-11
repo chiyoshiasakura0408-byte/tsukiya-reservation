@@ -41,9 +41,31 @@ def availability(app,day,party):
         for key,course in app.PUBLIC_COURSES.items():
             if course!=app.bookable_course(day):continue
             if datetime.fromisoformat(str(day)+'T23:00')<=datetime.now(app.concierge.JST).replace(tzinfo=None):continue
-            for area in ('COUNTER','PRIVATE'):
+            for area in ('PRIVATE',):
                 rooms=('COUNTER',) if area=='COUNTER' else app.ROOMS
                 if any(app.public_party_allowed(room,party) and choose(app,c,str(day),room,party) is not None for room in rooms):
                     result.append({'course':key,'area':area,'time':'18:00','through':True})
         return result
     finally:c.close()
+
+
+def staff_slot(app,c,area,visit_at,party):
+    """Explicit staff time selection; private rooms only, 20:30 stays ordinary."""
+    if area not in ('PRIVATE',*app.ROOMS):
+        raise ValueError('時間指定・通し予約は個室のみです。カウンターは1部・2部をお選びください。')
+    if not isinstance(visit_at,str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}',visit_at):
+        raise ValueError('来店日時を確認してください。')
+    visit=datetime.fromisoformat(visit_at)
+    course=app.bookable_course(visit.date())
+    key=next((k for k,v in app.PUBLIC_COURSES.items() if v==course),None)
+    clock=visit_at[11:]
+    if not key or not valid_start(app,visit.date(),clock,key):
+        raise ValueError('受付期間内の18:00〜22:59の未来の時刻を指定してください。')
+    through=clock!='20:30'
+    rooms=app.ROOMS if area=='PRIVATE' else (area,)
+    room=next((r for r in rooms if app.public_party_allowed(r,party) and
+        (choose(app,c,str(visit.date()),r,party) is not None if through else
+         app.availability_check(c,r,visit_at,party,None,150)[0])),None)
+    if not room:
+        raise ValueError('ご希望の時間帯を確保できる個室がありません。')
+    return room,23*60-visit.hour*60-visit.minute if through else 150,through

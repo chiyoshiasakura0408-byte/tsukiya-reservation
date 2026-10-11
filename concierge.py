@@ -213,8 +213,8 @@ def respond(c, user, command, lookup, courses, base_url):
     command = {'予約': '空席案内', 'ご予約': '空席案内', '空席': '空席案内', '空席確認': '空席案内', 'コース・料金': 'ただいまのコース',
                '朝倉へ相談': 'VIP担当に相談', '写真': 'コース内容', '動画': 'コース内容', 'お品書き': 'コース内容',
                '蟹の時期': '年間スケジュール', '空席・ご予約': '空席案内', 'お料理・お品書き': 'コース内容'}.get(command, command)
-    if command == '1部・2部通し予約':
-        return [text_message('通し予約をご希望の日付・人数を「2026-11-10 2名 通し」の形式でお送りください。18〜23時の間で開始時刻を指定でき、23時までお過ごしいただけます。')]
+    if command in ('1部・2部通し予約','時間指定（個室）'):
+        return [text_message('時間指定（個室）をご希望の日付・人数を「2026-11-10 2名 通し」の形式でお送りください。18:00〜22:59の開始時刻を指定でき、23時までお過ごしいただけます。20:30開始は通常の2部です。')]
     if command in MENU or command.startswith(('calendar:', 'visit:')):
         c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
     if command == '空席案内' or command.startswith('calendar:'):
@@ -274,7 +274,7 @@ def respond(c, user, command, lookup, courses, base_url):
     if command in ('配信再開', '入荷案内を受け取る'):
         c.execute('UPDATE concierge_customers SET subscribed=1,stopped=0 WHERE user_id=?', (user,))
         return [text_message('蟹の変更・入荷案内をお届けします。「配信停止」でいつでも停止できます。')]
-    match = re.fullmatch(r'(\d{4}-\d{2}-\d{2})\s+(\d+)\s*名?(?:\s+(通し))?', command)
+    match = re.fullmatch(r'(\d{4}-\d{2}-\d{2})\s+(\d+)\s*名?(?:\s+(通し|時間指定))?', command)
     if match:
         try:
             day = date.fromisoformat(match[1])
@@ -295,14 +295,14 @@ def respond(c, user, command, lookup, courses, base_url):
             token = secrets.token_urlsafe(32)
             proposal = {**slot, 'date':str(day), 'party_size':party}
             c.execute('INSERT INTO concierge_proposals(hash,user_id,slot,expires) VALUES (?,?,?,?)', (hashlib.sha256(token.encode()).hexdigest(), user, json.dumps(proposal), time.time()+3600))
-            actions.append({'type': 'uri', 'label': ('通し' if slot.get('through') else slot['time']) + (' 個室' if slot['area'] == 'PRIVATE' else ' カウンター'), 'uri': base_url + '/concierge/book#' + token})
+            actions.append({'type': 'uri', 'label': ('時間指定' if slot.get('through') else ('1部18:00' if slot['time']=='18:00' else '2部20:30')) + (' 個室' if slot['area'] == 'PRIVATE' else ' カウンター'), 'uri': base_url + '/concierge/book#' + token})
         personal = preference_message(c, user, cat)
         if personal:
             c.execute('UPDATE concierge_customers SET state=? WHERE user_id=?', ('preference:'+str(day)+' '+str(party)+'名様\n'+personal, user))
         extra = []
         if not match[3]:
-            m = text_message('1部・2部を通してのご利用もお選びいただけます。', False)
-            m['quickReply'] = {'items':[{'type':'action','action':{'type':'message','label':'1部・2部通し予約','text':str(day)+' '+str(party)+'名 通し'}}]}
+            m = text_message('①1部18:00、②2部20:30のほか、③時間指定（個室）をお選びいただけます。18:30・19:00開始など、23時までご利用いただけます。', False)
+            m['quickReply'] = {'items':[{'type':'action','action':{'type':'message','label':'③時間指定（個室）','text':str(day)+' '+str(party)+'名 通し'}}]}
             extra = [m]
         return [text_message(f'{day}・{party}名様のお席をご案内できます。お料理代は合計 ¥{courses[slots[0]["course"]][1]*party:,}（税込）でございます。\nLINEコンシェルジュからは前受けなしでご予約いただけます。以下より内容をご確認のうえ、お申し込みください。' + ('\n\n'+personal if personal else '')),
                 {'type': 'template', 'altText': 'お席をお選びください', 'template': {'type': 'buttons', 'text': 'ご希望のお席・お時間をお選びください', 'actions': actions}}] + extra
@@ -348,7 +348,7 @@ def receive(db, raw, signature, lookup, courses, base_url):
     resolved = {}
     for e in events:
         command = concierge_menu.event_command(e)
-        match = re.fullmatch(r'(\d{4}-\d{2}-\d{2})\s+(\d+)\s*名?(?:\s+(通し))?', command.strip()) if isinstance(command, str) else None
+        match = re.fullmatch(r'(\d{4}-\d{2}-\d{2})\s+(\d+)\s*名?(?:\s+(通し|時間指定))?', command.strip()) if isinstance(command, str) else None
         if match:
             try:
                 day, party = date.fromisoformat(match[1]), int(match[2])
