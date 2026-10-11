@@ -65,16 +65,16 @@ def briefing_html(db, day, font_data, session=None):
     from html import escape
     c = connect(db)
     try:
-        rows = [dict(r) for r in c.execute("SELECT guest_name,party_size,visit_at,seating_area,status,celebration_items,plate_message,guest_note FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,seating_area,id", (day,))]
+        rows = [dict(r) for r in c.execute("SELECT guest_name,party_size,visit_at,seating_area,status,celebration_items,plate_message,guest_note,vip_through FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,seating_area,id", (day,))]
     finally:
         c.close()
     if session is not None:
-        rows = [r for r in rows if ('18:00' if r['visit_at'][11:16] < '20:30' else '20:30') == session]
+        rows = [r for r in rows if r.get('vip_through') or ('18:00' if r['visit_at'][11:16] < '20:30' else '20:30') == session]
     labels = {'COUNTER':'本店・カウンター','PRIVATE1':'別邸・個室①','PRIVATE2':'別邸・個室②','PRIVATE3':'別邸・個室③'}
     statuses = {'CONFIRMED':'予約確定','INVOICED':'請求済み','PENDING':'未決済','ERROR':'要確認'}
     cards = []
     for row in rows:
-        time_label = escape(row['visit_at'][11:16])
+        time_label = escape(row['visit_at'][11:16]+('〜23:00 通し' if row.get('vip_through') else ''))
         seat = escape(labels.get(row['seating_area'], row['seating_area'] or '席未設定'))
         status = escape(statuses.get(row['status'],row['status']))
         request = escape(row['celebration_items'] or '')
@@ -134,11 +134,11 @@ def capture(db, day, port, admin, base_url, session=None):
             temp.unlink(missing_ok=True)
     c = connect(db)
     try:
-        rows = [dict(r) for r in c.execute("SELECT guest_name,party_size,visit_at,seating_area,status,celebration_items,plate_message,guest_note FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,seating_area,id", (day,))]
+        rows = [dict(r) for r in c.execute("SELECT guest_name,party_size,visit_at,seating_area,status,celebration_items,plate_message,guest_note,vip_through FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,seating_area,id", (day,))]
     finally:
         c.close()
     if session is not None:
-        rows = [r for r in rows if ('18:00' if r['visit_at'][11:16] < '20:30' else '20:30') == session]
+        rows = [r for r in rows if r.get('vip_through') or ('18:00' if r['visit_at'][11:16] < '20:30' else '20:30') == session]
     labels = {'COUNTER':'本店・カウンター','PRIVATE1':'別邸・個室①','PRIVATE2':'別邸・個室②','PRIVATE3':'別邸・個室③'}
     statuses = {'CONFIRMED':'予約確定','INVOICED':'請求済み','PENDING':'未決済','ERROR':'要確認'}
     fonts = {size: ImageFont.truetype(str(font), size) for size in (22,23,25,29,30,34)}
@@ -159,7 +159,7 @@ def capture(db, day, port, admin, base_url, session=None):
     for row in rows:
         details = '\n'.join(str(row[k]).strip() for k in ('celebration_items','plate_message','guest_note') if row[k] and str(row[k]).strip())
         left_width = 330 if details else 600
-        left = [(wrap(row['visit_at'][11:16] + '　' + labels.get(row['seating_area'], row['seating_area'] or '席未設定'),23,left_width),23),
+        left = [(wrap(row['visit_at'][11:16] + ('〜23:00 通し' if row.get('vip_through') else '') + '　' + labels.get(row['seating_area'], row['seating_area'] or '席未設定'),23,left_width),23),
                 (wrap(str(row['guest_name']) + ' 様　' + str(row['party_size']) + '名',29,left_width),29),
                 (wrap(statuses.get(row['status'],row['status']),23,left_width),23)]
         right = wrap(details,22,210) if details else []

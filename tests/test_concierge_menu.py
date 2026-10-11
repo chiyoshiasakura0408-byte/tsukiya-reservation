@@ -8,6 +8,7 @@ import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
 import concierge as bot
+from vip_fixtures import approve
 import concierge_menu as menu
 
 
@@ -20,6 +21,7 @@ class MenuFlow(unittest.TestCase):
         with c:
             bot.put(c, 'enabled', '1'); bot.put(c, 'owner', 'owner')
         c.close()
+        approve(self.db,'guest')
         self.counter = 0
         self.courses = {'matsuba-seko': ('松葉蟹、せこ蟹',60000),'matsuba-fukahire':('松葉蟹とふかひれ',60000)}
 

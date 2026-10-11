@@ -6,6 +6,8 @@ import line_bot
 import concierge
 import english_concierge
 import concierge_booking
+import vip_access
+import vip_slots
 import instagram_concierge
 import guest_service
 import line_delivery
@@ -275,6 +277,8 @@ def con():
         "seating_area": "TEXT",
         "counter_round": "INTEGER",
         "duration_minutes": "INTEGER DEFAULT 150",
+        "vip_through": "INTEGER NOT NULL DEFAULT 0",
+        "vip_seats": "TEXT NOT NULL DEFAULT '[]'",
         "square_booking_id": "TEXT",
         "public_request_id": "TEXT",
         "cancellation_policy_accepted_at": "TEXT",
@@ -1055,7 +1059,7 @@ def availability_check(
             WHERE
                 substr(visit_at,1,10)=?
             AND seating_area='COUNTER'
-            AND counter_round=?
+            AND (counter_round=? OR vip_through=1)
             AND status IN (?,?,?,?)
         """
 
@@ -1103,7 +1107,7 @@ def availability_check(
             SELECT
                 id,
                 visit_at,
-                duration_minutes
+                duration_minutes, vip_through
             FROM reservations
             WHERE seating_area=?
             AND status IN (?,?,?,?)
@@ -1125,11 +1129,13 @@ def availability_check(
                 row["visit_at"]
             )
 
+            if row["vip_through"]:
+                other_start=other_start.replace(hour=18,minute=0)
             other_end = (
                 other_start
                 + timedelta(
                     minutes=int(
-                        row["duration_minutes"]
+                        300 if row["vip_through"] else row["duration_minutes"]
                         or 150
                     )
                 )
@@ -1339,8 +1345,7 @@ Nishitenma Tsukiya
 
 {annex_message(r)}
 
-当店では皆様一斉にお料理のご提供を開始いたします。
-ご来店時間をお守りくださいますようお願い申し上げます。
+{"1部・2部通し予約です。ご指定の時刻から23時までお過ごしいただけます。" if dict(r).get("vip_through") else "当店では皆様一斉にお料理のご提供を開始いたします。ご来店時間をお守りくださいますようお願い申し上げます。"}
 
 当日は心を尽くしてお迎えいたします。
 どうぞお気をつけてお越しくださいませ。
@@ -1698,8 +1703,10 @@ def crab_video(number):
     return base64.b64decode((BASE / "public" / "assets" / f"crab-{number}.mp4.b64").read_text(), validate=True)
 
 
-def concierge_availability(day, party):
+def concierge_availability(day, party, through=False):
     expire_public_reservations()
+    if through:
+        return vip_slots.availability(sys.modules[__name__],day,party)
     slots = []
     c = con()
     try:
@@ -1943,6 +1950,11 @@ class Handler(
             if not self.auth():
                 return self.redirect("/login")
             return self.send_html((BASE / "public" / "concierge.html").read_text(), loader=False)
+        if p == "/api/vip-access":
+            if not self.auth():return self.send_json({"error":"unauthorized"},401)
+            c=concierge.connect(DB)
+            try:return self.send_json([dict(r) for r in c.execute("SELECT a.*,c.name AS customer_name FROM vip_access a LEFT JOIN customers c ON c.id=a.customer_id ORDER BY a.updated DESC")])
+            finally:c.close()
         if p == "/api/concierge/status":
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
@@ -2138,7 +2150,7 @@ class Handler(
                         COUNT(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN 1 END) AS visit_count,
                         MAX(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN r.visit_at END) AS last_visit
                         FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id
-                        GROUP BY c.id HAVING COUNT(r.id)>0 OR EXISTS (SELECT 1 FROM business_cards bc WHERE bc.customer_id=c.id) ORDER BY c.id DESC""", (datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"),)*2)]
+                        GROUP BY c.id ORDER BY c.id DESC""", (datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"),)*2)]
                     return self.send_json(rows)
                 customer_id = int(p.rsplit("/", 1)[1])
                 row = c.execute("""SELECT id,name,company_name,receipt_name,phone,email,note,
@@ -2463,14 +2475,37 @@ class Handler(
             except Exception:
                 return self.send_json({"error":"処理を完了できませんでした"},503)
 
-        if p in ("/api/concierge/booking-info", "/api/concierge/book"):
+        if p == "/api/vip-access/decision":
+            if not self.auth():return self.send_json({"error":"unauthorized"},401)
+            if self.headers.get("X-Tsukiya-Action")!="vip-access":return self.send_json({"error":"invalid request"},403)
+            c=concierge.connect(DB)
+            try:
+                with c:
+                    result=vip_access.request_decision(c,self.read_json(),APP_BASE_URL)
+                return self.send_json(result)
+            except (ValueError,TypeError,AttributeError) as exc:return self.send_json({"error":str(exc)},400)
+            finally:c.close()
+
+        if p in ("/api/concierge/booking-info", "/api/concierge/book", "/api/concierge/verify"):
             try:
                 if self.headers.get("Transfer-Encoding") or not 0 < int(self.headers.get("Content-Length", "0")) <= 16384:
                     return self.send_json({"error": "invalid request"}, 400)
                 self.connection.settimeout(10)
                 data = self.read_json()
-                result = concierge_booking.booking(sys.modules[__name__], data.get("token"), data if p.endswith("/book") else None)
-                return self.send_json(result, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+                if self.headers.get("X-Tsukiya-Action") != "vip-booking":
+                    return self.send_json({"error":"invalid request"},403)
+                cookies = dict(v.strip().split("=",1) for v in self.headers.get("Cookie","").split(";") if "=" in v)
+                browser = cookies.get("tsukiya_vip","")
+                headers={"Cache-Control":"no-store","Referrer-Policy":"no-referrer"}
+                if p.endswith("/verify"):
+                    result,new_browser=concierge_booking.verify(sys.modules[__name__],data.get("token"),browser)
+                    if new_browser:
+                        headers["Set-Cookie"]="tsukiya_vip="+new_browser+"; Path=/api/concierge; HttpOnly; SameSite=Strict; Max-Age=600"+("; Secure" if APP_BASE_URL.startswith("https://") else "")
+                else:
+                    result = concierge_booking.booking(sys.modules[__name__], data.get("token"), data if p.endswith("/book") else None, browser)
+                return self.send_json(result, headers=headers)
+            except PermissionError as exc:
+                return self.send_json({"error":str(exc)},403)
             except (ValueError, TypeError, AttributeError) as exc:
                 return self.send_json({"error": str(exc)}, 400)
             except Exception:
@@ -2711,12 +2746,10 @@ class Handler(
                     if c.execute("SELECT 1 FROM seat_blocks WHERE visit_date=? AND time_text=? AND seating_area=? AND seat_number=?", (day, time_text, area, num)).fetchone():
                         raise ValueError("選択した席はすでにブロックされています")
                     if area == "COUNTER":
-                        occupied = c.execute("SELECT COALESCE(SUM(party_size),0) n FROM reservations WHERE substr(visit_at,1,10)=? AND substr(visit_at,12,5)=? AND seating_area='COUNTER' AND status IN (?,?,?,?)", (day, time_text, *ACTIVE_STATUSES)).fetchone()["n"]
-                        existing = {r["seat_number"] for r in c.execute("SELECT seat_number FROM seat_blocks WHERE visit_date=? AND time_text=? AND seating_area='COUNTER'", (day, time_text))}
-                        assigned = set([n for n in range(1, 9) if n not in existing][:int(occupied)])
+                        assigned,_ = vip_slots.counter_assignments(sys.modules[__name__],c,day,time_text)
                         if num in assigned:
                             raise ValueError("予約済みの席はブロックできません")
-                    elif c.execute("SELECT 1 FROM reservations WHERE substr(visit_at,1,10)=? AND substr(visit_at,12,5)=? AND seating_area=? AND status IN (?,?,?,?)", (day, time_text, area, *ACTIVE_STATUSES)).fetchone():
+                    elif c.execute("SELECT 1 FROM reservations WHERE substr(visit_at,1,10)=? AND (substr(visit_at,12,5)=? OR vip_through=1) AND seating_area=? AND status IN (?,?,?,?)", (day, time_text, area, *ACTIVE_STATUSES)).fetchone():
                         raise ValueError("予約済みの個室はブロックできません")
                     c.execute("INSERT INTO seat_blocks(visit_date,time_text,seating_area,seat_number,note,created_at) VALUES(?,?,?,?,?,?)", (day,time_text,area,num,str(x.get("note") or "")[:200],now_iso()))
                 c.commit()

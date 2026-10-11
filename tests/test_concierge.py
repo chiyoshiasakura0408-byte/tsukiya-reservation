@@ -8,6 +8,7 @@ import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
 import concierge as bot
+from vip_fixtures import approve
 
 
 class ConciergeTests(unittest.TestCase):
@@ -21,6 +22,7 @@ class ConciergeTests(unittest.TestCase):
         with c:
             bot.put(c, 'enabled', '1'); bot.put(c, 'owner', 'owner-id')
         c.close()
+        approve(self.db,'customer-id')
         self.number = 0
 
     def send(self, text, event_id=None, kind='message', source='user', lookup=None):
@@ -57,10 +59,14 @@ class ConciergeTests(unittest.TestCase):
         self.assertEqual([x['state'] for x in self.rows('concierge_outbox') if x['kind']=='announcement'],['cancelled','cancelled'])
 
     def test_private_owner_pairing_only(self):
+        with self.assertRaises(ValueError):bot.configure(self.db,{'action':'pair'})
+        c=bot.connect(self.db)
+        with c:bot.put(c,'owner','')
+        c.close()
         result=bot.configure(self.db,{'action':'pair'})
         e={'source':{'type':'group','userId':'stranger'},'message':{'text':result['pair_command']}}
         bot.pair_owner(self.db,[e])
-        c=bot.connect(self.db); self.assertEqual(bot.setting(c,'owner'),'owner-id'); c.close()
+        c=bot.connect(self.db); self.assertEqual(bot.setting(c,'owner'),''); c.close()
         e['source']={'type':'user','userId':'verified-owner'}; bot.pair_owner(self.db,[e])
         c=bot.connect(self.db); self.assertEqual(bot.setting(c,'owner'),'verified-owner'); c.close()
         e['source']['userId']='replay';bot.pair_owner(self.db,[e])

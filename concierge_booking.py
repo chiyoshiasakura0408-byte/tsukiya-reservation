@@ -5,9 +5,23 @@ import re
 import time
 from datetime import date
 import concierge
+import vip_access
+import vip_slots
 
 
-def booking(app, token, data=None):
+def verify(app, token, browser):
+    if not isinstance(token,str) or not re.fullmatch(r'[A-Za-z0-9_-]{40,60}',token):
+        raise ValueError('ご案内のリンクをご確認ください。')
+    c=concierge.connect(app.DB)
+    try:
+        with c:
+            proposal=c.execute('SELECT * FROM concierge_proposals WHERE hash=? AND expires>?',(hashlib.sha256(token.encode()).hexdigest(),time.time())).fetchone()
+            if not proposal:raise ValueError('ご案内が見つからないか、有効期限が切れています。LINEから再度ご確認ください。')
+            return vip_access.begin_browser(c,proposal,browser)
+    finally:c.close()
+
+
+def booking(app, token, data=None, browser=None):
     if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{40,60}', token):
         raise ValueError('ご案内のリンクをご確認ください。')
     hashed = hashlib.sha256(token.encode()).hexdigest()
@@ -18,6 +32,7 @@ def booking(app, token, data=None):
         proposal = c.execute('SELECT * FROM concierge_proposals WHERE hash=?', (hashed,)).fetchone()
         if not proposal:
             raise ValueError('ご案内のリンクをご確認ください。')
+        vip_access.authorize_browser(c,proposal,browser)
         if proposal['reservation_id']:
             row = c.execute('SELECT * FROM reservations WHERE id=?', (proposal['reservation_id'],)).fetchone()
             return {'reservation_id':row['id'], 'status':row['status'], 'confirmed':row['status']=='CONFIRMED'}
@@ -29,6 +44,7 @@ def booking(app, token, data=None):
         course = app.PUBLIC_COURSES.get(slot['course'])
         if not course:
             raise ValueError('このコースは現在ご案内しておりません。')
+        through = slot.get('through') is True
         result = {**slot, 'course_name':course[0], 'amount':course[1]*slot['party_size'], 'prepayment_required':False}
         if data is None:
             return result
@@ -45,16 +61,26 @@ def booking(app, token, data=None):
         note,celebrations,plate=app.guest_requests(data)
         fields['guest_note']=note
         day = date.fromisoformat(slot['date'])
-        if not app.public_slot_allowed(day, slot['time'], slot['course']):
+        if through:
+            start=data.get('start_time','')
+            if not vip_slots.valid_start(app,day,start,slot['course']):
+                raise ValueError('開始時刻は18:00〜22:59の未来の時刻をお選びください。閉店は23:00です。')
+            slot['time']=start
+        if not through and not app.public_slot_allowed(day, slot['time'], slot['course']):
             raise ValueError('この日時は現在ご予約いただけません。')
         area = slot['area']
         party = slot['party_size']
         visit_at = slot['date']+'T'+slot['time']
         round_number = 1 if slot['time']=='18:00' else 2
         choices = app.ROOMS if area=='PRIVATE' else ('COUNTER',)
-        room = next((r for r in choices if app.public_party_allowed(r,party) and app.availability_check(c,r,visit_at,party,round_number if r=='COUNTER' else None,150)[0]),None)
+        if through:
+            room=next((r for r in choices if app.public_party_allowed(r,party) and vip_slots.choose(app,c,str(day),r,party) is not None),None)
+        else:
+            room = next((r for r in choices if app.public_party_allowed(r,party) and app.availability_check(c,r,visit_at,party,round_number if r=='COUNTER' else None,150)[0]),None)
         if not room:
             raise ValueError('申し訳ございません。お席が埋まってしまいました。LINEより別のお席をご確認ください。')
+        seats=vip_slots.choose(app,c,str(day),room,party) if through else []
+        duration=23*60-int(slot['time'][:2])*60-int(slot['time'][3:]) if through else 150
         profile = concierge.profile(c,proposal['user_id'])
         now = app.now_iso()
         if profile:
@@ -67,9 +93,10 @@ def booking(app, token, data=None):
             VALUES('CONCIERGE_LINE',?,?,?,?,?,?,?,?,?,150,'CONFIRMED',?,?,?,?,?,?)''',
             (fields['guest_name'],fields['phone'],fields['email'],visit_at,party,course[0],result['amount'],room,round_number if room=='COUNTER' else None,now,now,fields['guest_note'],customer_id,'concierge:'+hashed,now))
         rid = cursor.lastrowid
-        c.execute('UPDATE reservations SET celebration_items=?,plate_message=? WHERE id=?',(celebrations,plate,rid))
+        c.execute('UPDATE reservations SET celebration_items=?,plate_message=?,vip_through=?,vip_seats=?,duration_minutes=? WHERE id=?',(celebrations,plate,int(through),json.dumps(seats),duration,rid))
         c.execute('UPDATE concierge_proposals SET reservation_id=? WHERE hash=?',(rid,hashed))
-        concierge.enqueue(c,proposal['user_id'],[concierge.text_message(f"{concierge.profile(c, proposal['user_id']).get('name') or fields['guest_name']}様\nご予約を承りました。\n{slot['date']} {slot['time']}・{party}名様\n受付番号 {rid}\n前受けのお支払いはございません。\n当店は一斉スタートにてお料理をご提供しております。ご予約のお時間に合わせてご来店くださいますようお願いいたします。\nご来店を心よりお待ち申し上げております。")])
+        timing='1部・2部通し予約です。ご指定の時刻から23時までお過ごしいただけます。' if through else '当店は一斉スタートにてお料理をご提供しております。ご予約のお時間に合わせてご来店くださいますようお願いいたします。'
+        concierge.enqueue(c,proposal['user_id'],[concierge.text_message(f"{concierge.profile(c, proposal['user_id']).get('name') or fields['guest_name']}様\nご予約を承りました。\n{slot['date']} {slot['time']}・{party}名様\n受付番号 {rid}\n前受けのお支払いはございません。\n{timing}\nご来店を心よりお待ち申し上げております。")])
         row = dict(c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone())
         c.commit()
     finally:

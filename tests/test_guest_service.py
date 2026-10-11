@@ -86,6 +86,7 @@ class GuestServiceTests(unittest.TestCase):
         rid,cid=self.reservation();c=care.connect(run)
         with c:
             bot.put(c,'owner','owner-id')
+            c.execute("INSERT INTO vip_access(user_id,status,name,introducer,customer_id,updated) VALUES(?,'approved','お客様','紹介者',?,0)",('line-'+str(cid),cid))
             result=bot.respond(c,'line-'+str(cid),'忘れ物について確認をお願いします',None,run.PUBLIC_COURSES,'https://example.com')
         self.assertIn('受け付け',result[0]['text']);self.assertEqual(c.execute('SELECT count(*) FROM concierge_requests').fetchone()[0],1);c.close()
 

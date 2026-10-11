@@ -11,6 +11,7 @@ from unittest.mock import patch
 os.environ.setdefault('DATA_DIR',tempfile.mkdtemp(prefix='concierge-test-import-'))
 import run
 import concierge as bot
+from vip_fixtures import approve
 import concierge_booking
 import instagram_concierge as ig
 
@@ -26,6 +27,7 @@ class ConciergeV2(unittest.TestCase):
             bot.put(c,'enabled','1');bot.put(c,'instagram_enabled','1');bot.put(c,'owner','owner-id')
             c.execute("INSERT INTO concierge_customers(user_id) VALUES('line-user')")
         c.close()
+        approve(self.db,'line-user')
 
     def proposal(self):
         today=datetime.now(bot.JST).date();day=today.replace(month=11,day=10)
@@ -34,13 +36,18 @@ class ConciergeV2(unittest.TestCase):
         c=bot.connect(self.db)
         with c:messages=bot.respond(c,'line-user',str(day)+' 2名',lambda d,p:slots,run.PUBLIC_COURSES,'https://example.com')
         c.close()
-        return messages[1]['template']['actions'][0]['uri'].split('#')[1]
+        token=messages[1]['template']['actions'][0]['uri'].split('#')[1]
+        info,self.browser=concierge_booking.verify(run,token,'')
+        c=bot.connect(self.db)
+        with c:bot.respond(c,'line-user',info['command'],None,run.PUBLIC_COURSES,'https://example.com')
+        c.close()
+        return token
 
     def test_booking_no_square_and_idempotency(self):
         token=self.proposal();data={'guest_name':'テスト','phone':'09012345678','email':'test@example.com','cancellation_policy_accepted':True,'celebration_items':['花束','ホールケーキ'],'plate_message':'Happy Birthday','guest_note':'卵不可'}
         with patch.object(run,'square',side_effect=AssertionError('must not charge')),patch.object(run,'deliver_confirmation',side_effect=lambda x:x):
-            first=concierge_booking.booking(run,token,data)
-            second=concierge_booking.booking(run,token,data)
+            first=concierge_booking.booking(run,token,data,self.browser)
+            second=concierge_booking.booking(run,token,data,self.browser)
         self.assertEqual(first,second)
         c=run.con();row=c.execute('SELECT * FROM reservations').fetchone();c.close()
         self.assertEqual(row['source'],'CONCIERGE_LINE');self.assertEqual(row['status'],'CONFIRMED');self.assertIsNone(row['square_invoice_id'])
@@ -49,21 +56,22 @@ class ConciergeV2(unittest.TestCase):
 
     def test_booking_rechecks_sold_out_and_consent(self):
         token=self.proposal()
-        with self.assertRaises(ValueError):concierge_booking.booking(run,token,{'cancellation_policy_accepted':False})
+        with self.assertRaises(ValueError):concierge_booking.booking(run,token,{'cancellation_policy_accepted':False},self.browser)
         with patch.object(run,'availability_check',return_value=(False,'sold out')):
-            with self.assertRaises(ValueError):concierge_booking.booking(run,token,{'guest_name':'テスト','phone':'09012345678','email':'test@example.com','cancellation_policy_accepted':True})
+            with self.assertRaises(ValueError):concierge_booking.booking(run,token,{'guest_name':'テスト','phone':'09012345678','email':'test@example.com','cancellation_policy_accepted':True},self.browser)
         c=run.con();self.assertEqual(c.execute('SELECT count(*) FROM reservations').fetchone()[0],0);c.close()
 
     def test_verified_profile_and_personalized_announcement(self):
         c=run.con()
         with c:c.execute("INSERT INTO customers(match_key,name,preferred_drinks,preferred_crab,preferred_seat,return_transport,created_at,updated_at) VALUES('one','朝倉','日本酒','ずわい蟹','個室','タクシー','now','now')")
-        customer_id=c.execute('SELECT id FROM customers').fetchone()[0];c.close()
+        customer_id=c.execute("SELECT id FROM customers WHERE match_key='one'").fetchone()[0];c.close()
         command=bot.configure(self.db,{'action':'customer-link','customer_id':customer_id})['command']
         c=bot.connect(self.db)
         with c:
-            self.assertEqual(bot.profile(c,'line-user'),{})
-            self.assertIn('完了',bot.link_customer(c,'line-user',command))
-            self.assertIn('確認できません',bot.link_customer(c,'line-user',command))
+            original=bot.profile(c,'line-user')['id']
+            self.assertIn('店舗によるVIP利用承認',bot.link_customer(c,'line-user',command))
+            self.assertEqual(bot.profile(c,'line-user')['id'],original)
+            c.execute('UPDATE concierge_customers SET customer_id=? WHERE user_id=?',(customer_id,'line-user'))
             text=bot.announcement(c,'line-user',{'crab':'ずわい蟹','origin':'北海道','arrival_date':'2026-11-10','sake':'新しい銘柄'})
         c.close()
         for phrase in ['朝倉様','お待たせ','北海道産','11月10日','新しい銘柄','タクシー','個室']:self.assertIn(phrase,text)

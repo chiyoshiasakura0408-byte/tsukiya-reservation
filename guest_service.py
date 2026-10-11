@@ -144,7 +144,7 @@ def plan(app,now=None):
             if now.hour>=12:
                 for record in c.execute("SELECT * FROM reservations WHERE status='CONFIRMED' AND substr(visit_at,1,10)=?",(target,)).fetchall():
                     r=dict(record);en=r.get('booking_language')=='en'
-                    body=(f"Dear {r['guest_name']},\n\nWe look forward to welcoming you in three days.\n" if en else f"{r['guest_name']}様\n\nご来店の3日前となりましたので、ご予約内容をご案内いたします。\n")+summary(app,r)+('\nPlease arrive on time, as each seating starts together.' if en else '\n一斉にお料理をお出しいたしますので、お時間に合わせてお越しくださいませ。')
+                    body=(f"Dear {r['guest_name']},\n\nWe look forward to welcoming you in three days.\n" if en else f"{r['guest_name']}様\n\nご来店の3日前となりましたので、ご予約内容をご案内いたします。\n")+summary(app,r)+('\nPlease arrive on time, as each seating starts together.' if en else '\n1部・2部通し予約です。ご指定時刻から23時までお過ごしいただけます。' if r.get('vip_through') else '\n一斉にお料理をお出しいたしますので、お時間に合わせてお越しくださいませ。')
                     insert(c,'reminder:'+str(r['id'])+':'+r['visit_at'],r['id'],'reminder',{'text':body,'visit_at':r['visit_at']})
             started=bot.setting(c,'care_started')
             for record in c.execute("SELECT * FROM reservations WHERE status='CONFIRMED' AND payment_confirmed_at>=? AND payment_source IN ('SQUARE','BANK')",(started,)).fetchall():

@@ -55,3 +55,14 @@ Approval records owner label, time and exact amount in the refund row. Repeated 
 Bank refunds remain manual. This change does not alter Square dashboard permissions, authenticate the owner's physical identity, prevent server-admin compromise, or undo a refund already submitted. Staff can still cancel reservations; this gate separates the monetary action.
 
 Deployment must include the UI and server together. Restart the old worker when deploying. Before owner approval is enabled, review existing waiting/manual refunds in Square. This implementation has not been production deployed solely by committing it.
+
+## LINE VIP承認と通し予約（2026-10-11）
+
+- LINEのお客様は `利用申請` → 氏名 → 紹介者（なしも可）を送信します。既存連携を含め、自動承認はしません。英語コンシェルジュ／Instagramは対象外です。
+- `/customers` の「LINE VIP利用申請・承認」で本人の既存顧客を選ぶか、申請名で新規顧客登録を選び、許可・却下・取消を操作します。朝倉個人LINEに届く `VIP承認 …` を同じ業務用トークへ送ると確定します。確認文は10分有効・一度限りです。スタッフログインだけでは許可を確定できません。連携済みの朝倉LINEを管理画面の再ペアリングで変更することもできません。
+- 許可済みユーザーが日付と人数を選ぶと `1部・2部通し予約` が選べます。`YYYY-MM-DD 2名 通し` の入力でも利用可能です。開始は18:00〜22:59（分単位）、閉店23:00まで。コース料金は人数分の1回だけで、前受け請求はありません。
+- 予約リンクの閲覧・申込には、画面に表示された `予約本人確認 …` をその予約の本人LINEから送信する必要があります。署名検証済みWebhookのuserIdと許可状態を照合し、予約ごとにHttpOnly/SameSiteブラウザーCookieと紐付けます。転送URLだけでは予約内容取得・確定できません。確認期限10分、予約提案期限1時間。本人確認コードを他人から受け取って代理送信しないよう案内しています。
+- 通し予約は1件の予約レコードに `vip_through=1` を設定します。カウンターは両部で共通に空いている同じ席番号を `vip_seats` に保存、個室は同一個室の両部を確保します。通常予約・席ブロック・通し予約同士と競合確認し、SQLiteの書込トランザクション内で再検証します。取消時は両部とも解放されます。
+- 席表と朝LINEの両部に通し予約と実際の開始時刻を表示します。確定メール・3日前案内も通し予約用の説明を使用します。一般予約・英語画面に通し予約は追加しません。
+- DB変更は追加列・追加テーブルです。既存予約を変更しません。初回移行時、未送信の旧VIP返信・回答・入荷案内は取り消し、承認前配信を防ぎます。顧客との過去の会話、既存予約、通常の予約通知は保持します。
+- 検証: `python -m unittest discover -s tests -q`。新テストは未承認拒否、所有者以外の承認拒否、署名検証、転送・期限・取消、同一席両部、通常予約との競合、同時申込、料金・冪等性、HTTP認証を含みます。本物の利用申請／朝倉LINE承認／顧客LINE予約の一連操作は実利用時に確認してください。

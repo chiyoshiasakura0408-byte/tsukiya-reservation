@@ -13,6 +13,7 @@ import urllib.request
 import urllib.error
 import uuid
 import concierge_menu
+import vip_access
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode, urlparse
 
@@ -44,6 +45,7 @@ def connect(db):
     CREATE TABLE IF NOT EXISTS concierge_proposals(hash TEXT PRIMARY KEY,user_id TEXT NOT NULL,slot TEXT NOT NULL,expires REAL NOT NULL,reservation_id INTEGER);
     CREATE TABLE IF NOT EXISTS concierge_arrivals(id TEXT PRIMARY KEY,body TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending');
     """)
+    vip_access.schema(c)
     c.commit()
     return c
 
@@ -96,6 +98,8 @@ def configure(db, data):
             with c:
                 action = data.get('action')
                 if action == 'pair':
+                    if setting(c,'owner'):
+                        raise ValueError('朝倉さんの個人LINEは連携済みです。管理画面から連携先は変更できません。')
                     code = secrets.token_urlsafe(12)
                     put(c, 'pair_hash', hashlib.sha256(code.encode()).hexdigest())
                     put(c, 'pair_expires', time.time() + 600)
@@ -165,6 +169,8 @@ def configure(db, data):
                         raise ValueError('Instagramへの回答は950文字以内で入力してください')
                     if setting(c, 'instagram_enabled' if row['user_id'].startswith('ig:') else 'enabled') != '1':
                         raise ValueError('配信が停止中です')
+                    if not row['user_id'].startswith('ig:') and not vip_access.approved(c, row['user_id']):
+                        raise ValueError('VIP利用が未承認または停止中です')
                     delivery_id = enqueue(c, row['user_id'], [text_message(body.strip())], kind='answer')
                     c.execute("UPDATE concierge_requests SET status='回答送信待ち',delivery_id=? WHERE id=?", (delivery_id, row['id']))
                 else:
@@ -176,13 +182,14 @@ def configure(db, data):
 
 def pair_owner(db, events):
     """Called only AFTER signature verification on the existing work channel."""
-    events = [event for event in events if isinstance(event.get('message', {}).get('text'), str) and event['message']['text'].startswith('つきや朝倉連携 ')]
+    events = [event for event in events if isinstance(event.get('message', {}).get('text'), str) and event['message']['text'].startswith(('つきや朝倉連携 ', 'VIP承認 '))]
     if not events:
         return
     with LOCK:
         c = connect(db)
         try:
             with c:
+                vip_access.owner_commands(c, events)
                 for event in events:
                     src = event.get('source', {})
                     msg = event.get('message', {})
@@ -190,7 +197,7 @@ def pair_owner(db, events):
                     if src.get('type') != 'user' or not src.get('userId') or not isinstance(body, str) or not body.startswith('つきや朝倉連携 '):
                         continue
                     code = body.removeprefix('つきや朝倉連携 ').strip()
-                    if time.time() <= float(setting(c, 'pair_expires', '0')) and hmac.compare_digest(hashlib.sha256(code.encode()).hexdigest(), setting(c, 'pair_hash')):
+                    if not setting(c,'owner') and time.time() <= float(setting(c, 'pair_expires', '0')) and hmac.compare_digest(hashlib.sha256(code.encode()).hexdigest(), setting(c, 'pair_hash')):
                         put(c, 'owner', src['userId'])
                         put(c, 'pair_expires', '0')
                         put(c, 'pair_hash', '')
@@ -199,10 +206,15 @@ def pair_owner(db, events):
 
 
 def respond(c, user, command, lookup, courses, base_url):
+    gated = vip_access.gate(c, user, command, base_url)
+    if gated is not None:
+        return gated
     cat = catalog(c)
     command = {'予約': '空席案内', 'ご予約': '空席案内', '空席': '空席案内', '空席確認': '空席案内', 'コース・料金': 'ただいまのコース',
                '朝倉へ相談': 'VIP担当に相談', '写真': 'コース内容', '動画': 'コース内容', 'お品書き': 'コース内容',
                '蟹の時期': '年間スケジュール', '空席・ご予約': '空席案内', 'お料理・お品書き': 'コース内容'}.get(command, command)
+    if command == '1部・2部通し予約':
+        return [text_message('通し予約をご希望の日付・人数を「2026-11-10 2名 通し」の形式でお送りください。18〜23時の間で開始時刻を指定でき、23時までお過ごしいただけます。')]
     if command in MENU or command.startswith(('calendar:', 'visit:')):
         c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
     if command == '空席案内' or command.startswith('calendar:'):
@@ -262,7 +274,7 @@ def respond(c, user, command, lookup, courses, base_url):
     if command in ('配信再開', '入荷案内を受け取る'):
         c.execute('UPDATE concierge_customers SET subscribed=1,stopped=0 WHERE user_id=?', (user,))
         return [text_message('蟹の変更・入荷案内をお届けします。「配信停止」でいつでも停止できます。')]
-    match = re.fullmatch(r'(\d{4}-\d{2}-\d{2})\s+(\d+)\s*名?', command)
+    match = re.fullmatch(r'(\d{4}-\d{2}-\d{2})\s+(\d+)\s*名?(?:\s+(通し))?', command)
     if match:
         try:
             day = date.fromisoformat(match[1])
@@ -273,7 +285,7 @@ def respond(c, user, command, lookup, courses, base_url):
         except ValueError:
             return [text_message('本日から1年以内の日付と、2〜8名様でご指定ください。')]
         try:
-            slots = lookup(day, party)
+            slots = lookup(day, party, True) if match[3] else lookup(day, party)
         except Exception:
             return [text_message('現在、空席を確認できません。少し後にお試しいただくか、「VIP担当に相談」からお問い合わせください。')]
         if not slots:
@@ -283,12 +295,17 @@ def respond(c, user, command, lookup, courses, base_url):
             token = secrets.token_urlsafe(32)
             proposal = {**slot, 'date':str(day), 'party_size':party}
             c.execute('INSERT INTO concierge_proposals(hash,user_id,slot,expires) VALUES (?,?,?,?)', (hashlib.sha256(token.encode()).hexdigest(), user, json.dumps(proposal), time.time()+3600))
-            actions.append({'type': 'uri', 'label': slot['time'] + (' 個室' if slot['area'] == 'PRIVATE' else ' カウンター'), 'uri': base_url + '/concierge/book#' + token})
+            actions.append({'type': 'uri', 'label': ('通し' if slot.get('through') else slot['time']) + (' 個室' if slot['area'] == 'PRIVATE' else ' カウンター'), 'uri': base_url + '/concierge/book#' + token})
         personal = preference_message(c, user, cat)
         if personal:
             c.execute('UPDATE concierge_customers SET state=? WHERE user_id=?', ('preference:'+str(day)+' '+str(party)+'名様\n'+personal, user))
+        extra = []
+        if not match[3]:
+            m = text_message('1部・2部を通してのご利用もお選びいただけます。', False)
+            m['quickReply'] = {'items':[{'type':'action','action':{'type':'message','label':'1部・2部通し予約','text':str(day)+' '+str(party)+'名 通し'}}]}
+            extra = [m]
         return [text_message(f'{day}・{party}名様のお席をご案内できます。お料理代は合計 ¥{courses[slots[0]["course"]][1]*party:,}（税込）でございます。\nLINEコンシェルジュからは前受けなしでご予約いただけます。以下より内容をご確認のうえ、お申し込みください。' + ('\n\n'+personal if personal else '')),
-                {'type': 'template', 'altText': 'お席をお選びください', 'template': {'type': 'buttons', 'text': 'ご希望のお席・お時間をお選びください', 'actions': actions}}]
+                {'type': 'template', 'altText': 'お席をお選びください', 'template': {'type': 'buttons', 'text': 'ご希望のお席・お時間をお選びください', 'actions': actions}}] + extra
     if command == 'VIP担当に相談':
         c.execute("UPDATE concierge_customers SET state='request' WHERE user_id=?", (user,))
         return [text_message('ご希望日時・お名前・ご要望をお送りください。VIP担当へ取り次ぎます。アレルギー等の対応可否はVIP担当からの回答をお待ちください。')]
@@ -331,19 +348,19 @@ def receive(db, raw, signature, lookup, courses, base_url):
     resolved = {}
     for e in events:
         command = concierge_menu.event_command(e)
-        match = re.fullmatch(r'(\d{4}-\d{2}-\d{2})\s+(\d+)\s*名?', command.strip()) if isinstance(command, str) else None
+        match = re.fullmatch(r'(\d{4}-\d{2}-\d{2})\s+(\d+)\s*名?(?:\s+(通し))?', command.strip()) if isinstance(command, str) else None
         if match:
             try:
                 day, party = date.fromisoformat(match[1]), int(match[2])
                 today = datetime.now(JST).date()
                 if today <= day <= today + timedelta(days=365) and 2 <= party <= 8:
-                    resolved[(day, party)] = lookup(day, party)
+                    resolved[(day, party, bool(match[3]))] = lookup(day, party, True) if match[3] else lookup(day, party)
             except Exception:
                 pass
-    def cached_lookup(day, party):
-        if (day, party) not in resolved:
+    def cached_lookup(day, party, through=False):
+        if (day, party, through) not in resolved:
             raise RuntimeError('availability unavailable')
-        return resolved[(day, party)]
+        return resolved[(day, party, through)]
     with LOCK:
         c = connect(db)
         try:
@@ -405,6 +422,9 @@ def deliver(db):
                     continue
                 if row['channel'] == 'customer' and setting(c, 'enabled') != '1':
                     continue
+                if row['channel']=='customer' and row['kind'] in ('answer','announcement') and not vip_access.approved(c,row['user_id']):
+                    with c:c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE id=?",(row['id'],))
+                    continue
                 name = 'LINE_CHANNEL_ACCESS_TOKEN' if row['channel'] == 'owner' else 'CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN'
                 token = os.getenv(name, '')
                 error, accepted, retryable = 'channel token missing', False, False
@@ -462,6 +482,9 @@ def link_customer(c, user, command):
     row = c.execute('SELECT * FROM concierge_links WHERE hash=? AND used=0 AND expires>?', (hashed, time.time())).fetchone()
     if not row:
         return '連携情報を確認できませんでした。恐れ入りますが、店舗へお問い合わせください。'
+    if not user.startswith('ig:'):
+        # A transferable legacy link must never replace an approved identity binding.
+        return '顧客情報の連携は、店舗によるVIP利用承認時に行います。'
     c.execute('UPDATE concierge_links SET used=1 WHERE hash=?', (hashed,))
     c.execute('UPDATE concierge_customers SET customer_id=? WHERE user_id=?', (row['customer_id'], user))
     return 'お客様情報との連携が完了いたしました。今後は、お好みに合わせてご案内いたします。'
@@ -510,6 +533,7 @@ def queue_arrivals(c):
     for event in c.execute("SELECT * FROM concierge_arrivals WHERE state='pending'").fetchall():
         cat = json.loads(event['body'])
         for row in c.execute("SELECT user_id FROM concierge_customers WHERE active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'").fetchall():
+            if not vip_access.approved(c, row[0]):continue
             enqueue(c, row[0], [text_message(announcement(c,row[0],cat))], kind='announcement')
         c.execute("UPDATE concierge_arrivals SET state='queued' WHERE id=?", (event['id'],))
 
