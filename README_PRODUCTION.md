@@ -67,3 +67,15 @@ Deployment must include the UI and server together. Restart the old worker when 
 - 席表と朝LINEの両部に通し予約と実際の開始時刻を表示します。確定メール・3日前案内も通し予約用の説明を使用します。一般予約・英語画面に通し予約は追加しません。
 - DB変更は追加列・追加テーブルです。既存予約を変更しません。初回移行時、未送信の旧VIP返信・回答・入荷案内は取り消し、承認前配信を防ぎます。顧客との過去の会話、既存予約、通常の予約通知は保持します。
 - 検証: `python -m unittest discover -s tests -q`。新テストは未承認拒否、所有者以外の承認拒否、署名検証、転送・期限・取消、同一席両部、通常予約との競合、同時申込、料金・冪等性、HTTP認証を含みます。本物の利用申請／朝倉LINE承認／顧客LINE予約の一連操作は実利用時に確認してください。
+
+## 予約電話・着信履歴（2026-10-11）
+
+- `/calls` はスタッフ認証必須。iPad/iPhoneを閉じていても、営業時間・店休日を問わずTwilio着信をSQLiteへ保存。番号一致は候補表示のみで、担当者が確認して顧客を選択します。対応メモ・未対応/対応済み・電話予約との紐付けを保存し、自動削除しません。顧客・予約・決済管理画面にも未対応着信の案内が表示されます。
+- 既存の `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` に加え、Renderの非公開環境変数に `TWILIO_VOICE_NUMBER`（新規取得した日本番号、+81形式）と `TWILIO_VOICE_FORWARD_TO`（朝倉携帯、+81形式）を設定。`APP_BASE_URL` は実際のHTTPS公開URLと完全一致させます。SMS用 `TWILIO_FROM_NUMBER` は変更しません。転送先は環境変数のみで設定し、スタッフ画面・着信パラメーターから変更できません。番号・転送先の値はGitHubに保存しません。
+- Twilio新番号の「A call comes in」: `https://tsukiya-reservation.onrender.com/webhooks/voice/incoming`、HTTP POST。
+- 新番号の通話状態コールバック: `https://tsukiya-reservation.onrender.com/webhooks/voice/status`、HTTP POST。
+- 携帯への接続にはサーバーが生成するDial/Numberを使用。子通話コールバック `/webhooks/voice/leg` と終了時 `/webhooks/voice/dial` は自動設定します。呼出待ちを意図的に挟まず、顧客検索・iPad応答を待たずに携帯を呼び出します。接続時間ゼロは保証しません。携帯へのcallerIdは新規Twilio番号です。
+- 全Webhookは公開URLと全フォームパラメーターによるHMAC-SHA1、AccountSid、着信先/転送先を検証。着信SIDで重複排除し、子通話の結果を親着信の完了と混同しません。留守番電話の応答も接続済みとなるため、人が電話に出たかは自動断定しません。通話録音は有効にしません。
+- 60秒ごとにTwilio Calls APIと履歴を照合。初回は過去7日、以降は前回成功日の1日前まで遡って取りこぼしを回収します。1回最大2000件/子通話30件、上限・失敗は画面表示。保存後の履歴はTwilio側の保持期間に依存しません。表示更新10秒で、未送信の対応メモは自動更新で上書きしません。
+- 開通前にTwilioの番号審査・日本携帯宛発信権限・残高/課金状態を確認します。独立したTwilio側のフォールバック（朝倉携帯へ接続するTwiML Bin等）も設定し、アプリ一時停止時の着信継続を実機確認します。フォールバック通話もCalls APIで履歴回収する設計です。
+- 開通確認: 新番号からの携帯着信速度/表示番号、iPadを閉じた着信保存、不応答、留守電、顧客候補の重複、電話予約登録、再送時重複なし、Webhook失敗後の履歴回収をテスト。TableCheckや携帯直通など、このTwilio番号を経由しない着信は記録対象外です。
