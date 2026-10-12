@@ -1891,6 +1891,12 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        # Emergency intake pause requested by the owner, 2026-10-13 JST.
+        if p in ("/book", "/book-test", "/concierge/book"):
+            return self.send_html('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>予約受付一時停止｜西天満つきや</title></head><body style="font-family:sans-serif;max-width:600px;margin:80px auto;padding:24px"><h1>西天満つきや</h1><h2>予約受付を一時停止しております</h2><p>ご不便をおかけし申し訳ございません。再開までお待ちください。</p><h2>Online reservations are temporarily paused.</h2><p>We apologize for the inconvenience.</p></body></html>', status=503, loader=False)
+        if p == "/api/public/availability":
+            return self.send_json({"error": "予約受付を一時停止しております。Online reservations are temporarily paused.", "booking_paused": True}, 503)
+
         if p == "/attribution.js":
             b = (BASE / "public" / "attribution.js").read_bytes()
             self.send_response(200)
@@ -2402,6 +2408,11 @@ class Handler(
         p = urlparse(
             self.path
         ).path
+
+        # Block submissions from already-open pages, including VIP booking links.
+        if p in ("/api/public/reservations", "/api/test/reservations", "/api/concierge/book"):
+            self.close_connection = True
+            return self.send_json({"error": "予約受付を一時停止しております。Online reservations are temporarily paused.", "booking_paused": True}, 503)
 
         # Reject ambiguous framing before any handler reads or acts on a body.
         lengths = self.headers.get_all("Content-Length", [])
