@@ -55,6 +55,9 @@ def bind(c, rid, data, now, test=False):
     else: source='unknown'
     c.execute('INSERT OR IGNORE INTO marketing_reservations(reservation_id,source,session_id,excluded) VALUES(?,?,?,?)',
               (rid,source,sid,int(test)))
+    # Snapshot only new bookings. Never infer or backfill historic acquisition.
+    c.execute("UPDATE reservations SET acquisition_source=? WHERE id=? AND acquisition_source IS NULL",
+              (source,rid))
 
 def period(q):
     today=datetime.now(timezone(timedelta(hours=9))).date()

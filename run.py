@@ -289,6 +289,7 @@ def con():
         "payment_confirmed_at": "TEXT",
         "last_error": "TEXT",
         "booking_language": "TEXT DEFAULT 'ja'",
+        "acquisition_source": "TEXT",
         "staff_seen_at": "TEXT",
         "invoice_issued_at": "TEXT",
         "reminder_status": "TEXT",

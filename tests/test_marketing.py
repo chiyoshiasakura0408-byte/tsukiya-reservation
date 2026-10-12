@@ -40,6 +40,14 @@ class MarketingTest(unittest.TestCase):
   marketing.update(c,{'id':rid,'action':'exclude','value':True},now)
   self.assertEqual(sum(x['paid'] for x in marketing.report(c,{'start':['2026-10-08'],'end':['2026-10-08']})['rows']),0)
   c.close()
+ def test_future_source_snapshot_and_no_backfill(self):
+  c=run.con();old=self.booking(c);new=self.booking(c);unknown=self.booking(c)
+  marketing.bind(c,new,dict(session_id=SID,source='instagram'),'now')
+  marketing.bind(c,unknown,None,'now')
+  self.assertIsNone(c.execute('SELECT acquisition_source FROM reservations WHERE id=?',(old,)).fetchone()[0])
+  self.assertEqual(c.execute('SELECT acquisition_source FROM reservations WHERE id=?',(new,)).fetchone()[0],'instagram')
+  self.assertEqual(c.execute('SELECT acquisition_source FROM reservations WHERE id=?',(unknown,)).fetchone()[0],'unknown')
+  c.close()
  def test_japan_dates_and_come_not_inferred(self):
   c=run.con();rid=self.booking(c)
   c.execute("UPDATE reservations SET created_at='2026-10-07T16:00:00+00:00' WHERE id=?",(rid,))

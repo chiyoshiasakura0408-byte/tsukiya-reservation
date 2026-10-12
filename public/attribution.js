@@ -12,8 +12,8 @@ let source='unknown';
 if(['google_maps','google_business','gbp'].includes(utm)||utm==='google'&&['maps','gbp','local'].includes(medium))source='google_maps';
 else if(utm==='google'&&['cpc','ppc','paid'].includes(medium)||q.has('gclid'))source='google_ads';
 else if(utm==='google')source='google_search';
-else if(utm==='instagram')source='instagram';
-else if(utm==='line')source='line';
+else if(['instagram','ig'].includes(utm))source='instagram';
+else if(['line','line_official'].includes(utm))source='line';
 else if(ref && ![home,booking,location.hostname].includes(ref.hostname)){
  if(/(^|\.)google\.(com|co\.jp)$/.test(ref.hostname))source='google_search';
  else if(/(^|\.)instagram\.com$/.test(ref.hostname))source='instagram';
