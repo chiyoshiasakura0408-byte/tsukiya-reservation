@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = ROOT / 'public/images/concierge-rich-menu.jpg'
+IMAGE = ROOT / 'public/images/concierge-rich-menu-vip.jpg'
 
 
 def definition():
@@ -17,7 +17,8 @@ def definition():
         (768, 124, 768, 306, 'ただいまのコース', 'ただいまのコース'),
         (0, 430, 768, 303, 'コース内容', 'コース内容'),
         (768, 430, 768, 303, '年間スケジュール', '年間スケジュール'),
-        (0, 733, 1536, 291, 'VIP担当に相談', 'VIP担当に相談'),
+        (0, 733, 1073, 291, 'VIP担当に相談', 'VIP担当に相談'),
+        (1073, 733, 463, 291, '退会', 'VIP退会'),
     ]
     return {
         'size': {'width': 1536, 'height': 1024},
@@ -90,7 +91,7 @@ def main():
     downloaded = api('richmenu/' + rich_id + '/content', image=True)
     assert hashlib.sha256(downloaded).digest() == hashlib.sha256(IMAGE.read_bytes()).digest()
     (backup.parent / 'concierge-rich-menu-ready').write_text(rich_id, encoding='utf-8')
-    print('INSTALLED_AND_VERIFIED', rich_id, '5 buttons; default open', flush=True)
+    print('INSTALLED_AND_VERIFIED', rich_id, '6 buttons; default open', flush=True)
 
 
 if __name__ == '__main__':
