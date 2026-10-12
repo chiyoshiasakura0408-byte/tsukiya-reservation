@@ -44,6 +44,26 @@ def gate(c, user, command, base_url):
     import concierge as bot
     if user.startswith(('ig:', 'web:')):
         return None
+    if command in ('退会','VIP退会','退会する'):
+        c.execute('UPDATE concierge_customers SET state=? WHERE user_id=?',('withdraw:'+str(time.time()+600),user))
+        message=bot.text_message('VIPコンシェルジュを退会しますか？退会するとVIP利用と配信を停止します。確定済みのご予約はキャンセルされず、顧客情報・来店履歴は残ります。',False)
+        message['quickReply']={'items':[{'type':'action','action':{'type':'message','label':label,'text':text}} for label,text in [('退会を確定','VIP退会を確定'),('戻る','VIP退会をやめる')]]}
+        return [message]
+    if command=='VIP退会をやめる':
+        c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?",(user,))
+        return [bot.text_message('退会を取りやめました。',False)]
+    if command=='VIP退会を確定':
+        state=c.execute('SELECT state FROM concierge_customers WHERE user_id=?',(user,)).fetchone()[0]
+        try: valid=state.startswith('withdraw:') and float(state[9:])>time.time()
+        except ValueError: valid=False
+        if not valid:return [bot.text_message('「退会」から、もう一度確認をお願いいたします。',False)]
+        c.execute("UPDATE vip_access SET status='revoked',updated=?,decided_by='self-withdrawal' WHERE user_id=?",(time.time(),user))
+        c.execute("UPDATE concierge_customers SET stopped=1,subscribed=0,state='{}' WHERE user_id=?",(user,))
+        c.execute('DELETE FROM vip_browser WHERE user_id=?',(user,))
+        c.execute('UPDATE vip_decisions SET used=1 WHERE user_id=?',(user,))
+        c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE user_id=? AND channel='customer' AND state='pending'",(user,))
+        c.execute("INSERT INTO vip_audit(user_id,decision,actor,created) VALUES(?,'revoked','self-withdrawal',?)",(user,time.time()))
+        return [bot.text_message('退会を受け付けました。VIP利用と配信を停止しました。確定済みのご予約はそのまま承っております。これまでのご利用ありがとうございました。',False)]
     if command.startswith('VIP招待 '):
         return redeem_invite(c,user,command.removeprefix('VIP招待 ').strip(),base_url)
     if command.startswith('予約本人確認 '):
