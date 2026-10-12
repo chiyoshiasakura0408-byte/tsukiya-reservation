@@ -64,6 +64,8 @@ def text_message(text, menu=True):
     # Keep navigation available until the fixed menu has been installed successfully.
     if menu and not os.path.isfile(os.path.join(os.environ.get('DATA_DIR', '.'), 'concierge-rich-menu-ready')):
         message['quickReply'] = {'items': [{'type': 'action', 'action': {'type': 'message', 'label': label, 'text': label}} for label in MENU]}
+    if menu:
+        message.setdefault('quickReply',{'items':[]})['items'].append({'type':'action','action':{'type':'message','label':'退会','text':'VIP退会'}})
     return message
 
 
@@ -383,7 +385,7 @@ def receive(db, raw, signature, lookup, courses, base_url):
                         continue
                     c.execute('INSERT INTO concierge_customers(user_id) VALUES (?) ON CONFLICT(user_id) DO UPDATE SET active=1', (user,))
                     command = concierge_menu.event_command(e)
-                    if enabled:
+                    if enabled or command in ('退会','VIP退会','退会する','VIP退会を確定','VIP退会をやめる'):
                         enqueue(c, user, respond(c, user, command, cached_lookup, courses, base_url))
                     elif command == '配信停止':
                         c.execute('UPDATE concierge_customers SET stopped=1,subscribed=0 WHERE user_id=?', (user,))
