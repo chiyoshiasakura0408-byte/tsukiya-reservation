@@ -2474,6 +2474,16 @@ class Handler(
             except Exception:
                 return self.send_json({"error":"処理を完了できませんでした"},503)
 
+        if p == "/api/vip-access/invite":
+            if not self.auth():return self.send_json({"error":"unauthorized"},401)
+            if self.headers.get("X-Tsukiya-Action")!="vip-access":return self.send_json({"error":"invalid request"},403)
+            c=concierge.connect(DB)
+            try:
+                with c:result=vip_access.create_invite(c,self.read_json())
+                return self.send_json(result,headers={"Cache-Control":"no-store"})
+            except (ValueError,TypeError,AttributeError) as exc:return self.send_json({"error":str(exc)},400)
+            finally:c.close()
+
         if p == "/api/vip-access/decision":
             if not self.auth():return self.send_json({"error":"unauthorized"},401)
             if self.headers.get("X-Tsukiya-Action")!="vip-access":return self.send_json({"error":"invalid request"},403)
