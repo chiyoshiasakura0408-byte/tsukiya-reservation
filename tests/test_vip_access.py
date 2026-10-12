@@ -95,6 +95,20 @@ class VipTests(unittest.TestCase):
         self.send('guest',invite['command'])
         self.assertEqual(len(self.dbquery('SELECT * FROM vip_audit')),1)
 
+    def test_self_withdraw_confirmation_and_retention(self):
+        self.approve()
+        self.send('guest','VIP退会を確定')
+        self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'approved')
+        self.send('guest','VIP退会')
+        self.send('guest','VIP退会をやめる')
+        self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'approved')
+        self.send('guest','VIP退会')
+        self.send('guest','VIP退会を確定')
+        self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'revoked')
+        self.assertEqual(self.dbquery('SELECT stopped FROM concierge_customers')[0]['stopped'],1)
+        self.assertEqual(len(self.dbquery('SELECT * FROM customers')),1)
+        self.assertFalse(self.dbquery("SELECT * FROM concierge_outbox WHERE channel='owner'"))
+
     def test_direct_approval_without_owner_notifications(self):
         self.apply()
         self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'pending')
