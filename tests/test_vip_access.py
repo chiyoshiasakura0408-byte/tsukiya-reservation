@@ -78,6 +78,23 @@ class VipTests(unittest.TestCase):
             cur=c.execute("INSERT INTO reservations(source,guest_name,visit_at,party_size,course_name,amount,seating_area,counter_round,status,created_at,updated_at) VALUES('DIRECT','通常予約',?,?,'コース',120000,?,?,'CONFIRMED','now','now')",(str(self.day)+'T'+clock,party,area,1 if clock=='18:00' else 2))
         c.close();return cur.lastrowid
 
+    def test_invite_single_use_expiry_and_no_owner_notice(self):
+        c=bot.connect(self.db)
+        with c:
+            invite=vip_access.create_invite(c,{'name':'招待顧客'})
+            expired=vip_access.create_invite(c,{'name':'期限切れ'})
+            c.execute('UPDATE vip_invites SET expires=0 WHERE hash=?',(vip_access.digest(expired['command'].split()[1]),))
+        c.close()
+        self.send('guest',invite['command'])
+        self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'approved')
+        self.assertEqual(self.dbquery('SELECT name FROM customers')[0]['name'],'招待顧客')
+        self.send('other',invite['command'])
+        self.send('expired',expired['command'])
+        self.assertEqual(len(self.dbquery('SELECT * FROM vip_access')),1)
+        self.assertFalse(self.dbquery("SELECT * FROM concierge_outbox WHERE channel='owner'"))
+        self.send('guest',invite['command'])
+        self.assertEqual(len(self.dbquery('SELECT * FROM vip_audit')),1)
+
     def test_direct_approval_without_owner_notifications(self):
         self.apply()
         self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'pending')
