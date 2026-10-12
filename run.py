@@ -2270,6 +2270,8 @@ class Handler(
             ]
 
             for row in rows:
+                # Acquisition data is internal reporting only, not staff UI data.
+                row.pop("acquisition_source", None)
                 row["receipts"] = finance_links.for_reservation(c,row["id"])
             c.close()
 
