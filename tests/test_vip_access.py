@@ -53,11 +53,10 @@ class VipTests(unittest.TestCase):
         c=bot.connect(self.db)
         with c:vip_access.request_decision(c,{'user_id':user,'decision':decision,'customer_id':cid},'https://example.com')
         c.close()
-        notice=self.dbquery("SELECT payload FROM concierge_outbox WHERE kind='vip-decision' ORDER BY created DESC LIMIT 1")[0]
-        return json.loads(notice['payload'])[0]['text'].split('VIP承認 ')[1]
+        return 'retired-code'
 
     def approve(self,user='guest'):
-        self.apply(user);code=self.decision(user);self.send('owner','VIP承認 '+code,work=True)
+        self.apply(user);self.decision(user)
 
     def proposal(self,user='guest',through=True,area='PRIVATE',party=2):
         c=bot.connect(self.db)
@@ -79,19 +78,19 @@ class VipTests(unittest.TestCase):
             cur=c.execute("INSERT INTO reservations(source,guest_name,visit_at,party_size,course_name,amount,seating_area,counter_round,status,created_at,updated_at) VALUES('DIRECT','通常予約',?,?,'コース',120000,?,?,'CONFIRMED','now','now')",(str(self.day)+'T'+clock,party,area,1 if clock=='18:00' else 2))
         c.close();return cur.lastrowid
 
-    def test_pending_and_signed_owner_only_approval(self):
-        self.apply();self.send('guest','VIP担当に相談');self.send('guest',str(self.day)+' 2名 通し')
-        self.assertFalse(self.dbquery('SELECT * FROM concierge_proposals'))
-        self.assertFalse(self.dbquery('SELECT * FROM concierge_requests'))
-        self.assertEqual(len(self.dbquery("SELECT * FROM concierge_outbox WHERE kind='vip-access' AND channel='owner'")),1)
-        code=self.decision()
-        for user,source,signature in [('other','user',True),('owner','group',True),('owner','user',False)]:
-            self.send(user,'VIP承認 '+code,True,source,signature)
-            self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'pending')
-        self.send('owner','VIP承認 '+code,True);self.send('owner','VIP承認 '+code,True)
+    def test_direct_approval_without_owner_notifications(self):
+        self.apply()
+        self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'pending')
+        self.decision()
         self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'approved')
+        self.assertFalse(self.dbquery("SELECT * FROM concierge_outbox WHERE channel='owner'"))
         self.assertEqual(len(self.dbquery('SELECT * FROM vip_audit')),1)
-        self.assertEqual(len(self.dbquery('SELECT * FROM customers')),1)
+        cid=self.dbquery('SELECT id FROM customers')[0]['id']
+        self.decision(cid=cid)
+        self.assertEqual(len(self.dbquery('SELECT * FROM vip_audit')),1)
+        self.decision(decision='revoked')
+        self.send('owner','VIP承認 retired-code',True)
+        self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'revoked')
 
     def test_forwarded_link_wrong_identity_revoke_and_legacy_link(self):
         self.approve();token=self.proposal()
