@@ -24,6 +24,9 @@ def schema(c):
     CREATE TABLE IF NOT EXISTS vip_decisions (
       hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, decision TEXT NOT NULL,
       customer_id INTEGER, expires REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS vip_invites (
+      hash TEXT PRIMARY KEY, name TEXT NOT NULL, expires REAL NOT NULL,
+      used_by TEXT, created REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS vip_audit (
       id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, decision TEXT NOT NULL,
       actor TEXT NOT NULL, created REAL NOT NULL);
@@ -41,6 +44,8 @@ def gate(c, user, command, base_url):
     import concierge as bot
     if user.startswith(('ig:', 'web:')):
         return None
+    if command.startswith('VIP招待 '):
+        return redeem_invite(c,user,command.removeprefix('VIP招待 ').strip(),base_url)
     if command.startswith('予約本人確認 '):
         code = command.removeprefix('予約本人確認 ').strip()
         ok = approved(c, user) and c.execute('UPDATE vip_browser SET verified=1 WHERE code_hash=? AND user_id=? AND expires>? AND verified=0', (digest(code), user, time.time())).rowcount
@@ -125,3 +130,40 @@ def request_decision(c, data, base_url):
 def owner_commands(c, events):
     # Retired: decisions are made only through the authenticated management route.
     return None
+
+
+def create_invite(c, data):
+    from urllib.parse import quote
+    name=data.get('name')
+    if not isinstance(name,str) or not 1<=len(name.strip())<=80:
+        raise ValueError('お客様のお名前を入力してください。')
+    token=secrets.token_urlsafe(32)
+    now=time.time()
+    c.execute('INSERT INTO vip_invites(hash,name,expires,created) VALUES(?,?,?,?)',
+              (digest(token),name.strip(),now+86400,now))
+    command='VIP招待 '+token
+    return {'url':'https://line.me/R/oaMessage/%40387reour/?'+quote(command,safe=''),
+            'command':command,'expires_in':86400,
+            'message':'24時間有効・1回限り。お客様がLINEで招待文を送信すると自動承認されます。'}
+
+
+def redeem_invite(c,user,token,base_url):
+    import concierge as bot
+    invite=c.execute('SELECT * FROM vip_invites WHERE hash=? AND expires>?',
+                     (digest(token),time.time())).fetchone()
+    if not invite or invite['used_by']:
+        return [bot.text_message('この招待は使用済み、または有効期限が切れています。店舗へ新しい招待をご依頼ください。',False)]
+    if not c.execute('UPDATE vip_invites SET used_by=? WHERE hash=? AND used_by IS NULL AND expires>?',
+                     (user,digest(token),time.time())).rowcount:
+        return [bot.text_message('この招待は使用済みです。',False)]
+    existing=c.execute('SELECT * FROM vip_access WHERE user_id=?',(user,)).fetchone()
+    if approved(c,user):
+        return [bot.text_message('すでにVIPコンシェルジュをご利用いただけます。「メニュー」とお送りください。',False)]
+    if not existing:
+        c.execute('INSERT INTO vip_access(user_id,name,introducer,updated) VALUES(?,?,?,?)',
+                  (user,invite['name'],'朝倉（専用招待）',time.time()))
+    cid=existing['customer_id'] if existing and existing['customer_id'] else 0
+    request_decision(c,{'user_id':user,'decision':'approved','customer_id':cid},base_url)
+    c.execute("UPDATE vip_access SET decided_by='admin-invite' WHERE user_id=?",(user,))
+    c.execute("UPDATE vip_audit SET actor='admin-invite' WHERE id=(SELECT max(id) FROM vip_audit WHERE user_id=?)",(user,))
+    return []
