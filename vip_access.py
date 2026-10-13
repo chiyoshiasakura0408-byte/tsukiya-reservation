@@ -257,7 +257,7 @@ def invitation_name(command):
     if match:
         name=match.group(1).strip()
     else:
-        match=re.fullmatch(r'(.+?様)[\s　]*(?:VIP招待|招待依頼|招待)',command)
+        match=re.fullmatch(r'(.+?)[\s　]*(?:VIP招待|招待依頼|招待)',command)
         if not match:return None
         name=match.group(1).strip()
     if name.endswith('様'):name=name[:-1].strip()

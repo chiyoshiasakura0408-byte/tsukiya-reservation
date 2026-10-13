@@ -357,3 +357,17 @@ class VipTests(unittest.TestCase):
         with patch.dict(os.environ,{'LINE_CHANNEL_ACCESS_TOKEN':'work-token','APP_BASE_URL':'https://example.com'}):
             self.send(owner,'山田太郎様招待',work=True)
         self.assertEqual(len(self.dbquery('SELECT * FROM vip_invites')),1)
+
+
+    def test_invite_names_with_optional_honorific_and_spaces(self):
+        for command in ('やまとまこ　招待','やまとまこ 招待','やまとまこ招待','やまとまこ様招待','招待　やまとまこ','招待 やまとまこ様'):
+            self.assertEqual(vip_access.invitation_name(command),'やまとまこ',command)
+        self.assertIsNone(vip_access.invitation_name('招待'))
+        owner='U'+'a'*32
+        c=bot.connect(self.db)
+        with c:bot.put(c,'owner',owner)
+        c.close()
+        with patch.dict(os.environ,{'LINE_CHANNEL_ACCESS_TOKEN':'work-token','APP_BASE_URL':'https://example.com'}):
+            self.send(owner,'やまとまこ　招待',work=True)
+        self.assertEqual(self.dbquery('SELECT name FROM vip_invites')[0]['name'],'やまとまこ')
+        self.assertEqual(len(self.dbquery("SELECT * FROM concierge_outbox WHERE kind='vip-invite'")),1)
