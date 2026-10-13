@@ -371,3 +371,24 @@ class VipTests(unittest.TestCase):
             self.send(owner,'やまとまこ　招待',work=True)
         self.assertEqual(self.dbquery('SELECT name FROM vip_invites')[0]['name'],'やまとまこ')
         self.assertEqual(len(self.dbquery("SELECT * FROM concierge_outbox WHERE kind='vip-invite'")),1)
+
+
+    def test_withdraw_text_shows_confirm_buttons_before_revoking(self):
+        self.approve()
+        reservation=self.insert()
+        self.send('guest','退会')
+        jobs=self.dbquery("SELECT payload FROM concierge_outbox WHERE user_id='guest' ORDER BY created DESC")
+        message=json.loads(jobs[0]['payload'])[0]
+        self.assertEqual(message['type'],'template')
+        self.assertEqual(message['template']['type'],'confirm')
+        actions=message['template']['actions']
+        self.assertEqual([a['label'] for a in actions],['退会する','戻る'])
+        self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'approved')
+        self.send('guest',actions[1]['text'])
+        self.send('guest',actions[0]['text'])
+        self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'approved')
+        self.send('guest','退会')
+        self.send('guest',actions[0]['text'])
+        self.assertEqual(self.dbquery('SELECT status FROM vip_access')[0]['status'],'revoked')
+        self.assertEqual(self.dbquery('SELECT status FROM reservations WHERE id=?',(reservation,))[0]['status'],'CONFIRMED')
+        self.assertFalse(self.dbquery("SELECT * FROM concierge_outbox WHERE channel='owner'"))

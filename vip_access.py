@@ -50,8 +50,12 @@ def gate(c, user, command, base_url):
         return None
     if command in ('退会','VIP退会','退会する'):
         c.execute('UPDATE concierge_customers SET state=? WHERE user_id=?',('withdraw:'+str(time.time()+600),user))
-        message=bot.text_message('VIPコンシェルジュを退会しますか？退会するとVIP利用と配信を停止します。確定済みのご予約はキャンセルされず、顧客情報・来店履歴は残ります。',False)
-        message['quickReply']={'items':[{'type':'action','action':{'type':'message','label':label,'text':text}} for label,text in [('退会を確定','VIP退会を確定'),('戻る','VIP退会をやめる')]]}
+        message={'type':'template',
+                 'altText':'VIPコンシェルジュの退会確認。「退会する」または「戻る」を選択してください。',
+                 'template':{'type':'confirm',
+                             'text':'VIPコンシェルジュを退会しますか？\nVIP利用と配信を停止します。確定済みのご予約はそのまま承ります。\n確認ボタンは10分間有効です。',
+                             'actions':[{'type':'message','label':'退会する','text':'VIP退会を確定'},
+                                        {'type':'message','label':'戻る','text':'VIP退会をやめる'}]}}
         return [message]
     if command=='VIP退会をやめる':
         c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?",(user,))
