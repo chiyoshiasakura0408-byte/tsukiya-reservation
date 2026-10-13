@@ -247,3 +247,64 @@ class VipTests(unittest.TestCase):
         self.assertEqual((duration,through),(150,False))
         c.close();self.insert(area=room,clock='20:30')
         c=run.con();self.assertTrue(run.availability_check(c,room,str(self.day)+'T18:00',2)[0]);c.close()
+
+
+    def test_owner_invite_delivery_is_private_and_idempotent(self):
+        owner='U'+'a'*32
+        c=bot.connect(self.db)
+        with c:
+            invite=vip_access.create_invite(c,{'name':'招待顧客'})
+            token=invite['command'].split()[1]
+            bot.put(c,'owner',owner)
+        with patch.dict(os.environ,{'LINE_CHANNEL_ACCESS_TOKEN':'work-token'}):
+            with c:
+                first=vip_access.send_invite_to_owner(c,token,'https://example.com')
+                second=vip_access.send_invite_to_owner(c,token,'https://example.com')
+            self.assertEqual(first,second)
+            rows=c.execute("SELECT * FROM concierge_outbox WHERE kind='vip-invite'").fetchall()
+            self.assertEqual(len(rows),1)
+            self.assertEqual((rows[0]['user_id'],rows[0]['channel']),(owner,'owner'))
+            payload=json.loads(rows[0]['payload'])
+            self.assertIn('招待顧客様',payload[0]['text'])
+            self.assertIn(invite['url'],payload[0]['text'])
+            self.assertEqual(payload[1]['type'],'image')
+            self.assertIn('/vip-invite-qr?token=',payload[1]['originalContentUrl'])
+            for invalid in ('','C'+'b'*32,'R'+'b'*32):
+                with c:bot.put(c,'owner',invalid)
+                with self.assertRaises(ValueError):vip_access.send_invite_to_owner(c,token,'https://example.com')
+        c.close()
+
+    def test_invite_qr_does_not_redeem_and_expires(self):
+        c=bot.connect(self.db)
+        with c:invite=vip_access.create_invite(c,{'name':'招待顧客'})
+        token=invite['command'].split()[1]
+        png=vip_access.invite_qr(c,token)
+        self.assertTrue(png.startswith(bytes.fromhex('89504e470d0a1a0a')))
+        self.assertIsNone(c.execute('SELECT used_by FROM vip_invites').fetchone()[0])
+        with c:c.execute('UPDATE vip_invites SET expires=0')
+        with self.assertRaises(ValueError):vip_access.invite_qr(c,token)
+        with self.assertRaises(ValueError):vip_access.invite_qr(c,'invalid')
+        c.close()
+
+    def test_invite_http_auth_and_duplicate_send(self):
+        server=ThreadingHTTPServer(('127.0.0.1',0),run.Handler)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
+        def call(path,data,headers):
+            conn=http.client.HTTPConnection('127.0.0.1',server.server_port)
+            conn.request('POST',path,json.dumps(data),{'Content-Type':'application/json',**headers})
+            response=conn.getresponse();result=response.status,json.loads(response.read());conn.close();return result
+        c=bot.connect(self.db)
+        with c:bot.put(c,'owner','U'+'a'*32)
+        c.close()
+        with patch.object(run,'ADMIN_TOKEN','test'),patch.object(run,'APP_BASE_URL','https://example.com'),patch.dict(os.environ,{'LINE_CHANNEL_ACCESS_TOKEN':'work-token'}):
+            hdr={'x-admin-token':'test','X-Tsukiya-Action':'vip-access'}
+            self.assertEqual(call('/api/vip-access/invite-send',{}, {})[0],401)
+            self.assertEqual(call('/api/vip-access/invite-send',{}, {'x-admin-token':'test'})[0],403)
+            status,invite=call('/api/vip-access/invite',{'name':'招待顧客'},hdr)
+            self.assertEqual(status,200,invite)
+            data={'token':invite['command'].split()[1]}
+            first=call('/api/vip-access/invite-send',data,hdr)
+            second=call('/api/vip-access/invite-send',data,hdr)
+            self.assertEqual(first[0],200,first)
+            self.assertEqual(first,second)

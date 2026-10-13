@@ -4,7 +4,7 @@ import json
 import re
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 def digest(value):
@@ -27,6 +27,8 @@ def schema(c):
     CREATE TABLE IF NOT EXISTS vip_invites (
       hash TEXT PRIMARY KEY, name TEXT NOT NULL, expires REAL NOT NULL,
       used_by TEXT, created REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS vip_invite_deliveries (
+      invite_hash TEXT PRIMARY KEY, delivery_id TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS vip_audit (
       id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, decision TEXT NOT NULL,
       actor TEXT NOT NULL, created REAL NOT NULL);
@@ -187,3 +189,59 @@ def redeem_invite(c,user,token,base_url):
     c.execute("UPDATE vip_access SET decided_by='admin-invite' WHERE user_id=?",(user,))
     c.execute("UPDATE vip_audit SET actor='admin-invite' WHERE id=(SELECT max(id) FROM vip_audit WHERE user_id=?)",(user,))
     return []
+
+
+def invite_details(c, token, base_url):
+    from urllib.parse import quote
+    if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', token):
+        raise ValueError('招待を確認できません。新しく発行してください。')
+    row = c.execute('SELECT * FROM vip_invites WHERE hash=? AND expires>? AND used_by IS NULL',
+                    (digest(token), time.time())).fetchone()
+    if not row:
+        raise ValueError('招待は使用済み、または期限切れです。新しく発行してください。')
+    url = 'https://line.me/R/oaMessage/%40387reour/?' + quote('VIP招待 '+token, safe='')
+    text = (row['name']+'様\n\n西天満つきやのVIPコンシェルジュへご招待いたします。\n'
+            '空席のご案内やご予約、ご来店に関するご相談にご利用ください。\n\n'
+            '下記リンク、またはQRコードからLINEを開き、入力済みの招待文をそのまま送信してください。'
+            '自動でご利用登録が完了いたします。\n\n'+url+
+            '\n\n有効期限：'+datetime.fromtimestamp(row['expires'], timezone(timedelta(hours=9))).strftime('%Y年%m月%d日 %H:%M')+
+            '（日本時間・1回限り）\nご本人様専用のため、転送はお控えください。\n\n西天満つきや　朝倉')
+    return {'url':url, 'invitation_text':text,
+            'qr_url':base_url.rstrip('/')+'/vip-invite-qr?token='+token}
+
+
+def invite_qr(c, token):
+    import io
+    import qrcode
+    details = invite_details(c, token, '')
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=4)
+    qr.add_data(details['url']); qr.make(fit=True)
+    stream = io.BytesIO()
+    qr.make_image(fill_color='black', back_color='white').save(stream, format='PNG')
+    return stream.getvalue()
+
+
+def send_invite_to_owner(c, token, base_url):
+    import os
+    import concierge as bot
+    from urllib.parse import urlparse
+    details = invite_details(c, token, base_url)
+    owner = bot.setting(c, 'owner')
+    if not re.fullmatch(r'U[0-9a-fA-F]{32}', owner or ''):
+        raise ValueError('朝倉さんの個人LINEを本人連携してください。グループには送信しません。')
+    if not os.getenv('LINE_CHANNEL_ACCESS_TOKEN'):
+        raise ValueError('業務LINEの接続設定を確認してください。')
+    parsed = urlparse(base_url)
+    if parsed.scheme != 'https' or not parsed.netloc:
+        raise ValueError('招待QRコードの公開URLを確認してください。')
+    existing = c.execute('SELECT delivery_id FROM vip_invite_deliveries WHERE invite_hash=?', (digest(token),)).fetchone()
+    if existing:
+        delivery_id = existing['delivery_id']
+    else:
+        delivery_id = bot.enqueue(c, owner, [
+            {'type':'text','text':details['invitation_text']},
+            {'type':'image','originalContentUrl':details['qr_url'],'previewImageUrl':details['qr_url']}
+        ], channel='owner', kind='vip-invite')
+        c.execute('INSERT INTO vip_invite_deliveries VALUES(?,?)',(digest(token),delivery_id))
+    row = c.execute('SELECT state FROM concierge_outbox WHERE id=?',(delivery_id,)).fetchone()
+    return {'delivery_id':delivery_id, 'state':row['state'] if row else 'unknown'}

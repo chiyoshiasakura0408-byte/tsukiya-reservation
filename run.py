@@ -1892,6 +1892,22 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        if p == "/vip-invite-qr":
+            c=concierge.connect(DB)
+            try:
+                token=parse_qs(u.query).get('token',[''])[0]
+                content=vip_access.invite_qr(c,token)
+            except ValueError:
+                return self.send_json({"error":"招待は使用済み、または期限切れです。"},404)
+            finally:c.close()
+            self.send_response(200)
+            self.send_header("Content-Type","image/png")
+            self.send_header("Cache-Control","private, no-store")
+            self.send_header("Content-Length",str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
+
         # Emergency intake pause requested by the owner, 2026-10-13 JST.
         if p in ("/book", "/book-test", "/concierge/book"):
             return self.send_html('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>予約受付一時停止｜西天満つきや</title></head><body style="font-family:sans-serif;max-width:600px;margin:80px auto;padding:24px"><h1>西天満つきや</h1><h2>予約受付を一時停止しております</h2><p>ご不便をおかけし申し訳ございません。再開までお待ちください。</p><h2>Online reservations are temporarily paused.</h2><p>We apologize for the inconvenience.</p></body></html>', status=503, loader=False)
@@ -2493,7 +2509,22 @@ class Handler(
             if self.headers.get("X-Tsukiya-Action")!="vip-access":return self.send_json({"error":"invalid request"},403)
             c=concierge.connect(DB)
             try:
-                with c:result=vip_access.create_invite(c,self.read_json())
+                with c:
+                    result=vip_access.create_invite(c,self.read_json())
+                    token=result['command'].split(' ',1)[1]
+                    result.update(vip_access.invite_details(c,token,APP_BASE_URL))
+                return self.send_json(result,headers={"Cache-Control":"no-store"})
+            except (ValueError,TypeError,AttributeError) as exc:return self.send_json({"error":str(exc)},400)
+            finally:c.close()
+
+        if p == "/api/vip-access/invite-send":
+            if not self.auth():return self.send_json({"error":"unauthorized"},401)
+            if self.headers.get("X-Tsukiya-Action")!="vip-access":return self.send_json({"error":"invalid request"},403)
+            c=concierge.connect(DB)
+            try:
+                with c:
+                    c.execute('BEGIN IMMEDIATE')
+                    result=vip_access.send_invite_to_owner(c,self.read_json().get('token'),APP_BASE_URL)
                 return self.send_json(result,headers={"Cache-Control":"no-store"})
             except (ValueError,TypeError,AttributeError) as exc:return self.send_json({"error":str(exc)},400)
             finally:c.close()
