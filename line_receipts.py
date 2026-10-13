@@ -38,7 +38,7 @@ def enqueue(c, raw, signature, payload):
                 and re.fullmatch(r'U[0-9a-f]{32}', str(source.get('userId', '')))
                 and e.get('type') == 'message' and message.get('type') == 'text'
                 and (re.fullmatch(r'つきやシフト連携\s+[A-F0-9]{12}', str(message.get('text', '')).strip(), re.IGNORECASE)
-                     or re.match(r'^(希望シフト|シフト希望)', str(message.get('text', '')).strip()))):
+                     or re.match(r'^(希望シフト|シフト希望|[0-9０-９])', str(message.get('text', '')).strip()))):
             relevant.append(e['webhookEventId'])
             continue
         if e.get('source', {}).get('groupId') != GROUP or e.get('source', {}).get('type') != 'group':
