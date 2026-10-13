@@ -31,13 +31,14 @@ def enqueue(c, raw, signature, payload):
     relevant = []
     now = time.time()
     for e in payload['events']:
-        # Forward only employee pairing commands from direct chats.
+        # Forward employee pairing and explicitly prefixed shift submissions only.
         source = e.get('source', {})
         message = e.get('message', {})
         if (source.get('type') == 'user'
                 and re.fullmatch(r'U[0-9a-f]{32}', str(source.get('userId', '')))
                 and e.get('type') == 'message' and message.get('type') == 'text'
-                and re.fullmatch(r'つきやシフト連携\s+[A-F0-9]{12}', str(message.get('text', '')).strip(), re.IGNORECASE)):
+                and (re.fullmatch(r'つきやシフト連携\s+[A-F0-9]{12}', str(message.get('text', '')).strip(), re.IGNORECASE)
+                     or re.match(r'^(希望シフト|シフト希望)', str(message.get('text', '')).strip()))):
             relevant.append(e['webhookEventId'])
             continue
         if e.get('source', {}).get('groupId') != GROUP or e.get('source', {}).get('type') != 'group':
