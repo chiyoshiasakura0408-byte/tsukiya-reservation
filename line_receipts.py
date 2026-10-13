@@ -95,6 +95,12 @@ def content(db, raw, signature):
     if not secret or not hmac.compare_digest(expected, signature): return 403, b'', ''
     try:
         x=json.loads(raw)
+        if x.get('action') == 'payroll_recipient':
+            if abs(time.time()-int(x['timestamp']))>300:
+                return 403,b'',''
+            owner=review_recipient(db)
+            if not owner:return 409,b'{"error":"owner_not_linked"}','application/json'
+            return 200,json.dumps({'line_id':owner}).encode(),'application/json'
         mid=x['message_id']
         if not isinstance(mid,str) or not re.fullmatch(r'\d{1,30}',mid) or x['group_id']!=GROUP or abs(time.time()-int(x['timestamp']))>300:
             return 403,b'',''
