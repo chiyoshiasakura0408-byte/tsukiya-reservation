@@ -308,3 +308,52 @@ class VipTests(unittest.TestCase):
             second=call('/api/vip-access/invite-send',data,hdr)
             self.assertEqual(first[0],200,first)
             self.assertEqual(first,second)
+
+
+    def test_work_line_invite_commands_and_identity_boundary(self):
+        owner='U'+'a'*32
+        c=bot.connect(self.db)
+        with c:bot.put(c,'owner',owner)
+        c.close()
+        with patch.dict(os.environ,{'LINE_CHANNEL_ACCESS_TOKEN':'work-token','APP_BASE_URL':'https://example.com'}):
+            self.send(owner,'招待　山田太郎様',work=True)
+            self.send(owner,'佐藤花子様招待',work=True)
+            self.send('U'+'b'*32,'招待 他人様',work=True)
+            self.send(owner,'招待 グループ様',work=True,source='group')
+            self.send(owner,'招待 客用LINE様',work=False)
+            self.send(owner,'招待 不正署名様',work=True,signature=False)
+            self.send(owner,'今日はありがとうございました',work=True)
+        invites=self.dbquery('SELECT name FROM vip_invites ORDER BY created')
+        self.assertEqual([r['name'] for r in invites],['山田太郎','佐藤花子'])
+        jobs=self.dbquery("SELECT * FROM concierge_outbox WHERE kind='vip-invite'")
+        self.assertEqual(len(jobs),2)
+        self.assertTrue(all(j['user_id']==owner and j['channel']=='owner' for j in jobs))
+        self.assertTrue(all(len(json.loads(j['payload']))==2 for j in jobs))
+
+    def test_work_invitation_redelivery_is_idempotent(self):
+        owner='U'+'a'*32
+        c=bot.connect(self.db)
+        with c:bot.put(c,'owner',owner)
+        c.close()
+        with patch.dict(os.environ,{'LINE_CHANNEL_ACCESS_TOKEN':'work-token','APP_BASE_URL':'https://example.com'}):
+            self.send(owner,'招待 山田太郎様',work=True)
+            self.n-=1
+            self.send(owner,'招待 山田太郎様',work=True)
+            self.send(owner,'招待',work=True)
+        self.assertEqual(len(self.dbquery('SELECT * FROM vip_invites')),1)
+        self.assertEqual(len(self.dbquery("SELECT * FROM concierge_outbox WHERE kind='vip-invite'")),1)
+        self.assertEqual(len(self.dbquery("SELECT * FROM concierge_outbox WHERE kind='vip-invite-help'")),1)
+
+    def test_work_invite_failure_rolls_back_and_can_retry(self):
+        owner='U'+'a'*32
+        c=bot.connect(self.db)
+        with c:bot.put(c,'owner',owner)
+        c.close()
+        with patch.dict(os.environ,{'LINE_CHANNEL_ACCESS_TOKEN':'work-token','APP_BASE_URL':''}):
+            with self.assertRaises(ValueError):self.send(owner,'山田太郎様招待',work=True)
+        self.assertFalse(self.dbquery('SELECT * FROM vip_invites'))
+        self.assertFalse(self.dbquery('SELECT * FROM vip_invite_events'))
+        self.n-=1
+        with patch.dict(os.environ,{'LINE_CHANNEL_ACCESS_TOKEN':'work-token','APP_BASE_URL':'https://example.com'}):
+            self.send(owner,'山田太郎様招待',work=True)
+        self.assertEqual(len(self.dbquery('SELECT * FROM vip_invites')),1)

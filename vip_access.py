@@ -27,6 +27,8 @@ def schema(c):
     CREATE TABLE IF NOT EXISTS vip_invites (
       hash TEXT PRIMARY KEY, name TEXT NOT NULL, expires REAL NOT NULL,
       used_by TEXT, created REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS vip_invite_events (
+      event_id TEXT PRIMARY KEY, created REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS vip_invite_deliveries (
       invite_hash TEXT PRIMARY KEY, delivery_id TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS vip_audit (
@@ -245,3 +247,54 @@ def send_invite_to_owner(c, token, base_url):
         c.execute('INSERT INTO vip_invite_deliveries VALUES(?,?)',(digest(token),delivery_id))
     row = c.execute('SELECT state FROM concierge_outbox WHERE id=?',(delivery_id,)).fetchone()
     return {'delivery_id':delivery_id, 'state':row['state'] if row else 'unknown'}
+
+
+def invitation_name(command):
+    """Accept 招待 〇〇様 and 〇〇様招待; preserve the actual guest name."""
+    if not isinstance(command,str):return None
+    command=command.strip()
+    match=re.fullmatch(r'(?:VIP招待|招待依頼|招待)[\s　:：]+(.+)',command)
+    if match:
+        name=match.group(1).strip()
+    else:
+        match=re.fullmatch(r'(.+?様)[\s　]*(?:VIP招待|招待依頼|招待)',command)
+        if not match:return None
+        name=match.group(1).strip()
+    if name.endswith('様'):name=name[:-1].strip()
+    if not 1<=len(name)<=80 or any(ch in name for ch in '\r\n'):
+        raise ValueError('お客様のお名前を80文字以内で入力してください。例：招待 山田太郎様')
+    return name
+
+
+def receive_owner_invites(db, events, base_url):
+    """Only called by the signature-verified WORK LINE webhook, never customer LINE."""
+    import concierge as bot
+    with bot.LOCK:
+        c=bot.connect(db)
+        try:
+            with c:
+                c.execute('BEGIN IMMEDIATE')
+                owner=bot.setting(c,'owner')
+                if not re.fullmatch(r'U[0-9a-fA-F]{32}',owner or ''):return
+                for event in events:
+                    source=event.get('source',{});message=event.get('message',{})
+                    if (event.get('type')!='message' or source.get('type')!='user'
+                        or source.get('userId')!=owner or message.get('type')!='text'):
+                        continue
+                    command=message.get('text','').strip()
+                    try:name=invitation_name(command)
+                    except ValueError as exc:name=None;error=str(exc)
+                    else:error=None
+                    help_requested=command in ('招待','VIP招待','招待依頼')
+                    if name is None and not help_requested and not error:continue
+                    event_id=event.get('webhookEventId')
+                    if not isinstance(event_id,str) or not event_id:continue
+                    if not c.execute('INSERT OR IGNORE INTO vip_invite_events VALUES(?,?)',(event_id,time.time())).rowcount:
+                        continue
+                    if help_requested or error:
+                        bot.enqueue(c,owner,[{'type':'text','text':error or '「招待 山田太郎様」または「山田太郎様招待」とお送りください。専用QRコードとご招待メッセージをお届けします。'}],channel='owner',kind='vip-invite-help')
+                        continue
+                    # Keep issuance + enqueue + webhook dedup atomic, including on retry.
+                    invite=create_invite(c,{'name':name})
+                    send_invite_to_owner(c,invite['command'].split(' ',1)[1],base_url)
+        finally:c.close()

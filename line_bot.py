@@ -81,6 +81,8 @@ def receive(db, raw, signature):
     import guest_service
     guest_service.receive_stock(db, events)
     concierge.pair_owner(db, events)
+    import vip_access
+    vip_access.receive_owner_invites(db, events, os.getenv("APP_BASE_URL", "").strip().rstrip("/"))
     return 200, {'ok': True, 'received': received}
 
 
