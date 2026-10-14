@@ -2622,6 +2622,21 @@ class Handler(
             except Exception:
                 return self.send_json({"error":"receipt linking unavailable"},503)
 
+        if p == "/api/line/shift-messages":
+            try:
+                import shift_messages
+                length = int(self.headers.get("Content-Length", "0"))
+                if self.headers.get("Transfer-Encoding") or not 0 < length <= 24000:
+                    return self.send_json({"error":"invalid request"},400)
+                self.connection.settimeout(15)
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    return self.send_json({"error":"invalid request"},400)
+                code, result = shift_messages.handle(DB, raw, self.headers.get("X-Tsukiya-Shift-Signature", ""))
+                return self.send_json(result, code, headers={"Cache-Control":"no-store"})
+            except Exception:
+                return self.send_json({"error":"shift transport unavailable"},503)
+
         if p == "/api/line/receipt-content":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -3603,5 +3618,6 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
+
 
 
