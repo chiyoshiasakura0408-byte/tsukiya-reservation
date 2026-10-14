@@ -63,10 +63,12 @@ def respond(c,user,text,lang,courses,base,slots=None):
     if any(k in lower for k in ('reserv','availab','book','空席','予約')):
         return 'May I have your preferred date and party size? Please send them as YYYY-MM-DD followed by the number of guests, for example 2026-11-10 2. Our sittings begin at 18:00 and 20:30, Japan time.' if en else 'ご希望の日程と人数を「2026-11-10 2名」の形式でお知らせください。18時と20時30分の二部制でございます。'
     if any(k in lower for k in ('price','cost','course','menu','料金','コース','お品書き')):
-        prices=sorted({v[1] for v in courses.values()})
-        text_en='Our seasonal crab courses are '+', '.join('JPY '+format(v,',') for v in prices)+' per guest, including tax. Beverages are charged separately. Matsuba and seko crab: November 10–December 31. Matsuba crab with our signature shark-fin sauce dish: January 1–March 20.'
-        text_ja='\n'.join(n+'：お一人様 ¥'+format(p,',')+'（税込）' for n,p in courses.values())+'\nお飲み物代は別途、当日のお支払いとなります。'
-        return (text_en+('\n'+cat['menu_en'] if cat.get('menu_en') else '')) if en else text_ja+('\n'+cat['menu'] if cat.get('menu') else '')
+        items = bot.concierge_menu.catalog()['courses']
+        text_en = '\n\n'.join(item['period_en'] + '\n' + item['name_en'] + '\nJPY ' + format(item['price'], ',') + ' per guest, tax included.' for item in items)
+        text_en += '\n\nThe two winter Matsuba courses include beverages; some drinks incur an additional charge. Please check the reservation page for current booking availability.'
+        text_ja = '\n\n'.join(item['period'] + '\n' + item['name'] + '：お一人様 ¥' + format(item['price'], ',') + '（税込）' for item in items)
+        text_ja += '\n冬季の松葉蟹2コースはお飲み物代込みです（一部別料金のお飲み物もございます）。現在の受付状況は予約ページでご確認ください。'
+        return text_en if en else text_ja
     if any(k in lower for k in ('photo','video','写真','動画')):
         links=[cat.get(k) for k in ('photo','video') if cat.get(k)]
         return ('Please enjoy a preview of our cuisine.\n' if en else 'お料理の写真・動画をご案内いたします。\n')+'\n'.join(links) if links else ('Our photographs and videos are being prepared. our VIP concierge will be pleased to assist with details.' if en else '写真・動画はただいま準備中でございます。')
@@ -160,3 +162,4 @@ def deliver_row(c,row):
     with c:
         c.execute('UPDATE concierge_outbox SET state=?,error=?,attempts=attempts+1 WHERE id=?',(state,error,row['id']))
         if row['kind']=='answer':c.execute('UPDATE concierge_requests SET status=? WHERE delivery_id=?',('回答Instagram受付済み' if state=='accepted' else '回答送信要確認',row['id']))
+
