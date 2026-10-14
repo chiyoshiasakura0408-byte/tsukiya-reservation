@@ -1,15 +1,17 @@
 {
-  "version": 1,
+  "version": 3,
   "courses": [
     {
       "id": "matsuba-fukahire",
-      "name": "松葉蟹と名物ふかひれあんかけおまかせコース",
-      "name_en": "Matsuba Snow Crab & Signature Shark Fin Omakase",
-      "period": "1月1日〜3月20日",
-      "period_en": "January 1 – March 20",
+      "name": "松葉蟹おまかせコース",
+      "name_en": "Matsuba Snow Crab Omakase",
+      "period": "2027年1月1日〜3月20日",
+      "period_en": "January 1 – March 20, 2027",
       "price": 60000,
       "online_booking": true,
-      "description": "松葉蟹に、名物ふかひれあんかけを合わせたおまかせコース。"
+      "description": "冬が深まり、漁場がより深い水域へと移る季節。\n\n厳しい冬の海で水揚げされる松葉蟹の中から、その時々で最良の一杯を厳選いたします。\n\nお一人様につき、1〜1.2kg台の活松葉蟹を丸ごと1杯。さらに、茹で松葉蟹を4分の1杯ご用意いたします。\n\n活蟹ならではの瑞々しい甘みと、茹でることで際立つ凝縮された旨味。その違いをお楽しみいただけるのも、この季節ならではの醍醐味です。\n\nまた、年明けからはお料理の構成も一新。\n\nつきや冬の名物「ふかひれあんかけ」が加わり、松葉蟹の魅力をさらに奥深く味わっていただけます。\n\n冬の深まりとともに、蟹の楽しみ方もまた深まっていきます。\n\nお飲み物代込み（一部別料金のお飲み物もございます）。二部制でのご案内。",
+      "description_en": "One whole live Matsuba crab and one-quarter of a boiled Matsuba crab per guest. Crab is the focus of every course from beginning to end.",
+      "tagline": "1月〜3月｜冬の深まりとともに"
     },
     {
       "id": "hairy",
@@ -19,7 +21,8 @@
       "period_en": "March – May",
       "price": 50000,
       "online_booking": false,
-      "description": ""
+      "description": "春先、オホーツク海を覆っていた流氷が去り、待ちわびた毛蟹漁が始まります。\n\nつきやが選ぶのは、毛蟹の中でも格別の味わいを持つ、海明けの毛蟹。\n\n漁獲資源の保護による制限もあり、希少性が増すなか、さらに1.2kg以上という超特大サイズだけを厳選いたします。\n\n毛蟹ならではの繊細で甘み豊かな身。そして、クセが少なく、濃厚でありながら上品な蟹みそ。\n\n超特大だからこそ味わえる、圧倒的な身の量と、ひと口ごとに広がる深い旨味をご堪能ください。\n\n出会える期間も、数量も限られた、春だけの特別な味わいです。",
+      "tagline": "春｜流氷が去った海からの贈り物"
     },
     {
       "id": "zuwaigani",
@@ -29,7 +32,8 @@
       "period_en": "July – September",
       "price": 40000,
       "online_booking": false,
-      "description": ""
+      "description": "蟹の旬は、冬だけではありません。\n\nつきやが夏に選ぶのは、ロシア・西サハリンの海で水揚げされる、上質なずわい蟹。\n\nロシア産ずわい蟹の中でも、その品質を高く評価する西サハリン産から、1kg以上の立派な活ずわい蟹をお一人様につき1杯ご用意いたします。\n\nさらに、茹で蟹も加え、異なる調理法によって引き出される蟹の旨味を存分に。\n\n夏の名物は、香ばしく焼き上げる「蟹みそ甲羅焼き」と、濃厚な蟹みそで味わう「みそしゃぶ」。\n\n蟹みその芳醇な香りと、ずわい蟹の繊細な甘みが重なり合う、つきやならではの夏の蟹尽くし。\n\n冬とはひと味違う、夏の蟹の美味しさをお届けします。",
+      "tagline": "夏｜夏にこそ味わう、極上のずわい蟹"
     },
     {
       "id": "tarabagani",
@@ -39,17 +43,21 @@
       "period_en": "October 15 – November 9, 2026",
       "price": 45000,
       "online_booking": true,
-      "description": ""
+      "description": "世界的な需要の高まりとともに、年々入手が難しくなっている大型のたらば蟹。\n\nつきやでは、なかでも希少な3kg台の活たらば蟹を厳選し、2名様につき贅沢に1杯を使用いたします。\n\nたらば蟹ならではの肉厚な身、力強い弾力、噛むほどに広がる上品な甘み。その魅力を存分に味わっていただけるよう、さまざまな調理法で、最後のひと口まで飽きることのない一皿へと仕立てます。\n\n面倒な殻剥きはすべてお任せください。\n\nお客様には、ただ最高の状態で味わう贅沢を。",
+      "description_en": "A crab-focused course presenting live king crab in a variety of preparations.",
+      "tagline": "圧倒的な食べ応えを、贅沢に。"
     },
     {
       "id": "matsuba-seko",
-      "name": "松葉蟹、せこ蟹おまかせコース",
-      "name_en": "Matsuba Snow Crab & Seko Crab Omakase",
-      "period": "11月10日〜12月31日",
-      "period_en": "November 10 – December 31",
+      "name": "松葉蟹おまかせコース",
+      "name_en": "Matsuba Snow Crab Omakase",
+      "period": "2026年11月10日〜12月31日",
+      "period_en": "November 10 – December 31, 2026",
       "price": 60000,
       "online_booking": true,
-      "description": "松葉蟹とせこ蟹をお楽しみいただくおまかせコース。"
+      "description": "冬の味覚の最高峰、松葉蟹。\n\nつきやでは産地や港の名前にとらわれず、その時々で最も状態の良い蟹を見極め、1〜1.2kg台の上質な活松葉蟹を、お一人様につき丸ごと1杯ご用意いたします。\n\nさらに、この季節にしか味わえない、希少なせこ蟹をお一人様につき1杯。\n\nせこ蟹の漁期は11月6日から12月31日まで。限られた季節だけに許される、内子の濃厚な旨味と外子の繊細な食感をお楽しみいただけます。\n\n雄の松葉蟹の気品ある甘みと、雌のせこ蟹が持つ奥深い味わい。\n\n冬の蟹の魅力を、一度に味わい尽くす贅沢なコースです。\n\nお飲み物代込み（一部別料金のお飲み物もございます）。二部制でのご案内。",
+      "description_en": "One whole live Matsuba crab and one Seko crab per guest. Crab is the focus of every course from beginning to end.",
+      "tagline": "11月〜12月｜松葉蟹とせこ蟹"
     }
   ]
 }
