@@ -84,3 +84,16 @@ class EnglishChatTests(unittest.TestCase):
             self.assertEqual(policy['reservation_category'],label);self.assertEqual(policy['beverages_included'],included)
         for data in ({'through':True},{'vip_through':1},{'time_specified':True},{'duration_minutes':300}):
             with self.assertRaises(ValueError):booking_policy.require_public(data)
+
+class DiagnosticsTests(unittest.TestCase):
+    def test_diagnostics_are_read_only_and_redacted(self):
+        import concierge_diagnostics as diagnostics
+        def line(path,token):
+            if path=='info':return {'displayName':'Test'}
+            if path=='user/all/richmenu':return {'richMenuId':'richmenu-test'}
+            return {'areas':[{'action':{'type':'uri','uri':'https://nishitenma-tsukiya-home.chiyoshi-a-0408.chatgpt.site/en/'}}]}
+        with patch.dict(os.environ,{'OPENAI_API_KEY':'fake-secret','CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN':'fake-secret','LINE_CHANNEL_ACCESS_TOKEN':'fake-secret'}),patch.object(diagnostics,'line_get',side_effect=line),patch.object(concierge_ai,'request',return_value={'ready':True}):
+            result=diagnostics.check()
+        self.assertTrue(result['openai']['connected'])
+        self.assertEqual(result['customer_line']['official_website_buttons'],1)
+        self.assertNotIn('fake-secret',json.dumps(result))
