@@ -75,7 +75,21 @@ class EnglishChatTests(unittest.TestCase):
         original='【English Concierge】\nName: Guest\nMay I reserve at 6:30 PM?\n受付：web-test'
         with patch.object(concierge_ai,'translate',return_value=translated):
             payload=concierge_ai.owner_messages([{'type':'text','text':original}])
-        self.assertIn('日本語要約',payload[0]['text']);self.assertIn('日本語訳',payload[0]['text'])
+        self.assertIn('要約：',payload[0]['text']);self.assertIn('日本語訳',payload[0]['text'])
+        self.assertIn(original,payload[1]['text'])
+
+    def test_notice_translates_only_guest_body_and_removes_duplicate_sections(self):
+        original='【English Concierge】\n回答言語：英語 / 回答先：英語窓口\nName: Guest\nPlease explain live crab.\n受付：web-test\n英語で回答：https://example.invalid/concierge'
+        translated={'summary_ja':'浅倉への質問','translation_ja':'【日本語訳】\n浅倉様、生きた蟹について教えてください。\n\n【概要】\n余分な要約\n【理由】\n予約がないため'}
+        with patch.object(concierge_ai,'translate',return_value=translated) as translate:
+            payload=concierge_ai.owner_messages([{'type':'text','text':original}])
+        translate.assert_called_once_with('Please explain live crab.')
+        header=payload[0]['text']
+        self.assertNotIn('浅倉',header)
+        self.assertNotIn('【概要】',header)
+        self.assertNotIn('【日本語訳】',header)
+        self.assertNotIn('予約がないため',header)
+        self.assertEqual(header.count('要約：'),1)
         self.assertIn(original,payload[1]['text'])
 
     def test_beverage_categories_and_forged_public_fields(self):

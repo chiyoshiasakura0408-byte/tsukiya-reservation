@@ -55,7 +55,7 @@ def check(db=None):
             for row in rows:
                 text='\n'.join(m.get('text','') for m in json.loads(row['payload']))
                 if 'English Concierge' in text or '英語問い合わせ' in text:
-                    notice={'state':row['state'],'japanese_summary':'日本語要約：' in text,'japanese_translation':'日本語訳：' in text and '現在自動翻訳を利用できません' not in text}
+                    notice={'state':row['state'],'japanese_summary':('日本語要約：' in text or '要約：' in text),'japanese_translation':'日本語訳：' in text and '現在自動翻訳を利用できません' not in text}
                     break
         finally:c.close()
     return {'latest_english_notice':notice,'booking_paused':True,'openai':ai,'customer_line':line_check('CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN',True),'owner_line':line_check('LINE_CHANNEL_ACCESS_TOKEN')}
