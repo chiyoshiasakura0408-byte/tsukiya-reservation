@@ -5,6 +5,7 @@ import marketing
 import line_bot
 import concierge
 import english_concierge
+import booking_policy
 import concierge_booking
 import vip_access
 import vip_slots
@@ -120,8 +121,8 @@ PUBLIC_COURSE_PRICE = 60000  # 税込・1名あたり
 PUBLIC_PAYMENT_HOURS = 48
 PUBLIC_COURSES = {
     "tarabagani": ("活たらば蟹おまかせコース", 45000),
-    "matsuba-seko": ("松葉蟹、せこ蟹おまかせコース", PUBLIC_COURSE_PRICE),
-    "matsuba-fukahire": ("松葉蟹と名物ふかひれあんかけおまかせコース", PUBLIC_COURSE_PRICE),
+    "matsuba-seko": ("松葉蟹おまかせコース", PUBLIC_COURSE_PRICE),
+    "matsuba-fukahire": ("松葉蟹おまかせコース", PUBLIC_COURSE_PRICE),
 }
 
 
@@ -155,7 +156,7 @@ def guest_requests(x):
 def public_slot_allowed(day, time_text, course=None):
     """Validate the date-specific course before accepting a public booking."""
     actual = bookable_course(day)
-    if actual is None or (course is not None and PUBLIC_COURSES.get(course) != actual):
+    if actual is None or (course is not None and course != bookable_course_key(day)):
         return False
     try:
         visit = datetime.fromisoformat(f"{day.isoformat()}T{time_text}")
@@ -166,15 +167,19 @@ def public_slot_allowed(day, time_text, course=None):
     return visit > datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
 
 
-def bookable_course(day):
-    """Return the currently priced course for a staff phone reservation."""
+def bookable_course_key(day):
     if date(2026, 10, 15) <= day <= date(2026, 11, 9):
-        return PUBLIC_COURSES["tarabagani"]
+        return 'tarabagani'
     if day.month == 11 and day.day >= 10 or day.month == 12:
-        return PUBLIC_COURSES["matsuba-seko"]
+        return 'matsuba-seko'
     if day.month in (1, 2) or day.month == 3 and day.day <= 20:
-        return PUBLIC_COURSES["matsuba-fukahire"]
+        return 'matsuba-fukahire'
     return None
+
+
+def bookable_course(day):
+    """Return the server-owned price and name for the date-specific course."""
+    return PUBLIC_COURSES.get(bookable_course_key(day))
 
 
 def now_iso():
@@ -278,6 +283,7 @@ def con():
         "counter_round": "INTEGER",
         "duration_minutes": "INTEGER DEFAULT 150",
         "vip_through": "INTEGER NOT NULL DEFAULT 0",
+        "vip_booking": "INTEGER NOT NULL DEFAULT 0",
         "vip_seats": "TEXT NOT NULL DEFAULT '[]'",
         "square_booking_id": "TEXT",
         "public_request_id": "TEXT",
@@ -747,13 +753,13 @@ def make_invoice(r):
                 "description": (
                     "Full prepayment for your crab omakase reservation. "
                     "Your reservation is confirmed after full payment. "
-                    "Beverages are paid for at the restaurant.\n\n"
+                    + booking_policy.details(r)["beverage_policy_en"] + "\n\n"
                     "For bank transfers:\nSumitomo Mitsui Banking Corporation\n"
                     "Dojima Branch\nOrdinary account 0655295\n"
                     "Account name: ASAKURA CHIYOSHI"
                     + ("\n\n" + annex_message(r, True) if annex_message(r, True) else "")
                 ) if english else (
-                    "お振込みの際は下記口座までお願い致します。\n\n"
+                    booking_policy.details(r)["beverage_policy"] + "\n\n" + "お振込みの際は下記口座までお願い致します。\n\n"
                     "三井住友銀行\n"
                     "堂島支店\n"
                     "(普)0655295\n"
@@ -1296,10 +1302,11 @@ def send_confirmation(r):
 
     msg = EmailMessage()
 
+    policy = booking_policy.details(r)
     english = r["booking_language"] == "en"
     direct = r["source"] in ("DIRECT", "CONCIERGE_LINE")
-    confirmation_ja = "下記の内容にてご予約を確定いたしました。\nお料理代・お飲み物代は当日店舗にてお支払いください。" if direct else "ご入金を確認し、\n下記の内容にてご予約を確定いたしました。"
-    confirmation_en = "Your reservation is confirmed. Please pay for your course and beverages at the restaurant on the day of your visit." if direct else "We have received your full payment and confirmed your reservation."
+    confirmation_ja = "下記の内容にてご予約を確定いたしました。\nお料理代は当日店舗にてお支払いください。" if direct else "ご入金を確認し、\n下記の内容にてご予約を確定いたしました。"
+    confirmation_en = "Your reservation is confirmed. Please pay for your course at the restaurant on the day of your visit." if direct else "We have received your full payment and confirmed your reservation."
     msg["Subject"] = ("Nishitenma Tsukiya | Reservation Confirmed" if english
                       else "【西天満 つきや】ご予約確定のご案内")
 
@@ -1321,6 +1328,7 @@ Date and time: {r['visit_at']} (Japan time)
 Seating: {seat_en}
 Guests: {r['party_size']}
 {'Course price (pay at restaurant)' if direct else 'Course payment'}: JPY {r['amount']:,}
+{policy['beverage_policy_en']}
 
 {annex_message(r, True)}
 
@@ -1345,6 +1353,8 @@ Nishitenma Tsukiya
 お席：{customer_seating_label(r)}
 人数：{r['party_size']}名様
 お料理代：{r['amount']:,}円
+予約区分：{policy['reservation_category']}
+{policy['beverage_policy']}
 
 {annex_message(r)}
 
@@ -2289,6 +2299,7 @@ class Handler(
                 # Acquisition data is internal reporting only, not staff UI data.
                 row.pop("acquisition_source", None)
                 row["receipts"] = finance_links.for_reservation(c,row["id"])
+                row.update(booking_policy.details(row))
             c.close()
 
             return self.send_json(rows)
@@ -2864,6 +2875,7 @@ class Handler(
                 x = self.read_json()
                 if not isinstance(x, dict):
                     raise ValueError("invalid booking")
+                booking_policy.require_public(x)
                 day = date.fromisoformat(str(x.get("date", "")))
                 time_text = str(x.get("time", ""))
                 area = str(x.get("seating_area", ""))
@@ -3191,7 +3203,7 @@ class Handler(
                 x = self.read_json()
                 if not isinstance(x, dict):
                     raise ValueError("入力形式が不正です")
-                linked_customer = x.get("customer_id") if direct else None
+                linked_customer = x.get("customer_id")
                 if linked_customer is not None and (type(linked_customer) is not int or linked_customer < 1):
                     raise ValueError("顧客を選び直してください")
                 request_id = str(x.get("request_id") or "")
@@ -3259,12 +3271,7 @@ class Handler(
                 or None
             )
 
-            dur = int(
-                x.get(
-                    "duration_minutes"
-                )
-                or 150
-            )
+            dur = 150  # Ordinary reservations cannot hold extra sittings via client input.
 
             party = int(
                 x["party_size"]
@@ -3295,6 +3302,8 @@ class Handler(
                     if linked_customer is not None and not c.execute("SELECT id FROM customers WHERE id=?", (linked_customer,)).fetchone():
                         raise ValueError("顧客が見つかりません")
                 if time_specified:
+                    if time_text != "20:30" and not booking_policy.approved_customer(c, linked_customer):
+                        raise ValueError("時間指定・通し予約は承認済みVIP顧客の選択が必要です。直接予約から顧客を選択してください。")
                     area,dur,through = vip_slots.staff_slot(sys.modules[__name__],c,area,x["visit_at"],party)
                     rnd = None
                     ok,msg = True,"個室を確保できます"
@@ -3373,7 +3382,7 @@ class Handler(
                 )
             )
 
-            c.execute("UPDATE reservations SET vip_through=? WHERE id=?",(int(through),cur.lastrowid))
+            c.execute("UPDATE reservations SET vip_through=?,vip_booking=?,customer_id=? WHERE id=?",(int(through),int(booking_policy.approved_customer(c,linked_customer)),linked_customer,cur.lastrowid))
 
             if direct:
                 if linked_customer is None:

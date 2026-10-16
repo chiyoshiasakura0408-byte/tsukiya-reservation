@@ -7,6 +7,7 @@ from datetime import date
 import concierge
 import vip_access
 import vip_slots
+import booking_policy
 
 
 def verify(app, token, browser):
@@ -47,7 +48,7 @@ def booking(app, token, data=None, browser=None):
         through = slot.get('through') is True
         if through and slot['area'] != 'PRIVATE':
             raise ValueError('時間指定・通し予約は個室のみです。LINEからお席を選び直してください。')
-        result = {**slot, 'course_name':course[0], 'amount':course[1]*slot['party_size'], 'prepayment_required':False}
+        result = {**slot, 'course_name':course[0], 'amount':course[1]*slot['party_size'], 'prepayment_required':False, **booking_policy.details({'source':'CONCIERGE_LINE','vip_through':through,'visit_at':slot['date']+'T'+slot['time']})}
         if data is None:
             return result
         if data.get('cancellation_policy_accepted') is not True:
@@ -99,7 +100,7 @@ def booking(app, token, data=None, browser=None):
         c.execute('UPDATE reservations SET celebration_items=?,plate_message=?,vip_through=?,vip_seats=?,duration_minutes=? WHERE id=?',(celebrations,plate,int(through),json.dumps(seats),duration,rid))
         c.execute('UPDATE concierge_proposals SET reservation_id=? WHERE hash=?',(rid,hashed))
         timing='1部・2部通し予約です。ご指定の時刻から23時までお過ごしいただけます。' if through else '当店は一斉スタートにてお料理をご提供しております。ご予約のお時間に合わせてご来店くださいますようお願いいたします。'
-        concierge.enqueue(c,proposal['user_id'],[concierge.text_message(f"{concierge.profile(c, proposal['user_id']).get('name') or fields['guest_name']}様\nご予約を承りました。\n{slot['date']} {slot['time']}・{party}名様\n受付番号 {rid}\n前受けのお支払いはございません。\n{timing}\nご来店を心よりお待ち申し上げております。")])
+        concierge.enqueue(c,proposal['user_id'],[concierge.text_message(f"{concierge.profile(c, proposal['user_id']).get('name') or fields['guest_name']}様\nご予約を承りました。\n{slot['date']} {slot['time']}・{party}名様\n受付番号 {rid}\n前受けのお支払いはございません。\n{timing}\n{booking_policy.details({'source':'CONCIERGE_LINE','vip_through':through,'visit_at':visit_at})['beverage_policy']}\nご来店を心よりお待ち申し上げております。")])
         row = dict(c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone())
         c.commit()
     finally:

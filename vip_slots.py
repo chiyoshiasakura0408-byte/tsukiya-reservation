@@ -31,7 +31,7 @@ def choose(app,c,day,area,party):
 
 def valid_start(app, day, clock, course):
     if not isinstance(clock,str) or not re.fullmatch(r'(18|19|20|21|22):[0-5][0-9]',clock):return False
-    return app.bookable_course(day)==app.PUBLIC_COURSES.get(course) and datetime.fromisoformat(str(day)+'T'+clock)>datetime.now(app.concierge.JST).replace(tzinfo=None)
+    return app.bookable_course_key(day)==course and datetime.fromisoformat(str(day)+'T'+clock)>datetime.now(app.concierge.JST).replace(tzinfo=None)
 
 
 def availability(app,day,party):
@@ -39,7 +39,7 @@ def availability(app,day,party):
     try:
         result=[]
         for key,course in app.PUBLIC_COURSES.items():
-            if course!=app.bookable_course(day):continue
+            if key!=app.bookable_course_key(day):continue
             if datetime.fromisoformat(str(day)+'T23:00')<=datetime.now(app.concierge.JST).replace(tzinfo=None):continue
             for area in ('PRIVATE',):
                 rooms=('COUNTER',) if area=='COUNTER' else app.ROOMS
@@ -57,7 +57,7 @@ def staff_slot(app,c,area,visit_at,party):
         raise ValueError('来店日時を確認してください。')
     visit=datetime.fromisoformat(visit_at)
     course=app.bookable_course(visit.date())
-    key=next((k for k,v in app.PUBLIC_COURSES.items() if v==course),None)
+    key=app.bookable_course_key(visit.date())
     clock=visit_at[11:]
     if not key or not valid_start(app,visit.date(),clock,key):
         raise ValueError('受付期間内の18:00〜22:59の未来の時刻を指定してください。')

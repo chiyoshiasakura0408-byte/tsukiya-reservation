@@ -47,6 +47,8 @@ def handoff(c,user,body,lang,base):
 
 def respond(c,user,text,lang,courses,base,slots=None):
     en=lang=='en'; lower=text.lower();cat=bot.catalog(c)
+    if re.search(r'extended|both sittings|all evening|通し|時間指定',lower):
+        return ('Our regular sittings begin at 18:00 and 20:30. Extended reservations are reserved for approved VIP guests and cannot be arranged through this English concierge. New reservations are temporarily paused.' if en else '通常予約は18:00・20:30の二部制です。通し予約は承認済みVIP専用で、この窓口では承れません。現在、新規予約受付を停止しております。')
     if text.startswith('お客様連携 '):
         result=bot.link_customer(c,user,text)
         return ('Your guest profile has been linked. We look forward to offering a more personal service.' if '完了' in result else 'We could not verify this link. Please contact the restaurant.') if en else result
@@ -65,9 +67,9 @@ def respond(c,user,text,lang,courses,base,slots=None):
     if any(k in lower for k in ('price','cost','course','menu','料金','コース','お品書き')):
         items = bot.concierge_menu.catalog()['courses']
         text_en = '\n\n'.join(item['period_en'] + '\n' + item['name_en'] + '\nJPY ' + format(item['price'], ',') + ' per guest, tax included.' for item in items)
-        text_en += '\n\nThe two winter Matsuba courses include beverages; some drinks incur an additional charge. Please check the reservation page for current booking availability.'
+        text_en += '\n\nThe two winter Matsuba courses include designated beverages for ordinary sittings; some drinks incur an additional charge. VIP extended reservations have no beverage inclusion. Please check the reservation page for current booking availability.'
         text_ja = '\n\n'.join(item['period'] + '\n' + item['name'] + '：お一人様 ¥' + format(item['price'], ',') + '（税込）' for item in items)
-        text_ja += '\n冬季の松葉蟹2コースはお飲み物代込みです（一部別料金のお飲み物もございます）。現在の受付状況は予約ページでご確認ください。'
+        text_ja += '\n冬季の松葉蟹2コースは通常の二部制では所定のお飲み物代込みです（一部別料金）。VIP通し予約は適用外です。現在の受付状況は予約ページでご確認ください。'
         return text_en if en else text_ja
     if any(k in lower for k in ('photo','video','写真','動画')):
         links=[cat.get(k) for k in ('photo','video') if cat.get(k)]

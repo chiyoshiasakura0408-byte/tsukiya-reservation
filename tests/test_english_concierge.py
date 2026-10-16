@@ -47,6 +47,34 @@ class EnglishConciergeTests(unittest.TestCase):
         c.close()
         self.assertEqual(self.call(dict(action='status', token=secrets.token_hex(32)))[0], 404)
 
+    def test_different_key_same_content_is_not_registered_or_disclosed(self):
+        self.call()
+        code, response = self.call({**self.data, 'token':secrets.token_hex(32)})
+        self.assertEqual(code, 409)
+        self.assertNotIn('id', response)
+        self.assertNotIn('answer', response)
+        c = concierge.connect(self.db)
+        self.assertEqual(c.execute('SELECT count(*) FROM concierge_requests').fetchone()[0], 1)
+        self.assertEqual(c.execute('SELECT count(*) FROM concierge_outbox').fetchone()[0], 1)
+        c.close()
+
+    def test_legacy_duplicates_group_and_reply_to_both_private_links(self):
+        _, first = self.call()
+        other = {**self.data, 'token':secrets.token_hex(32)}
+        with patch('english_concierge.DUPLICATE_WINDOW', 0):
+            _, second = self.call(other)
+        self.assertEqual(len(concierge.status(self.db)['requests']), 2)
+        concierge.configure(self.db, dict(action='merge-english',ids=[first['id'],second['id']]))
+        state = concierge.status(self.db)
+        self.assertEqual(len(state['requests']), 1)
+        self.assertEqual(set(state['requests'][0]['related_ids']), {first['id'], second['id']})
+        concierge.configure(self.db, dict(action='answer', id=first['id'], body='Please consider 18:00. This is not a confirmed booking.'))
+        for token in (self.data['token'], other['token']):
+            self.assertIn('18:00', self.call(dict(action='status', token=token))[1]['answer'])
+        c = concierge.connect(self.db)
+        self.assertEqual(c.execute('SELECT count(*) FROM concierge_outbox').fetchone()[0], 2)
+        c.close()
+
     def test_validation_does_not_queue(self):
         for change in ({'consent':False}, {'body':'x'*1501}, {'name':''}, {'token':'bad'}, {'website':'spam'}, {'action':'bad'}):
             with self.subTest(change=change), self.assertRaises(ValueError):
@@ -62,8 +90,8 @@ class EnglishConciergeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 concierge.configure(self.db, dict(action='answer',id=result['id'],body='Too late'))
         for _ in range(19):
-            self.assertEqual(self.call({**self.data,'token':secrets.token_hex(32)})[0],200)
-        self.assertEqual(self.call({**self.data,'token':secrets.token_hex(32)})[0],429)
+            self.assertEqual(self.call({**self.data,'token':secrets.token_hex(32),'body':secrets.token_hex(12)})[0],200)
+        self.assertEqual(self.call({**self.data,'token':secrets.token_hex(32),'body':secrets.token_hex(12)})[0],429)
         self.assertEqual(self.call()[0],200)
 
     def test_missing_owner_returns_unavailable(self):

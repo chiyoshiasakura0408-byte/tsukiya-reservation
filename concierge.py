@@ -154,6 +154,9 @@ def configure(db, data):
                         event_id = hashlib.sha256(json.dumps([new[k] for k in ('crab','origin','arrival_date')],ensure_ascii=False).encode()).hexdigest()
                         c.execute('INSERT OR IGNORE INTO concierge_arrivals(id,body) VALUES (?,?)', (event_id, json.dumps(new, ensure_ascii=False)))
                     queue_arrivals(c)
+                elif action == 'merge-english':
+                    import english_concierge
+                    return english_concierge.merge(c, data.get('ids'))
                 elif action == 'answer':
                     body = data.get('body', '')
                     if not isinstance(body, str) or not 1 <= len(body.strip()) <= 2000:
@@ -215,8 +218,10 @@ def respond(c, user, command, lookup, courses, base_url):
     command = {'予約': '空席案内', 'ご予約': '空席案内', '空席': '空席案内', '空席確認': '空席案内', 'コース・料金': 'ただいまのコース',
                '朝倉へ相談': 'VIP担当に相談', '写真': 'コース内容', '動画': 'コース内容', 'お品書き': 'コース内容',
                '蟹の時期': '年間スケジュール', '空席・ご予約': '空席案内', 'お料理・お品書き': 'コース内容'}.get(command, command)
+    if (command in ('1部・2部通し予約','時間指定（個室）') or re.search(r'通し|時間指定', command)) and not vip_access.approved(c, user):
+        return [text_message('通し予約は承認済みVIPのお客様専用です。通常予約は18:00・20:30の二部制です。')]
     if command in ('1部・2部通し予約','時間指定（個室）'):
-        return [text_message('時間指定（個室）をご希望の日付・人数を「2026-11-10 2名 通し」の形式でお送りください。18:00〜22:59の開始時刻を指定でき、23時までお過ごしいただけます。20:30開始は通常の2部です。')]
+        return [text_message('時間指定（個室）をご希望の日付・人数を「2026-11-10 2名 通し」の形式でお送りください。18:00〜22:59の開始時刻を指定でき、23時までお過ごしいただけます。20:30開始は通常の2部です。通し予約は冬季ドリンクオールイン適用外で、お飲み物代は別途当日精算です。')]
     if command in MENU or command.startswith(('calendar:', 'visit:')):
         c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
     if command == '空席案内' or command.startswith('calendar:'):
@@ -303,7 +308,7 @@ def respond(c, user, command, lookup, courses, base_url):
             c.execute('UPDATE concierge_customers SET state=? WHERE user_id=?', ('preference:'+str(day)+' '+str(party)+'名様\n'+personal, user))
         extra = []
         if not match[3]:
-            m = text_message('①1部18:00、②2部20:30のほか、③時間指定（個室）をお選びいただけます。18:30・19:00開始など、23時までご利用いただけます。', False)
+            m = text_message('①1部18:00、②2部20:30のほか、③時間指定（個室）をお選びいただけます。18:30・19:00開始など、23時までご利用いただけます。通し予約は冬季ドリンクオールイン適用外で、お飲み物代は別途当日精算です。', False)
             m['quickReply'] = {'items':[{'type':'action','action':{'type':'message','label':'③時間指定（個室）','text':str(day)+' '+str(party)+'名 通し'}}]}
             extra = [m]
         return [text_message(f'{day}・{party}名様のお席をご案内できます。お料理代は合計 ¥{courses[slots[0]["course"]][1]*party:,}（税込）でございます。\nLINEコンシェルジュからは前受けなしでご予約いただけます。以下より内容をご確認のうえ、お申し込みください。' + ('\n\n'+personal if personal else '')),
@@ -431,7 +436,13 @@ def deliver(db):
                 token = os.getenv(name, '')
                 error, accepted, retryable = 'channel token missing', False, False
                 if token:
-                    body = json.dumps({'to': row['user_id'], 'messages': json.loads(row['payload'])}).encode()
+                    payload = json.loads(row['payload'])
+                    if row['channel'] == 'owner' and row['kind'] == 'request' and row['attempts'] == 0:
+                        import concierge_ai
+                        payload = concierge_ai.owner_messages(payload)
+                        # Persist translation before sending, keeping the retry body stable.
+                        with c:c.execute('UPDATE concierge_outbox SET payload=? WHERE id=?', (json.dumps(payload,ensure_ascii=False),row['id']))
+                    body = json.dumps({'to': row['user_id'], 'messages': payload}).encode()
                     req = urllib.request.Request('https://api.line.me/v2/bot/message/push', data=body, headers={'Authorization': 'Bearer '+token, 'Content-Type': 'application/json', 'X-Line-Retry-Key': row['id']})
                     try:
                         with urllib.request.urlopen(req, timeout=10) as response:
@@ -452,14 +463,16 @@ def deliver(db):
 
 
 def status(db):
+    import english_concierge
+    import concierge_ai
     with LOCK:
         c = connect(db)
         try:
-            return {'enabled': setting(c, 'enabled') == '1', 'instagram_enabled': setting(c, 'instagram_enabled')=='1', 'instagram_verified':setting(c,'instagram_verified'), 'instagram_configured': all(os.getenv(k) for k in ('INSTAGRAM_APP_SECRET','INSTAGRAM_VERIFY_TOKEN','INSTAGRAM_ACCESS_TOKEN','INSTAGRAM_ACCOUNT_ID','INSTAGRAM_GRAPH_VERSION')), 'verified_at': setting(c, 'verified'), 'owner_linked': bool(setting(c, 'owner')),
+            return {'ai_configured': concierge_ai.configured(), 'ai_model': os.getenv('ENGLISH_CONCIERGE_MODEL','gpt-4.1-mini'), 'booking_paused': True, 'enabled': setting(c, 'enabled') == '1', 'instagram_enabled': setting(c, 'instagram_enabled')=='1', 'instagram_verified':setting(c,'instagram_verified'), 'instagram_configured': all(os.getenv(k) for k in ('INSTAGRAM_APP_SECRET','INSTAGRAM_VERIFY_TOKEN','INSTAGRAM_ACCESS_TOKEN','INSTAGRAM_ACCOUNT_ID','INSTAGRAM_GRAPH_VERSION')), 'verified_at': setting(c, 'verified'), 'owner_linked': bool(setting(c, 'owner')),
                     'secret_configured': bool(os.getenv('CONCIERGE_LINE_CHANNEL_SECRET')), 'token_configured': bool(os.getenv('CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN')),
                     'owner_token_configured': bool(os.getenv('LINE_CHANNEL_ACCESS_TOKEN')), 'catalog': catalog(c),
                     'subscribers': c.execute("SELECT count(*) FROM concierge_customers WHERE active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'").fetchone()[0], 'arrivals_pending': c.execute("SELECT count(*) FROM concierge_arrivals WHERE state='pending'").fetchone()[0],
-                    'requests': [{**dict(r), 'customer_name': profile(c, r['user_id']).get('name', '')} for r in c.execute('SELECT id,user_id,body,created,status FROM concierge_requests ORDER BY created DESC LIMIT 100')],
+                    'requests': english_concierge.grouped_requests(c, [{**dict(r), 'customer_name': profile(c, r['user_id']).get('name', '')} for r in c.execute('SELECT id,user_id,body,created,status FROM concierge_requests ORDER BY created DESC LIMIT 100')]),
                     'delivery': [dict(r) for r in c.execute('SELECT kind,state,count(*) AS count FROM concierge_outbox GROUP BY kind,state')]}
         finally:
             c.close()

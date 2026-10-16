@@ -227,7 +227,11 @@ class VipTests(unittest.TestCase):
             conn.request('POST',path,json.dumps(data),{'Content-Type':'application/json','x-admin-token':'test'})
             r=conn.getresponse();result=r.status,json.loads(r.read());conn.close();return result
         data={'guest_name':'電話予約','phone':'09012345678','email':'test@example.com','party_size':2,'visit_at':str(self.day)+'T19:00','seating_area':'PRIVATE','time_specified':True}
+        self.approve()
+        cid=self.dbquery("SELECT customer_id FROM vip_access WHERE user_id='guest'")[0]['customer_id']
         with patch.object(run,'ADMIN_TOKEN','test'):
+            self.assertEqual(call('/api/reservations/phone',data)[0],400)
+            data['customer_id']=cid
             status,row=call('/api/reservations/phone',data)
             self.assertEqual(status,200,row)
             self.assertEqual((row['vip_through'],row['duration_minutes'],row['status']),(1,240,'PENDING'))
