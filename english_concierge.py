@@ -29,7 +29,7 @@ def merge(c, ids):
     if any(r is None or r['status']!='未回答' or r['expires']<=time.time() for r in rows):
         raise ValueError('未回答の有効な英語受付を選択してください')
     first = min(rows,key=lambda r:r['created'])
-    if any(normalized(r['body'])!=normalized(first['body']) or r['peer_hash']!=first['peer_hash'] or abs(r['created']-first['created'])>DUPLICATE_WINDOW for r in rows):
+    if any(normalized(r['body'])!=normalized(first['body']) or abs(r['created']-first['created'])>DUPLICATE_WINDOW for r in rows):
         raise ValueError('同一内容・短時間の受付のみまとめられます')
     if any(c.execute('SELECT 1 FROM english_enquiry_groups WHERE request_id=?',(r['id'],)).fetchone() for r in rows):
         raise ValueError('既にまとめられた受付があります。再読み込みしてください')
@@ -49,7 +49,7 @@ def grouped_requests(c, requests):
             seen.update(ids)
             row["related_ids"] = ids
             if len(ids)==1:
-                candidates = c.execute("SELECT r.id,r.body FROM concierge_requests r JOIN english_enquiries e ON e.request_id=r.id WHERE r.status='未回答' AND abs(r.created-?)<=? AND e.peer_hash=(SELECT peer_hash FROM english_enquiries WHERE request_id=?)", (row['created'],DUPLICATE_WINDOW,row['id'])).fetchall()
+                candidates = c.execute("SELECT r.id,r.body FROM concierge_requests r JOIN english_enquiries e ON e.request_id=r.id WHERE r.status='未回答' AND abs(r.created-?)<=?", (row['created'],DUPLICATE_WINDOW)).fetchall()
                 row['duplicate_candidates'] = [r['id'] for r in candidates if normalized(r['body'])==normalized(row['body'])]
         result.append(row)
     return result
@@ -110,7 +110,7 @@ def handle(db, data, peer, base):
                 if recent >= 20 or total >= 100:
                     return 429, {'error': 'We have received many enquiries. Please try again later.'}
                 message = '【English Concierge】\n回答言語：英語 / 回答先：英語窓口\nName: ' + name.strip() + '\n' + body.strip()
-                candidates = c.execute('SELECT r.body FROM concierge_requests r JOIN english_enquiries e ON e.request_id=r.id WHERE e.peer_hash=? AND e.created>?', (peer_hash, now-DUPLICATE_WINDOW))
+                candidates = c.execute('SELECT r.body FROM concierge_requests r JOIN english_enquiries e ON e.request_id=r.id WHERE e.created>?', (now-DUPLICATE_WINDOW,))
                 if any(normalized(r['body']) == normalized(message) for r in candidates):
                     # Never reveal another private token, reference or answer by content matching.
                     return 409, {'error': 'This enquiry was recently received. Please use your original private reply link to check for our response. No additional enquiry has been created.'}

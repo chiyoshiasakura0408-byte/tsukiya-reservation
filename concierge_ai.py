@@ -51,6 +51,7 @@ def knowledge():
     courses = json.loads((Path(__file__).parent/'course_catalog.json').read_text())
     drinks = json.loads((Path(__file__).parent/'drink_catalog.json').read_text())
     return {'official_website': OFFICIAL_URL, 'courses': courses['courses'], 'drinks': drinks,
+            'philosophy': 'We select the best live crab available without limiting the origin. Crab arrives by air or live-fish transport and rests in restaurant tanks for half a day to a day. We prepare the crab after guests arrive. We carefully remove the shells before serving, except for a few dishes where shells are intentionally retained. The course celebrates crab from beginning to end. Crab miso and truffle are paired to reveal the flavour of crab miso.',
             'new_reservations_paused': True, 'normal_sittings': ['18:00', '20:30'],
             'english_extended_reservations': False,
             'winter_beverages': 'Designated drinks included for ordinary, English and VIP ordinary sittings. Some drinks cost extra. VIP extended reservations exclude all beverage inclusion.',

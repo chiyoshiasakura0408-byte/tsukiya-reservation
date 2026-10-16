@@ -51,6 +51,7 @@ class EnglishConciergeTests(unittest.TestCase):
         self.call()
         code, response = self.call({**self.data, 'token':secrets.token_hex(32)})
         self.assertEqual(code, 409)
+        self.assertEqual(en.handle(self.db,{**self.data,'token':secrets.token_hex(32)},'different-proxy','https://example.invalid')[0],409)
         self.assertNotIn('id', response)
         self.assertNotIn('answer', response)
         c = concierge.connect(self.db)

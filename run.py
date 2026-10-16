@@ -1994,7 +1994,7 @@ class Handler(
             if not self.auth():
                 return self.send_json({"error":"unauthorized"},401)
             import concierge_diagnostics
-            return self.send_json(concierge_diagnostics.check(),headers={"Cache-Control":"no-store"})
+            return self.send_json(concierge_diagnostics.check(DB),headers={"Cache-Control":"no-store"})
         if p == "/api/concierge/status":
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)

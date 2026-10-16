@@ -19,8 +19,8 @@ def line_check(variable, menu=False):
     if not token:
         return {'configured':False,'connected':False}
     try:
-        line_get('info',token)
-        result={'configured':True,'connected':True}
+        info=line_get('info',token)
+        result={'configured':True,'connected':True,'display_name':info.get('displayName','')}
         if menu:
             try:
                 default=line_get('user/all/richmenu',token).get('richMenuId','')
@@ -38,7 +38,7 @@ def line_check(variable, menu=False):
         return {'configured':True,'connected':False,'error':'connection check failed'}
 
 
-def check():
+def check(db=None):
     ai={'configured':concierge_ai.configured(),'connected':False}
     if ai['configured']:
         try:
@@ -46,4 +46,16 @@ def check():
             ai['connected']=answer['ready'] is True
         except Exception:
             ai['error']='AI connection check failed'
-    return {'booking_paused':True,'openai':ai,'customer_line':line_check('CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN',True),'owner_line':line_check('LINE_CHANNEL_ACCESS_TOKEN')}
+    notice = {}
+    if db is not None:
+        import concierge
+        c=concierge.connect(db)
+        try:
+            rows=c.execute("SELECT state,payload FROM concierge_outbox WHERE channel='owner' AND kind='request' ORDER BY created DESC LIMIT 10").fetchall()
+            for row in rows:
+                text='\n'.join(m.get('text','') for m in json.loads(row['payload']))
+                if 'English Concierge' in text or '英語問い合わせ' in text:
+                    notice={'state':row['state'],'japanese_summary':'日本語要約：' in text,'japanese_translation':'日本語訳：' in text and '現在自動翻訳を利用できません' not in text}
+                    break
+        finally:c.close()
+    return {'latest_english_notice':notice,'booking_paused':True,'openai':ai,'customer_line':line_check('CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN',True),'owner_line':line_check('LINE_CHANNEL_ACCESS_TOKEN')}
