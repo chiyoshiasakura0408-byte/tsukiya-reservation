@@ -61,6 +61,7 @@ def setup(c):
         token_hash TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL,
         peer_hash TEXT NOT NULL, created REAL NOT NULL, expires REAL NOT NULL,
         answer TEXT NOT NULL DEFAULT '')''')
+    c.execute('CREATE INDEX IF NOT EXISTS english_enquiries_created ON english_enquiries(created)')
 
 
 def handle(db, data, peer, base):

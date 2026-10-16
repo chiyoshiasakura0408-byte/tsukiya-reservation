@@ -14,6 +14,8 @@ def setup(c):
         name TEXT NOT NULL, body TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '',
         created REAL NOT NULL, expires REAL NOT NULL, state TEXT NOT NULL DEFAULT 'processing',
         request_id TEXT, PRIMARY KEY(token_hash,message_id))''')
+    c.execute('CREATE INDEX IF NOT EXISTS english_chat_created ON english_chat_messages(created)')
+    c.execute('CREATE INDEX IF NOT EXISTS english_chat_peer_created ON english_chat_messages(peer_hash,created)')
 
 
 def messages(c, key):
@@ -52,6 +54,7 @@ def handle(db, data, peer, base):
             peer_hash = hashlib.sha256(peer.encode()).hexdigest()
             count = c.execute('SELECT count(*) FROM english_chat_messages WHERE peer_hash=? AND created>?',(peer_hash,now-3600)).fetchone()[0]
             total = c.execute('SELECT count(*) FROM english_chat_messages WHERE created>?',(now-3600,)).fetchone()[0]
+            c.execute("UPDATE english_chat_messages SET state='failed',answer=? WHERE token_hash=? AND state='processing' AND created<?", ('We could not complete this reply. Please use the personal enquiry form below.',key,now-90))
             history = messages(c,key)
             if count>=60 or total>=200 or len(history)>=30:
                 return 429, {'error':'Please try again later, or contact our restaurant team using the enquiry form.'}
