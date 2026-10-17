@@ -200,3 +200,47 @@ def handle(app, data, commit=False):
         raise
     finally:
         c.close()
+
+
+def visit_summaries(c, customer_rows, now):
+    """Combine source counts with local visits, conservatively suppressing overlap.
+
+    The customer export has no reservation IDs. Local visits on/before the
+    source's last-visit day cannot be proved distinct: use the larger count
+    for that overlapping period, then add only later local visits.
+    """
+    from datetime import date
+    imported = {}
+    for source in c.execute('SELECT customer_id,payload_json FROM tablecheck_customer_imports'):
+        fields = json.loads(source['payload_json'])
+        raw = fields.get('過去の予約', '').strip()
+        if not re.fullmatch(r'[0-9]{1,7}', raw):
+            continue
+        count = int(raw)
+        last = fields.get('直近の来店', '').strip()
+        try:
+            last = date.fromisoformat(last).isoformat()
+            if last > now[:10]:
+                continue
+        except ValueError:
+            last = ''
+        if count and not last:
+            # A count without a last date has no safe boundary for adding history.
+            last = now[:10]
+        prior = imported.setdefault(source['customer_id'], {'count': 0, 'last': ''})
+        prior['count'] = max(prior['count'], count)
+        if count:
+            prior['last'] = max(prior['last'], last)
+    local = {}
+    for visit in c.execute("SELECT customer_id,visit_at FROM reservations WHERE customer_id IS NOT NULL AND status='CONFIRMED' AND visit_at < ?", (now,)):
+        local.setdefault(visit['customer_id'], []).append(visit['visit_at'])
+    for row in customer_rows:
+        history = imported.get(row['id'], {'count': 0, 'last': ''})
+        dates = local.get(row['id'], [])
+        earlier = sum(day[:10] <= history['last'] for day in dates) if history['last'] else 0
+        overlap = min(history['count'], earlier)
+        row.update(tablecheck_visit_count=history['count'], local_visit_count=len(dates),
+                   overlap_visit_count=overlap, visit_count=history['count'] + len(dates) - overlap,
+                   tablecheck_last_visit=history['last'] or None,
+                   last_visit=max([history['last']] + dates) or None)
+    return customer_rows

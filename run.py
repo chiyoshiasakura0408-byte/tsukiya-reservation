@@ -2199,6 +2199,7 @@ class Handler(
                         MAX(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN r.visit_at END) AS last_visit
                         FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id
                         GROUP BY c.id ORDER BY c.id DESC""", (datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"),)*2)]
+                    tablecheck_import.visit_summaries(c, rows, datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"))
                     return self.send_json(rows)
                 customer_id = int(p.rsplit("/", 1)[1])
                 row = c.execute("""SELECT id,name,company_name,receipt_name,phone,email,note,
@@ -2210,7 +2211,8 @@ class Handler(
                     FROM reservations WHERE customer_id=? ORDER BY visit_at DESC,id DESC""", (customer_id,))]
                 for visit in visits:
                     visit["receipts"] = finance_links.for_reservation(c,visit["id"])
-                return self.send_json({"customer": dict(row), "visits": visits, "business_cards": business_cards.list_for(c, customer_id), "tablecheck_imports": tablecheck_import.detail(c, customer_id)})
+                customer = tablecheck_import.visit_summaries(c, [dict(row)], datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"))[0]
+                return self.send_json({"customer": customer, "visits": visits, "business_cards": business_cards.list_for(c, customer_id), "tablecheck_imports": tablecheck_import.detail(c, customer_id)})
             finally:
                 c.close()
 

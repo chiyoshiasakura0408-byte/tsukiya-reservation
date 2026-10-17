@@ -71,6 +71,29 @@ class ImportTest(unittest.TestCase):
         c=run.con();c.execute("CREATE TRIGGER reject_tc2 BEFORE INSERT ON tablecheck_customer_imports WHEN NEW.source_id='tc2' BEGIN SELECT RAISE(ABORT, 'test'); END;");c.commit();c.close()
         with self.assertRaises(Exception):tc.handle(run,dict(p,preview_token=pre['preview_token']),True)
         c=run.con();self.assertEqual(c.execute('SELECT COUNT(*) FROM customers').fetchone()[0],0);self.assertEqual(c.execute('SELECT COUNT(*) FROM tablecheck_customer_imports').fetchone()[0],0);c.close()
+    def test_visit_counts_exclude_cancellations_future_and_overlapping_period(self):
+        cid=self.existing()
+        fields=row(**{'過去の予約':'4','直近の来店':'2026-10-10','キャンセル':'3','無断キャンセル':'1','予約履歴':'西天満つきや: 5'})
+        c=run.con()
+        c.execute('INSERT INTO tablecheck_customer_imports VALUES(?,?,?,?)',('tc1',cid,json.dumps(fields),'now'))
+        for day,status in [('2026-10-10T18:00','CONFIRMED'),('2026-10-11T18:00','CONFIRMED'),('2026-10-12T18:00','CANCELLED'),('2026-11-01T18:00','CONFIRMED')]:
+            c.execute("INSERT INTO reservations(source,guest_name,visit_at,party_size,amount,status,customer_id,created_at,updated_at) VALUES('DIRECT','山田 太郎',?,2,0,?,?,'now','now')",(day,status,cid))
+        c.commit()
+        summary=tc.visit_summaries(c,[{'id':cid}],'2026-10-17T20:00')[0]
+        self.assertEqual((summary['tablecheck_visit_count'],summary['local_visit_count'],summary['overlap_visit_count'],summary['visit_count']),(4,2,1,5))
+        self.assertEqual(summary['last_visit'],'2026-10-11T18:00')
+        self.assertEqual(tc.visit_summaries(c,[{'id':cid}],'2026-10-17T20:00')[0],summary)
+        c.close()
+    def test_visit_counts_keep_local_only_and_count_overlapping_period_once(self):
+        cid=self.existing();c=run.con()
+        for day in ['2026-01-01T18:00','2026-01-02T18:00']:
+            c.execute("INSERT INTO reservations(source,guest_name,visit_at,party_size,amount,status,customer_id,created_at,updated_at) VALUES('DIRECT','山田 太郎',?,2,0,'CONFIRMED',?,'now','now')",(day,cid))
+        c.commit()
+        self.assertEqual(tc.visit_summaries(c,[{'id':cid}],'2026-10-17T20:00')[0]['visit_count'],2)
+        fields={'過去の予約':'1','直近の来店':'2026-01-03'}
+        c.execute('INSERT INTO tablecheck_customer_imports VALUES(?,?,?,?)',('tc1',cid,json.dumps(fields),'now'));c.commit()
+        self.assertEqual(tc.visit_summaries(c,[{'id':cid}],'2026-10-17T20:00')[0]['visit_count'],2)
+        c.close()
     def test_http_auth_action_origin_and_full_flow(self):
         server=ThreadingHTTPServer(('127.0.0.1',0),run.Handler)
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
