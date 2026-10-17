@@ -46,8 +46,8 @@ DB = DATA_DIR / "tsukiya.sqlite"
 PORT = int(os.getenv("PORT", "10000"))
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 REFUND_APPROVAL_SECRET = os.getenv("REFUND_APPROVAL_SECRET", "")
-STAFF_LOGIN_PIN = "7777"
-SESSION_COOKIE = "tsukiya_session"
+STAFF_LOGIN_PASSWORD = os.getenv("STAFF_LOGIN_PASSWORD", "")
+SESSION_COOKIE = "tsukiya_session_v2"
 SESSION_SECONDS = 12 * 60 * 60
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_FAILURES = 5
@@ -1860,6 +1860,8 @@ class Handler(
         ):
             return True
 
+        if len(STAFF_LOGIN_PASSWORD) < 12:
+            return False
         cookies = self.headers.get("Cookie", "").split(";")
         for cookie in cookies:
             name, _, value = cookie.strip().partition("=")
@@ -1870,7 +1872,7 @@ class Handler(
                 if int(expiry) <= int(datetime.now(timezone.utc).timestamp()):
                     return False
                 expected = hmac.new(
-                    ADMIN_TOKEN.encode(), expiry.encode(), hashlib.sha256
+                    ADMIN_TOKEN.encode(), ("staff-v2:" + STAFF_LOGIN_PASSWORD + ":" + expiry).encode(), hashlib.sha256
                 ).hexdigest()
                 return hmac.compare_digest(signature, expected)
             except (ValueError, TypeError):
@@ -3018,6 +3020,8 @@ class Handler(
         if p == "/api/login":
             if not ADMIN_TOKEN:
                 return self.send_json({"error": "管理者パスワードが未設定です"}, 503)
+            if len(STAFF_LOGIN_PASSWORD) < 12:
+                return self.send_json({"error": "新しい従業員パスワードの設定待ちです"}, 503)
             ip = self.client_address[0]
             with LOGIN_LOCK:
                 failures = LOGIN_FAILURES.get(ip, deque())
@@ -3035,7 +3039,7 @@ class Handler(
                 supplied = credentials["password"]
             except (ValueError, UnicodeError):
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
-            if not hmac.compare_digest(supplied.encode("utf-8"), STAFF_LOGIN_PIN.encode("utf-8")):
+            if not hmac.compare_digest(supplied.encode("utf-8"), STAFF_LOGIN_PASSWORD.encode("utf-8")):
                 with LOGIN_LOCK:
                     LOGIN_FAILURES.setdefault(ip, deque()).append(time.monotonic())
                 return self.send_json({"error": "パスワードが違います"}, 401)
@@ -3043,7 +3047,7 @@ class Handler(
                 LOGIN_FAILURES.pop(ip, None)
             expiry = str(int(datetime.now(timezone.utc).timestamp()) + SESSION_SECONDS)
             signature = hmac.new(
-                ADMIN_TOKEN.encode(), expiry.encode(), hashlib.sha256
+                ADMIN_TOKEN.encode(), ("staff-v2:" + STAFF_LOGIN_PASSWORD + ":" + expiry).encode(), hashlib.sha256
             ).hexdigest()
             return self.send_json(
                 {"ok": True},
