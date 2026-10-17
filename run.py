@@ -1,5 +1,6 @@
 from email.utils import formataddr, parseaddr
 import business_cards
+import tablecheck_import
 import refunds
 import marketing
 import line_bot
@@ -347,6 +348,7 @@ def con():
         updated_at TEXT NOT NULL
     )""")
     business_cards.init(c)
+    tablecheck_import.schema(c)
     customer_cols = {row["name"] for row in c.execute("PRAGMA table_info(customers)")}
     for field in ("allergies", "disliked_foods", "preferred_seat", "preferred_drinks", "preferred_crab", "return_transport", "alcohol_service", "soft_drink_only"):
         if field not in customer_cols:
@@ -2208,7 +2210,7 @@ class Handler(
                     FROM reservations WHERE customer_id=? ORDER BY visit_at DESC,id DESC""", (customer_id,))]
                 for visit in visits:
                     visit["receipts"] = finance_links.for_reservation(c,visit["id"])
-                return self.send_json({"customer": dict(row), "visits": visits, "business_cards": business_cards.list_for(c, customer_id)})
+                return self.send_json({"customer": dict(row), "visits": visits, "business_cards": business_cards.list_for(c, customer_id), "tablecheck_imports": tablecheck_import.detail(c, customer_id)})
             finally:
                 c.close()
 
@@ -2466,6 +2468,25 @@ class Handler(
         if lengths and int(lengths[0]) > limit:
             self.close_connection = True
             return self.send_json({"error": "request too large"}, 413)
+
+        if p in ("/api/customers/tablecheck/preview", "/api/customers/tablecheck/import"):
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            origin = self.headers.get("Origin", "")
+            if (self.headers.get("X-Tsukiya-Action") != "tablecheck-import"
+                    or (origin and origin != APP_BASE_URL.rstrip('/'))):
+                return self.send_json({"error": "invalid origin or action"}, 403)
+            if not lengths or not 0 < int(lengths[0]) <= 12 * 1024 * 1024:
+                self.close_connection = True
+                return self.send_json({"error": "invalid size"}, 413)
+            try:
+                self.connection.settimeout(60)
+                result = tablecheck_import.handle(sys.modules[__name__], self.read_json(), p.endswith('/import'))
+                return self.send_json(result, headers={"Cache-Control": "no-store"})
+            except (ValueError, TypeError, UnicodeDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            except Exception:
+                return self.send_json({"error": "取込を完了できませんでした。データはまとめて取り消されました。"}, 503)
 
         if p in ("/api/public/marketing-event", "/api/marketing/update"):
             private = p == "/api/marketing/update"
@@ -3638,6 +3659,7 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
+
 
 
 
