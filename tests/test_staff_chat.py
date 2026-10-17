@@ -35,6 +35,16 @@ class StaffChatTests(unittest.TestCase):
    c.close()
    data={**self.data,'visit_token':self.proof if change!='forged' else '1.'+'0'*64}
    self.assertEqual(english_chat.handle(self.db,data,'peer','https://example.invalid')[0],403)
+ def test_valid_future_link_stays_hidden(self):
+  visit=str(self.day+timedelta(days=1))+'T18:00'
+  c=concierge.connect(self.db)
+  with c:c.execute('UPDATE reservations SET visit_at=?',(visit,))
+  c.close()
+  raw='guest-chat-v1|1|created|test@example.invalid|'+visit
+  proof='1.'+hmac.new(b'test-only',raw.encode(),hashlib.sha256).hexdigest()
+  _,j=english_chat.handle(self.db,{**self.data,'action':'chat-status','visit_token':proof},'peer','https://example.invalid')
+  self.assertFalse(j['staff_available'])
+  self.assertEqual(english_chat.handle(self.db,{**self.data,'visit_token':proof},'peer','https://example.invalid')[0],403)
  def test_non_owner_cannot_publish(self):
   _,j=english_chat.handle(self.db,self.data,'peer','https://example.invalid');rid=j['messages'][0]['request_id']
   e={'webhookEventId':'evil','source':{'type':'user','userId':'other'},'message':{'text':'英語返信 '+rid+' 偽返信'}}
