@@ -1313,6 +1313,10 @@ def send_confirmation(r):
     msg["From"] = mail_sender()
     msg["To"] = r["email"]
 
+    chat_data = 'guest-chat-v1|' + '|'.join(str(r[k] or '') for k in ('id','created_at','email','visit_at'))
+    chat_proof = str(r['id']) + '.' + hmac.new(ADMIN_TOKEN.encode(), chat_data.encode(), hashlib.sha256).hexdigest() if ADMIN_TOKEN else ''
+    chat_link = APP_BASE_URL + '/concierge/en#visit=' + chat_proof if chat_proof and APP_BASE_URL.startswith('https://') else ''
+    staff_en = ('Talk to staff on the day of your visit (Japan time):\n' + chat_link + '\nSend messages in English; Mr Asakura replies via LINE with translation. Please allow time during service.') if chat_link else ''
     cancel_link = cancellation_url(r)
     cancel_ja = ("ご予約のキャンセルはこちら\n" + cancel_link + "\nリンク先で内容とキャンセル規定をご確認のうえ、お手続きください。キャンセル規定に基づき返金対象額を計算します。Squareカード決済は店舗責任者の確認・承認後に返金し、銀行振込・処理できない場合は店舗で対応します。カード明細への反映には通常さらに2〜7営業日ほどかかる場合があります。") if cancel_link else "キャンセルをご希望の場合は店舗へお問い合わせください。"
     cancel_en = ("Cancel your reservation:\n" + cancel_link + "\nReview the cancellation policy before confirming. Eligible Square card payments are refunded after approval by the restaurant owner. Bank transfers and exceptions require assistance from the restaurant. Card statements may take a further 2–7 business days to reflect refunds.") if cancel_link else "Please contact the restaurant to cancel your reservation."
@@ -1333,6 +1337,8 @@ Guests: {r['party_size']}
 {annex_message(r, True)}
 
 We look forward to welcoming you. Please arrive on time, as each seating begins together.
+
+{staff_en}
 
 {cancel_en}
 

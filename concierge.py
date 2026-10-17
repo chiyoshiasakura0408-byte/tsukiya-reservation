@@ -187,6 +187,8 @@ def configure(db, data):
 
 def pair_owner(db, events):
     """Called only AFTER signature verification on the existing work channel."""
+    import english_concierge
+    english_concierge.owner_line_replies(db, events)
     events = [event for event in events if isinstance(event.get('message', {}).get('text'), str) and event['message']['text'].startswith(('つきや朝倉連携 ', 'VIP承認 '))]
     if not events:
         return

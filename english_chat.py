@@ -26,6 +26,27 @@ def messages(c, key):
         WHERE m.token_hash=? AND m.expires>? ORDER BY m.created LIMIT 30''', (key,time.time()))]
 
 
+def staff_available(c, data):
+    import os, hmac
+    from datetime import datetime, timezone, timedelta
+    proof = data.get('visit_token', '')
+    if not isinstance(proof, str) or not re.fullmatch(r'[0-9]{1,18}\.[0-9a-f]{64}', proof) or not os.getenv('ADMIN_TOKEN'):
+        return False
+    try:
+        row = c.execute('SELECT * FROM reservations WHERE id=?', (int(proof.split('.')[0]),)).fetchone()
+        if not row or row['status'] != 'CONFIRMED':
+            return False
+        value = 'guest-chat-v1|' + '|'.join(str(row[k] or '') for k in ('id','created_at','email','visit_at'))
+        expected = str(row['id'])+'.'+hmac.new(os.environ['ADMIN_TOKEN'].encode(), value.encode(), hashlib.sha256).hexdigest()
+        visit = datetime.fromisoformat(row['visit_at'])
+        jst = timezone(timedelta(hours=9))
+        if visit.tzinfo is None:
+            visit = visit.replace(tzinfo=jst)
+        return hmac.compare_digest(expected, proof) and visit.astimezone(jst).date() == datetime.now(jst).date()
+    except (ValueError, KeyError, __import__('sqlite3').OperationalError):
+        return False
+
+
 def handle(db, data, peer, base):
     token = data.get('token', '')
     if not isinstance(token, str) or not re.fullmatch(r'[0-9a-f]{64}', token):
@@ -38,7 +59,9 @@ def handle(db, data, peer, base):
             setup(c)
             c.execute('BEGIN IMMEDIATE')
             if data.get('action') == 'chat-status':
-                return 200, {'messages': messages(c,key)}
+                return 200, {'messages': messages(c,key), 'staff_available': staff_available(c,data)}
+            if data.get('mode') == 'staff' and not staff_available(c,data):
+                return 403, {'error': 'Staff chat is available only on your confirmed reservation date (Japan time). Please open the private link in your confirmation email.'}
             body, name, mid = data.get('body'), data.get('name'), data.get('message_id')
             if not isinstance(body,str) or not 1<=len(body.strip())<=1500 or not isinstance(name,str) or not 1<=len(name.strip())<=100 or not isinstance(mid,str) or not re.fullmatch(r'[a-f0-9-]{36}',mid) or data.get('consent') is not True:
                 raise ValueError('Please check your name, message and consent.')
@@ -50,7 +73,7 @@ def handle(db, data, peer, base):
                     return 410, {'error':'This conversation has expired. Please start a new enquiry.'}
                 if old['state']=='processing' and old['created']<now-90:
                     return 503, {'error':'We could not complete this reply. Please use the personal enquiry form below.'}
-                return 200, {'messages': messages(c,key)}
+                return 200, {'messages': messages(c,key), 'staff_available': staff_available(c,data)}
             peer_hash = hashlib.sha256(peer.encode()).hexdigest()
             count = c.execute('SELECT count(*) FROM english_chat_messages WHERE peer_hash=? AND created>?',(peer_hash,now-3600)).fetchone()[0]
             total = c.execute('SELECT count(*) FROM english_chat_messages WHERE created>?',(now-3600,)).fetchone()[0]
@@ -62,7 +85,7 @@ def handle(db, data, peer, base):
                 return 409, {'error':'Please wait for your previous reply before sending another message.'}
             c.execute('INSERT INTO english_chat_messages(token_hash,message_id,peer_hash,name,body,created,expires) VALUES(?,?,?,?,?,?,?)', (key,mid,peer_hash,name.strip(),body.strip(),now,now+english_concierge.LIFETIME))
         try:
-            result = concierge_ai.reply(body, [{'guest':m['body'],'concierge':m['answer'],'owner':m['owner_answer']} for m in history])
+            result = ({'answer': 'Your message has been sent to Mr Asakura. His reply will appear here in English. Please allow time for a reply during service.', 'needs_owner': True} if data.get('mode') == 'staff' else concierge_ai.reply(body, [{'guest':m['body'],'concierge':m['answer'],'owner':m['owner_answer']} for m in history]))
         except Exception:
             result = {'answer':concierge_ai.HANDOFF,'needs_owner':True,'summary_ja':'AIの応答を利用できないため、英語問い合わせを朝倉へ引き継ぎ。','reason_ja':'AI応答エラー・未設定'}
         request_id = None
@@ -79,6 +102,6 @@ def handle(db, data, peer, base):
                 result['answer'] = 'Our personal assistance is temporarily unavailable. Please use the enquiry form below to try again later. No reservation has been confirmed.'
         with c:
             c.execute("UPDATE english_chat_messages SET answer=?,state='completed',request_id=? WHERE token_hash=? AND message_id=?",(result['answer'][:4000],request_id,key,mid))
-        return 200, {'messages':messages(c,key)}
+        return 200, {'messages':messages(c,key), 'staff_available': staff_available(c,data)}
     finally:
         c.close()
