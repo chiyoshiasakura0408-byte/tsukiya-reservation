@@ -63,6 +63,8 @@ def knowledge():
 
 def reply(message, history):
     low = message.lower()
+    if message.strip() == 'What makes Tsukiya special?':
+        return {'answer': "At Tsukiya, our philosophy is to bring out the finest flavour of crab. We select the best live crab available each season, without limiting ourselves to a particular origin. After transport, the crab rests in our tanks for half a day to a day, and we prepare it only after you arrive. We carefully remove the shells, except where they are intentionally retained for a dish. From beginning to end, our courses explore crab through its sweetness, umami, aroma and texture—including pairing crab miso with truffle to reveal another dimension of its flavour.", 'needs_owner': False, 'summary_ja': 'つきやの哲学と活蟹・調理へのこだわりをご案内。', 'reason_ja': ''}
     if re.search(r'extended|both sittings|all evening|through.booking|通し|時間指定|6:30|7:00|18:30|19:00', low):
         return {'answer': 'Our regular sittings begin at 18:00 and 20:30, Japan time. Extended reservations are available only to approved VIP guests and cannot be arranged through ordinary reservations or the English concierge. Winter beverage inclusion does not apply to VIP extended reservations: all beverages are charged separately at the restaurant. New reservations are currently paused. I will ask Mr Asakura to review your enquiry; nothing has been confirmed.', 'needs_owner': True, 'reason_ja': '通常枠以外の時刻・通し予約に関する相談', 'summary_ja': '二部制以外の時間・通し予約についての問い合わせ。英語窓口では受付不可。'}
     if re.search(r'drink|beverage|wine|sake|champagne|beer|whisk|日本酒|飲み物|ドリンク', low):
