@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = ROOT / 'public/images/concierge-rich-menu-v3.png'
+IMAGE = ROOT / 'public/images/concierge-rich-menu-v3.jpg'
 
 
 def definition(liff_id=""):
@@ -39,6 +39,7 @@ def main():
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--liff-id',default='')
     args = parser.parse_args()
+    if IMAGE.stat().st_size > 1000000:raise ValueError('Rich menu image exceeds 1 MB')
     token = os.environ['CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN']
 
     def api(path, method='GET', data=None, image=False):
@@ -46,7 +47,7 @@ def main():
         headers = {'Authorization': 'Bearer ' + token}
         if image:
             body = data
-            headers['Content-Type'] = 'image/png'
+            headers['Content-Type'] = 'image/jpeg'
         elif data is not None:
             body = json.dumps(data, ensure_ascii=False).encode()
             headers['Content-Type'] = 'application/json'
