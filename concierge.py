@@ -32,6 +32,8 @@ def connect(db):
     CREATE TABLE IF NOT EXISTS concierge_events (id TEXT PRIMARY KEY,received REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS concierge_requests (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,body TEXT NOT NULL,created REAL NOT NULL,status TEXT NOT NULL DEFAULT '未回答',delivery_id TEXT);
     CREATE TABLE IF NOT EXISTS concierge_outbox (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,channel TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',created REAL NOT NULL,next_try REAL NOT NULL,attempts INTEGER DEFAULT 0,error TEXT);
+    CREATE TABLE IF NOT EXISTS reservation_notice_links(outbox_id TEXT PRIMARY KEY,reservation_id INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS reservation_message_links(message_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,reservation_id INTEGER NOT NULL,destination TEXT NOT NULL);
     ''')
     columns = {r['name'] for r in c.execute('PRAGMA table_info(concierge_customers)')}
     if 'customer_id' not in columns:
@@ -69,13 +71,26 @@ def text_message(text, menu=True):
     return message
 
 
-def enqueue(c, user, messages, channel='customer', kind='reply'):
+def enqueue(c, user, messages, channel='customer', kind='reply', reservation_id=None):
     if user.startswith('ig:') and channel == 'customer':
         channel = 'instagram'
     key = str(uuid.uuid4())
     c.execute('INSERT INTO concierge_outbox(id,user_id,channel,kind,payload,created,next_try) VALUES (?,?,?,?,?,?,?)',
               (key, user, channel, kind, json.dumps(messages, ensure_ascii=False), time.time(), time.time()))
+    if reservation_id is not None and channel == 'owner':
+        c.execute('INSERT INTO reservation_notice_links VALUES (?,?)',(key,reservation_id))
     return key
+
+
+def remember_reservation_messages(c, row, response_body):
+    link=c.execute('SELECT reservation_id FROM reservation_notice_links WHERE outbox_id=?',(row['id'],)).fetchone()
+    if not link or row['channel']!='owner':return
+    try: messages=json.loads(response_body).get('sentMessages',[])
+    except (ValueError,TypeError):return
+    for message in messages:
+        mid=str(message.get('id',''))
+        if re.fullmatch(r'\d{1,30}',mid):
+            c.execute('INSERT OR IGNORE INTO reservation_message_links VALUES(?,?,?,?)',(mid,row['id'],link[0],row['user_id']))
 
 
 def catalog(c):
@@ -440,6 +455,7 @@ def deliver(db):
                 name = 'LINE_CHANNEL_ACCESS_TOKEN' if row['channel'] == 'owner' else 'CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN'
                 token = os.getenv(name, '')
                 error, accepted, retryable = 'channel token missing', False, False
+                response_body=b'{}'
                 if token:
                     payload = json.loads(row['payload'])
                     if row['channel'] == 'owner' and row['kind'] == 'request' and row['attempts'] == 0:
@@ -452,13 +468,16 @@ def deliver(db):
                     try:
                         with urllib.request.urlopen(req, timeout=10) as response:
                             accepted = response.status == 200
+                            response_body=response.read(65536)
                     except urllib.error.HTTPError as exc:
                         accepted = exc.code == 409 and bool(exc.headers.get('x-line-accepted-request-id'))
+                        if accepted:response_body=exc.read(65536)
                         error = 'LINE HTTP ' + str(exc.code)
                         retryable = exc.code == 429 or exc.code >= 500
                     except (OSError, TimeoutError):
                         error, retryable = 'LINE connection failed', True
                 with c:
+                    if accepted:remember_reservation_messages(c,row,response_body)
                     if row['kind'] == 'answer' and (accepted or not retryable):
                         c.execute('UPDATE concierge_requests SET status=? WHERE delivery_id=?', ('回答LINE受付済み' if accepted else '回答送信失敗', row['id']))
                     c.execute('UPDATE concierge_outbox SET state=?,error=?,attempts=attempts+1,next_try=? WHERE id=?',
