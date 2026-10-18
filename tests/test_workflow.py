@@ -46,6 +46,21 @@ class WorkflowTest(unittest.TestCase):
                 post("2026-11-04")
             self.assertEqual(rejected.exception.code, 400)
 
+    def test_offline_direct_october_1730_without_contact(self):
+        import uuid
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        body = {"guest_name": "Offline guest", "email": "", "phone": "", "visit_at": "2026-10-19T17:30", "party_size": 4, "seating_area": "PRIVATE", "time_specified": True, "request_id": str(uuid.uuid4())}
+        request = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/api/reservations/direct", data=json.dumps(body).encode(), headers={"x-admin-token": "test-secret", "Content-Type": "application/json"})
+        with patch.object(run, "deliver_confirmation") as notice, patch.object(run, "make_invoice") as invoice:
+            row = json.load(urllib.request.urlopen(request))
+            self.assertEqual((row["status"], row["source"], row["vip_through"], row["amount"]), ("CONFIRMED", "DIRECT", 0, 180000))
+            self.assertIsNone(row["payment_confirmed_at"])
+            notice.assert_not_called()
+            invoice.assert_not_called()
+
     def test_october_course_boundaries(self):
         from datetime import date
         for text, price in [("2026-10-14", None), ("2026-10-15", 45000),
@@ -343,7 +358,7 @@ class WorkflowTest(unittest.TestCase):
                     post("/api/reservations/direct", body, False)
                 self.assertEqual(caught.exception.code, 401)
                 with self.assertRaises(urllib.error.HTTPError):
-                    post("/api/reservations/direct", {**body, "email": ""})
+                    post("/api/reservations/direct", {**body, "email": "invalid"})
                 created = post("/api/reservations/direct", body)
                 self.assertEqual(created["status"], "CONFIRMED")
                 self.assertEqual(created["source"], "DIRECT")

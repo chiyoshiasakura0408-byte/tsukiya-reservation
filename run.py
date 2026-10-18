@@ -1003,7 +1003,7 @@ def october_private_time(visit_at, area):
     visit = parse_dt(visit_at)
     return (visit.year == 2026 and visit.month == 10
             and area in ("PRIVATE", *ROOMS)
-            and 18 <= visit.hour < 23
+            and 17 <= visit.hour < 23
             and visit > datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None))
 
 
@@ -3271,7 +3271,7 @@ class Handler(
                     if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", request_id):
                         raise ValueError("画面を開き直して登録してください")
                     email = str(x.get("email") or "").strip()
-                    if len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+                    if email and (len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email)):
                         raise ValueError("確定メールを送るメールアドレスを入力してください")
                     if not isinstance(x.get("guest_name"), str) or not 1 <= len(x["guest_name"].strip()) <= 80:
                         raise ValueError("お名前を入力してください")
@@ -3308,7 +3308,8 @@ class Handler(
                 )
 
             if (
-                not x.get("email")
+                not direct
+                and not x.get("email")
                 and not x.get("phone")
             ):
                 return self.send_json(
@@ -3468,7 +3469,7 @@ class Handler(
 
             c.close()
 
-            if direct:
+            if direct and row.get("email"):
                 row = deliver_confirmation(row)
             return self.send_json(row)
 
