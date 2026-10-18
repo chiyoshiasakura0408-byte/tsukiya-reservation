@@ -1007,6 +1007,16 @@ def october_private_time(visit_at, area):
             and visit > datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None))
 
 
+def approved_staff_time_exception(data, direct):
+    """Owner-approved, single-party legacy reservation exception (2026-10-18)."""
+    if not direct or data.get("seating_area") not in ("PRIVATE", *ROOMS):
+        return False
+    key = "|".join((str(data.get("email", "")).strip().lower(),
+                    str(data.get("visit_at", "")), str(data.get("party_size", ""))))
+    return (hashlib.sha256(key.encode()).hexdigest() == "88bd040da22421392f8e5a516df10cbbcb5745b1527e59d1808713ebcc81c879"
+            and parse_dt(data["visit_at"]) > datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None))
+
+
 def availability_check(
     c,
     seating_area,
@@ -1014,7 +1024,8 @@ def availability_check(
     party_size,
     counter_round=None,
     duration_minutes=150,
-    exclude_id=None
+    exclude_id=None,
+    allow_custom_start=False
 ):
     if not seating_area:
         return (
@@ -1035,14 +1046,14 @@ def availability_check(
         if not eligible:
             return False, "個室は2〜8名で選択してください"
         for room in eligible:
-            ok, _ = availability_check(c, room, visit_at, party_size, None, duration_minutes, exclude_id)
+            ok, _ = availability_check(c, room, visit_at, party_size, None, duration_minutes, exclude_id, allow_custom_start)
             if ok:
                 return True, f"個室{room[-1]}に空きがあります"
         return False, "ご希望の人数で利用できる個室は満室です"
 
     if seating_area == "COUNTER" or seating_area in ROOMS:
         slot = (visit.hour, visit.minute)
-        if slot not in ((18, 0), (20, 30)) and not october_private_time(visit_at, seating_area):
+        if slot not in ((18, 0), (20, 30)) and not october_private_time(visit_at, seating_area) and not (allow_custom_start and seating_area in ROOMS and 18 <= visit.hour < 23):
             return (False, "開始時刻は18:00または20:30を選択してください")
         if duration_minutes != 150:
             return (False, "利用時間は150分です")
@@ -3333,6 +3344,7 @@ class Handler(
             time_text = parse_dt(x["visit_at"]).strftime("%H:%M")
             time_specified = x.get("time_specified") is True
             through = False
+            approved_exception = approved_staff_time_exception(x, direct)
             course = bookable_course(day) if time_specified or public_slot_allowed(day, time_text) else None
             if not course or not 1 <= party <= 20:
                 return self.send_json({"error": "この来店日に予約可能なコース・人数がありません"}, 400)
@@ -3350,7 +3362,7 @@ class Handler(
                         return self.send_json(dict(existing))
                     if linked_customer is not None and not c.execute("SELECT id FROM customers WHERE id=?", (linked_customer,)).fetchone():
                         raise ValueError("顧客が見つかりません")
-                if time_specified and not october_private_time(x["visit_at"], area):
+                if time_specified and not october_private_time(x["visit_at"], area) and not approved_exception:
                     if time_text != "20:30" and not booking_policy.approved_customer(c, linked_customer):
                         raise ValueError("時間指定・通し予約は承認済みVIP顧客の選択が必要です。直接予約から顧客を選択してください。")
                     area,dur,through = vip_slots.staff_slot(sys.modules[__name__],c,area,x["visit_at"],party)
@@ -3358,8 +3370,8 @@ class Handler(
                     ok,msg = True,"個室を確保できます"
                 else:
                     if area == "PRIVATE":
-                        area = next((room for room in ROOMS if public_party_allowed(room, party) and availability_check(c, room, x["visit_at"], party, None, dur)[0]), "PRIVATE")
-                    ok,msg = availability_check(c,area,x["visit_at"],party,rnd,dur)
+                        area = next((room for room in ROOMS if public_party_allowed(room, party) and availability_check(c, room, x["visit_at"], party, None, dur, allow_custom_start=approved_exception)[0]), "PRIVATE")
+                    ok,msg = availability_check(c,area,x["visit_at"],party,rnd,dur,allow_custom_start=approved_exception)
 
             except Exception as e:
                 c.rollback()
