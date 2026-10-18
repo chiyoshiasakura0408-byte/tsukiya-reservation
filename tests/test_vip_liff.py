@@ -47,16 +47,18 @@ class LiffTests(unittest.TestCase):
             with self.subTest(changes=changes),self.assertRaises(ValueError):self.call(**changes)
 
     def test_extras_reach_admin_and_plate_is_conditional(self):
-        result=self.call(cake=True,bouquet=True,plate_name='  Mako  ')
+        result=self.call(cake=True,cake_type='whole',bouquet=True,plate_name='  Mako  ')
         body=self.dbquery('SELECT * FROM concierge_requests')[0]['body']
-        self.assertIn('ケーキ：希望する',body)
+        self.assertIn('ケーキ：ホールケーキ',body)
         self.assertIn('花束：希望する',body)
         self.assertIn('プレート名：Mako',body)
-        self.assertEqual(self.call(cake=True,bouquet=True,plate_name='Mako')['request_id'],result['request_id'])
+        self.assertEqual(self.call(cake=True,cake_type='whole',bouquet=True,plate_name='Mako')['request_id'],result['request_id'])
+        self.call(cake=True,cake_type='cut',plate_name='Mako',nonce='d'*32)
+        self.assertIn('ケーキ：カットケーキ',self.dbquery('SELECT * FROM concierge_requests')[-1]['body'])
         self.call(cake=False,plate_name='ignored',nonce='c'*32)
         self.assertNotIn('ignored',self.dbquery('SELECT * FROM concierge_requests')[-1]['body'])
         self.assertEqual(app.handle(self.db,'profile',{'id_token':'x'*30},'')['name'],'申請者')
-        for changes in [{'cake':True},{'cake':True,'plate_name':' '*5},{'cake':True,'plate_name':'a'*81},{'cake':'yes'},{'bouquet':1}]:
+        for changes in [{'cake':True},{'cake':True,'cake_type':'whole','plate_name':' '*5},{'cake':True,'cake_type':'whole','plate_name':'a'*81},{'cake':'yes'},{'bouquet':1}]:
             with self.subTest(changes=changes),self.assertRaises(ValueError):self.call(**changes)
 
     def test_liff_idempotency_concurrent_and_new_nonce(self):

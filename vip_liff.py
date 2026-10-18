@@ -89,12 +89,13 @@ def handle(db, action, data, base_url):
         if data.get('acknowledged') is not True:raise ValueError('リクエスト内容をご確認ください。')
         if not isinstance(nonce,str) or not re.fullmatch(r'[a-zA-Z0-9-]{20,64}',nonce):raise ValueError('画面を開き直してください。')
         cake, bouquet, plate = data.get('cake',False), data.get('bouquet',False), data.get('plate_name','')
-        if type(cake) is not bool or type(bouquet) is not bool:
+        cake_type = data.get('cake_type','no' if not cake else '')
+        if type(cake) is not bool or type(bouquet) is not bool or cake_type not in (('whole','cut') if cake else ('no',)):
             raise ValueError('ケーキ・花束の選択をご確認ください。')
         if cake and (not isinstance(plate,str) or not 1 <= len(plate.strip()) <= 80):
             raise ValueError('プレート名を入力してください（80文字以内）。')
         plate = plate.strip() if cake else ''
-        payload = json.dumps({'date':day,'time':clock,'party':party,'name':name.strip(),'note':note.strip(),'cake':cake,'bouquet':bouquet,'plate_name':plate},ensure_ascii=False,sort_keys=True)
+        payload = json.dumps({'date':day,'time':clock,'party':party,'name':name.strip(),'note':note.strip(),'cake':cake,'cake_type':cake_type,'bouquet':bouquet,'plate_name':plate},ensure_ascii=False,sort_keys=True)
         with c:
             c.execute('BEGIN IMMEDIATE')
             schema(c)
@@ -112,7 +113,7 @@ def handle(db, action, data, base_url):
             if not owner:raise ValueError('担当者への接続を確認中です。少し後に再度お試しください。')
             request_id=uuid.uuid4().hex[:12]
             body=f'【VIP予約リクエスト】\n{day} {clock}\n{name.strip()}様\n{party}名様\n{concierge_menu.course_name_for_day(visit)}\n\n料理代の事前決済なし。受付開始前の日程を含むリクエストです。席・コース・料金の確認後に確定してください。\nVIP通し予約は冬季ドリンクオールイン対象外。'
-            body+='\n\nケーキ：'+('希望する' if cake else '希望しない')+'\n花束：'+('希望する' if bouquet else '希望しない')
+            body+='\n\nケーキ：'+({'whole':'ホールケーキ','cut':'カットケーキ'}.get(cake_type,'希望しない'))+'\n花束：'+('希望する' if bouquet else '希望しない')
             if cake:body+='\nプレート名：'+plate
             if note.strip():body+='\n\nご要望：'+note.strip()
             c.execute('INSERT INTO concierge_requests(id,user_id,body,created) VALUES(?,?,?,?)',(request_id,user,body,time.time()))
