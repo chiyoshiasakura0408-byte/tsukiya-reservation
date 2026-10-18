@@ -16,6 +16,36 @@ import run
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_october_private_custom_start_boundary_and_overlap(self):
+        c = run.con()
+        try:
+            self.assertTrue(run.availability_check(c, "PRIVATE3", "2026-10-25T18:30", 6)[0])
+            self.assertFalse(run.availability_check(c, "PRIVATE3", "2026-11-04T19:00", 6)[0])
+            self.assertFalse(run.availability_check(c, "COUNTER", "2026-10-25T18:30", 2, 1)[0])
+            c.execute("INSERT INTO reservations(source,guest_name,visit_at,party_size,seating_area,amount,duration_minutes,status,created_at,updated_at) VALUES('DIRECT','existing','2026-10-25T18:30',6,'PRIVATE3',270000,150,'CONFIRMED','now','now')")
+            self.assertFalse(run.availability_check(c, "PRIVATE3", "2026-10-25T20:30", 6)[0])
+            self.assertTrue(run.availability_check(c, "PRIVATE3", "2026-10-25T21:00", 6)[0])
+        finally:
+            c.close()
+
+    def test_october_custom_direct_without_vip(self):
+        import uuid
+        server = ThreadingHTTPServer(("127.0.0.1", 0), run.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        def post(day):
+            body = {"guest_name": "October guest", "email": "test@example.com", "visit_at": day + "T18:30", "party_size": 6, "seating_area": "PRIVATE", "time_specified": True, "request_id": str(uuid.uuid4())}
+            req = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/api/reservations/direct", data=json.dumps(body).encode(), headers={"x-admin-token": "test-secret", "Content-Type": "application/json"})
+            return json.load(urllib.request.urlopen(req))
+        with patch.object(run, "send_confirmation", return_value=(True, "")), patch.object(run, "make_invoice") as invoice:
+            row = post("2026-10-25")
+            self.assertEqual((row["vip_through"], row["duration_minutes"], row["amount"], row["status"]), (0, 150, 270000, "CONFIRMED"))
+            invoice.assert_not_called()
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                post("2026-11-04")
+            self.assertEqual(rejected.exception.code, 400)
+
     def test_october_course_boundaries(self):
         from datetime import date
         for text, price in [("2026-10-14", None), ("2026-10-15", 45000),

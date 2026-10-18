@@ -998,6 +998,15 @@ def expiry_loop():
         time.sleep(300)
 
 
+def october_private_time(visit_at, area):
+    """October 2026 staff-entered private bookings may use a custom start."""
+    visit = parse_dt(visit_at)
+    return (visit.year == 2026 and visit.month == 10
+            and area in ("PRIVATE", *ROOMS)
+            and 18 <= visit.hour < 23
+            and visit > datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None))
+
+
 def availability_check(
     c,
     seating_area,
@@ -1033,7 +1042,7 @@ def availability_check(
 
     if seating_area == "COUNTER" or seating_area in ROOMS:
         slot = (visit.hour, visit.minute)
-        if slot not in ((18, 0), (20, 30)):
+        if slot not in ((18, 0), (20, 30)) and not october_private_time(visit_at, seating_area):
             return (False, "開始時刻は18:00または20:30を選択してください")
         if duration_minutes != 150:
             return (False, "利用時間は150分です")
@@ -1110,6 +1119,12 @@ def availability_check(
                 minutes=duration_minutes
             )
         )
+
+        if visit.year == 2026 and visit.month == 10:
+            for block in c.execute("SELECT time_text FROM seat_blocks WHERE visit_date=? AND seating_area=?", (visit.date().isoformat(), seating_area)):
+                block_start = parse_dt(visit.date().isoformat() + "T" + block["time_text"])
+                if visit < block_start + timedelta(minutes=150) and block_start < end:
+                    return False, "この個室はブロックされています"
 
         rows = c.execute(
             """
@@ -2407,7 +2422,7 @@ class Handler(
             c = con()
 
             try:
-                if (q.get("time_specified") or [""])[0] == "1":
+                if (q.get("time_specified") or [""])[0] == "1" and not october_private_time(visit, area):
                     room, _, _ = vip_slots.staff_slot(sys.modules[__name__],c,area,visit,party)
                     ok, msg = True, f"個室{room[-1]}に空きがあります（23:00まで）"
                 else:
@@ -3335,7 +3350,7 @@ class Handler(
                         return self.send_json(dict(existing))
                     if linked_customer is not None and not c.execute("SELECT id FROM customers WHERE id=?", (linked_customer,)).fetchone():
                         raise ValueError("顧客が見つかりません")
-                if time_specified:
+                if time_specified and not october_private_time(x["visit_at"], area):
                     if time_text != "20:30" and not booking_policy.approved_customer(c, linked_customer):
                         raise ValueError("時間指定・通し予約は承認済みVIP顧客の選択が必要です。直接予約から顧客を選択してください。")
                     area,dur,through = vip_slots.staff_slot(sys.modules[__name__],c,area,x["visit_at"],party)
