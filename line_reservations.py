@@ -46,6 +46,7 @@ def ingest(c,raw,signature,payload):
             continue
         if e.get('type')=='unsend':
             c.execute("UPDATE line_booking_jobs SET state='withdrawn',raw=NULL,signature=NULL WHERE message_id=? AND state IN ('pending','failed','extracted')",(str(e.get('unsend',{}).get('messageId','')),))
+            c.execute("UPDATE line_booking_items SET state='withdrawn' WHERE state='pending' AND job_id IN (SELECT id FROM line_booking_jobs WHERE state='withdrawn')")
             continue
         if e.get('type')!='message':continue
         text=unicodedata.normalize('NFKC',m.get('text','')).strip()
