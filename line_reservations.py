@@ -32,8 +32,8 @@ def owner(c):
     except sqlite3.OperationalError:
         return ''
 
-def notify(c,text):
-    return concierge.enqueue(c,GROUP,[{'type':'text','text':text[:4900]}],channel='owner',kind='line-booking')
+def notify(c,text,destination=GROUP):
+    return concierge.enqueue(c,destination,[{'type':'text','text':text[:4900]}],channel='owner',kind='line-booking')
 
 def ingest(c,raw,signature,payload):
     """Called only after LINE signature verification, in the webhook transaction."""
@@ -42,8 +42,9 @@ def ingest(c,raw,signature,payload):
     claimed=set()
     for e in payload['events']:
         src=e.get('source',{}); m=e.get('message',{}); mid=str(m.get('id',''))
-        if src.get('type')!='group' or src.get('groupId')!=GROUP or not actor or src.get('userId')!=actor:
+        if not actor or src.get('userId')!=actor or not (src.get('type')=='user' or src.get('type')=='group' and src.get('groupId')==GROUP):
             continue
+        destination=actor if src.get('type')=='user' else GROUP
         if e.get('type')=='unsend':
             c.execute("UPDATE line_booking_jobs SET state='withdrawn',raw=NULL,signature=NULL WHERE message_id=? AND state IN ('pending','failed','extracted')",(str(e.get('unsend',{}).get('messageId','')),))
             c.execute("UPDATE line_booking_items SET state='withdrawn' WHERE state='pending' AND job_id IN (SELECT id FROM line_booking_jobs WHERE state='withdrawn')")
@@ -54,19 +55,19 @@ def ingest(c,raw,signature,payload):
         if not image and not (m.get('type')=='text' and PREFIX.match(text)):continue
         ident=hashlib.sha256(e['webhookEventId'].encode()).hexdigest()[:16]
         c.execute('INSERT OR IGNORE INTO line_booking_jobs(id,event_id,actor,origin,group_id,text,message_id,created,raw,signature) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                  (ident,e['webhookEventId'],actor,'line',GROUP,text[:6000],mid if image else None,time.time(),raw if image else None,signature if image else None))
+                  (ident,e['webhookEventId'],actor,'line',destination,text[:6000],mid if image else None,time.time(),raw if image else None,signature if image else None))
         if image:
             claimed.add(e['webhookEventId'])
             # Retain the authenticated media reference, without relaying a reservation image as revenue.
             line_receipts.schema(c)
-            c.execute('INSERT OR IGNORE INTO receipt_images VALUES(?,?,?,0)',(mid,GROUP,time.time()))
+            c.execute('INSERT OR IGNORE INTO receipt_images VALUES(?,?,?,0)',(mid,destination,time.time()))
     return claimed
 
 def image_bytes(db,mid):
     if not re.fullmatch(r'\d{1,30}',mid):raise ValueError('画像番号が不正です')
     with sqlite3.connect(db) as c:
         line_receipts.schema(c)
-        row=c.execute('SELECT 1 FROM receipt_images WHERE message_id=? AND group_id=? AND cancelled=0 AND created>?',(mid,GROUP,time.time()-7*86400)).fetchone()
+        row=c.execute('SELECT 1 FROM receipt_images WHERE message_id=? AND group_id IN (?,?) AND cancelled=0 AND created>?',(mid,GROUP,owner(c),time.time()-7*86400)).fetchone()
     if not row:raise ValueError('画像の受信記録がありません。写真を再送してください')
     token=os.getenv('LINE_CHANNEL_ACCESS_TOKEN','')
     if not token:raise ValueError('LINE接続が未設定です')
@@ -194,7 +195,7 @@ def apply_item(app,ident):
     c=concierge.connect(app.DB)
     try:
         schema(c);c.execute('BEGIN IMMEDIATE')
-        item=c.execute('SELECT i.*,j.actor,j.origin,j.state AS job_state FROM line_booking_items i JOIN line_booking_jobs j ON j.id=i.job_id WHERE i.id=?',(ident,)).fetchone()
+        item=c.execute('SELECT i.*,j.actor,j.origin,j.group_id,j.state AS job_state FROM line_booking_items i JOIN line_booking_jobs j ON j.id=i.job_id WHERE i.id=?',(ident,)).fetchone()
         if not item or item['state']!='pending' or item['job_state']=='withdrawn':c.rollback();return
         if item['origin']=='line' and item['actor']!=owner(c):raise ValueError('朝倉様のLINE認証が変更されています')
         x=json.loads(item['payload'])
@@ -208,7 +209,7 @@ def apply_item(app,ident):
         except ValueError as e:
             text=f"【予約未処理】受付 {ident}\n{x.get('guest_name') or '氏名未確認'}\n{e}\n新規予約は未登録、既存予約は未変更です。\n「予約補足 {ident} 足りない情報」と返信してください。"
             c.execute("UPDATE line_booking_items SET state='needs_info',result=? WHERE id=?",(text,ident))
-        notify(c,text);c.commit()
+        notify(c,text,item['group_id']);c.commit()
     finally:c.close()
 
 def process_job(app,job):
@@ -226,12 +227,12 @@ def process_job(app,job):
         if retry:
             with c:
                 n=c.execute("UPDATE line_booking_jobs SET state='pending',error=NULL WHERE id=? AND actor=? AND state='failed'",(retry[1],job['actor'])).rowcount
-                notify(c,'再試行を受け付けました。完了通知をお待ちください。' if n else '再試行対象がありません。受付番号をご確認ください。')
+                notify(c,'再試行を受け付けました。完了通知をお待ちください。' if n else '再試行対象がありません。受付番号をご確認ください。',job['group_id'])
                 c.execute("UPDATE line_booking_jobs SET state='done' WHERE id=?",(job['id'],))
             return
         if text in ('予約','予約追加') and not job['message_id']:
             with c:
-                notify(c,'予約日時・氏名・人数・店舗（本店カウンター／別邸個室）を送信してください。写真は朝倉様から送信すると個別に読み取ります。既に送った写真は各受付の結果をご確認ください。')
+                notify(c,'予約日時・氏名・人数・店舗（本店カウンター／別邸個室）を送信してください。写真は朝倉様から送信すると個別に読み取ります。既に送った写真は各受付の結果をご確認ください。',job['group_id'])
                 c.execute("UPDATE line_booking_jobs SET state='done' WHERE id=?",(job['id'],))
             return
     finally:c.close()
@@ -247,12 +248,12 @@ def process_job(app,job):
             latest=c.execute('SELECT state FROM line_booking_jobs WHERE id=?',(job['id'],)).fetchone()
             if latest[0]=='withdrawn':return
             if not result['is_reservation']:
-                if job['raw']:
+                if job['raw'] and job['group_id']==GROUP:
                     # A receipt continues through the original signed finance relay.
                     payload=json.loads(job['raw']);payload['events']=[e for e in payload['events'] if e.get('webhookEventId')==job['event_id']]
                     line_receipts.enqueue(c,json.dumps(payload,ensure_ascii=False).encode(),job['signature'],payload)
                 c.execute("UPDATE line_booking_jobs SET state='not_reservation',raw=NULL,signature=NULL WHERE id=?",(job['id'],))
-                if not job['message_id']:notify(c,'予約情報を読み取れませんでした。未登録です。予約日時・氏名・人数・店舗を追記してください。')
+                if not job['message_id']:notify(c,'予約情報を読み取れませんでした。未登録です。予約日時・氏名・人数・店舗を追記してください。',job['group_id'])
                 return
             if not result['items']:raise ValueError('予約情報を判読できませんでした。鮮明な画像を再送してください')
             if target:
@@ -289,7 +290,7 @@ def drain(app):
                 try:
                     with c:
                         c.execute("UPDATE line_booking_jobs SET state='failed',error=? WHERE id=?",(reason,job['id']))
-                        notify(c,f"【予約処理失敗】受付 {job['id']}\n{reason}\n登録済みの項目は再登録しません。未処理の項目は未登録です。\n「予約再試行 {job['id']}」と送信してください。")
+                        notify(c,f"【予約処理失敗】受付 {job['id']}\n{reason}\n登録済みの項目は再登録しません。未処理の項目は未登録です。\n「予約再試行 {job['id']}」と送信してください。",job['group_id'])
                 finally:c.close()
         c=concierge.connect(app.DB)
         try:
@@ -300,7 +301,7 @@ def drain(app):
                     sync,done=sync_state(c,dict(row))
                     if done:
                         with c:
-                            notify(c,f"【Googleカレンダー同期成功】\n{row['guest_name']}様 / 予約ID：{row['id']}\n{row['visit_at'].replace('T',' ')} / {row['party_size']}名\n状態：{row['status']}")
+                            notify(c,f"【Googleカレンダー同期成功】\n{row['guest_name']}様 / 予約ID：{row['id']}\n{row['visit_at'].replace('T',' ')} / {row['party_size']}名\n状態：{row['status']}",c.execute('SELECT group_id FROM line_booking_jobs WHERE id=?',(item['job_id'],)).fetchone()[0])
                             c.execute('UPDATE line_booking_items SET sync_notice=1 WHERE id=?',(item['id'],))
             with c:c.execute("UPDATE line_booking_jobs SET raw=NULL,signature=NULL WHERE created<?",(time.time()-7*86400,))
         finally:c.close()
@@ -318,7 +319,7 @@ def status(app):
         schema(c);line_receipts.schema(c)
         jobs=[dict(r) for r in c.execute('SELECT id,origin,message_id,created,state,error FROM line_booking_jobs ORDER BY created DESC LIMIT 30')]
         items=[dict(r) for r in c.execute('SELECT id,job_id,payload,state,reservation_id,result,sync_notice FROM line_booking_items ORDER BY rowid DESC LIMIT 60')]
-        images=[dict(r) for r in c.execute('SELECT message_id,created FROM receipt_images WHERE group_id=? AND cancelled=0 AND created>? ORDER BY created DESC LIMIT 30',(GROUP,time.time()-86400))]
+        images=[dict(r) for r in c.execute('SELECT message_id,created FROM receipt_images WHERE group_id IN (?,?) AND cancelled=0 AND created>? ORDER BY created DESC LIMIT 30',(GROUP,owner(c),time.time()-86400))]
         deliveries=[dict(r) for r in c.execute("SELECT state,COUNT(*) n FROM concierge_outbox WHERE kind='line-booking' GROUP BY state")]
         return {'enabled':bool(owner(c) and os.getenv('OPENAI_API_KEY') and os.getenv('LINE_CHANNEL_ACCESS_TOKEN')),'jobs':jobs,'items':items,'images':images,'deliveries':deliveries}
     finally:c.close()
