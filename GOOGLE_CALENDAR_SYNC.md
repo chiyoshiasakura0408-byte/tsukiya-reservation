@@ -2,22 +2,24 @@
 
 実装は既定で無効。予約テーブルを読み取るだけで、予約・決済・顧客通知APIを呼ばない。
 30秒ごとに全予約を照合する。既存予約も初回対象。予約日時はAsia/Tokyoとして扱い、
-VIP通し予約は300分、それ以外は保存されたduration_minutesを使う。
+VIP通し予約は当日23時まで、それ以外は保存されたduration_minutesを使う。
 
 ## 本番有効化に必要な操作
 
 1. chiyoshiasakura0408@gmail.comでGoogle Calendarを開き、非公開の専用カレンダー
    `西天満つきや｜予約管理` を作成する。既存のメインカレンダーは変更しない。
 2. Google CloudのプロジェクトでCalendar APIを有効化し、OAuthクライアントを設定する。
-   所有者本人が同意し、オフラインアクセス用のrefresh tokenを取得する。
-   必要なスコープはcalendar.events、calendar.calendars.readonly、calendar.acl.readonly。
+   承認済みリダイレクトURIに `https://tsukiya-reservation.onrender.com/calendar-sync/callback` を登録する。
+   `/calendar-sync` を管理者ログイン済みのSafariで開き、Googleに接続する。
+   アカウントと非公開カレンダーを検証した後、オフライン用トークンをDBと同じ永続ディスクに0600で保存する。
+   必要なスコープはcalendar.events、calendar.calendars.readonly、calendar.acl.readonly、openid、userinfo.email。
    OAuthアプリがTestingのままだとrefresh tokenの有効期限に制約があるため、
    長期運用に適した公開状態・同意画面設定を確認する。
 3. RenderのSecret環境変数に以下を設定する。トークンをGitHub・ログ・チャットに貼らない。
    - GOOGLE_CALENDAR_ID（専用カレンダーの @group.calendar.google.com ID）
    - GOOGLE_CALENDAR_CLIENT_ID
    - GOOGLE_CALENDAR_CLIENT_SECRET
-   - GOOGLE_CALENDAR_REFRESH_TOKEN
+   - GOOGLE_CALENDAR_REFRESH_TOKEN（任意。通常は接続画面が安全に保存）
    - GOOGLE_CALENDAR_SYNC_ENABLED=1
    - GOOGLE_CALENDAR_NAMESPACE=tsukiya-production（運用後は変更しない）
 4. Renderへデプロイ後、calendar_sync_stateで全行のlast_errorがNULLになったことを確認する。
@@ -43,9 +45,10 @@ Googleで削除された予定のtombstoneに所有者マーカーが残って�
 
 ## 現在の検証範囲
 
-モックと一時SQLiteで10テストを実行。初回・重複防止・変更・キャンセル・直接予約・
+モックと一時SQLiteで16テストを実行。初回・重複防止・変更・キャンセル・直接予約・
 VIP時間・情報削減・再試行・予約行不変・メインカレンダー拒否を検証。
-本番Google API・本番DB・Render環境変数・iPhone実機は未検証。
+OAuthの管理者・同一オリジン制限、stateとブラウザcookie照合、PKCE、アカウント・権限検証、トークン0600保存も検証。
+本番Google API・本番DB・iPhone実機は未検証。Renderの認証値の妥当性は接続時に確認する。
 
 公式資料:
 - https://developers.google.com/workspace/calendar/api/v3/reference/events/insert

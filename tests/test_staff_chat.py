@@ -50,3 +50,18 @@ class StaffChatTests(unittest.TestCase):
   e={'webhookEventId':'evil','source':{'type':'user','userId':'other'},'message':{'text':'英語返信 '+rid+' 偽返信'}}
   with patch.object(concierge_ai,'request') as ai:
    english_concierge.owner_line_replies(self.db,[e]);ai.assert_not_called()
+
+ def test_explicit_external_booking_exception_is_session_bound(self):
+  _,j=english_chat.handle(self.db,self.data,'peer','https://example.invalid')
+  c=concierge.connect(self.db)
+  with c:
+   c.execute('UPDATE english_chat_messages SET request_id=?',(english_chat.STAFF_EXCEPTION_REQUEST,))
+  token=self.data['token']
+  # Freeze Japan date without changing the reservation validation path.
+  with patch('datetime.datetime') as clock:
+   clock.now.return_value.date.return_value.isoformat.return_value='2026-10-18'
+   self.assertTrue(english_chat.staff_available(c,{'token':token}))
+   self.assertFalse(english_chat.staff_available(c,{'token':secrets.token_hex(32)}))
+   clock.now.return_value.date.return_value.isoformat.return_value='2026-10-19'
+   self.assertFalse(english_chat.staff_available(c,{'token':token}))
+  c.close()

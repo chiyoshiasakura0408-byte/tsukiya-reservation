@@ -1,4 +1,5 @@
 """Opt-in, one-way Calendar projection. Never writes reservation rows or notifies guests."""
+import calendar_auth
 import fcntl
 import hashlib
 import json
@@ -41,9 +42,12 @@ def event_body(row, namespace):
         return None
     start = datetime.fromisoformat(row['visit_at'])
     start = start.replace(tzinfo=JST) if start.tzinfo is None else start.astimezone(JST)
-    duration = 300 if row.get('vip_through') else int(row.get('duration_minutes') or 150)
+    duration = int(row.get('duration_minutes') or 150)
     if duration <= 0:
         raise SyncError('invalid_duration')
+    end = start.replace(hour=23, minute=0, second=0, microsecond=0) if row.get('vip_through') else start + timedelta(minutes=duration)
+    if end <= start:
+        raise SyncError('invalid_end_time')
     area = {'PRIVATE1': '個室①', 'PRIVATE2': '個室②', 'PRIVATE3': '個室③', 'COUNTER': 'カウンター'}.get(row.get('seating_area'), '席未確定')
     paid = bool(row.get('payment_confirmed_at'))
     payment = '決済済み' if paid else ('事前決済なし・当日支払い' if row.get('source') in ('DIRECT', 'CONCIERGE_LINE') else '決済未確認')
@@ -53,16 +57,17 @@ def event_body(row, namespace):
             details.append(f'{label}：{clean(row[key])}')
     return {'summary': f"{clean(row['guest_name'])}様｜{row['party_size']}名｜{area}",
             'description': '\n'.join(details), 'start': {'dateTime': start.isoformat(), 'timeZone': 'Asia/Tokyo'},
-            'end': {'dateTime': (start + timedelta(minutes=duration)).isoformat(), 'timeZone': 'Asia/Tokyo'},
+            'end': {'dateTime': end.isoformat(), 'timeZone': 'Asia/Tokyo'},
             'visibility': 'private', 'status': 'confirmed', 'attendees': [],
             'reminders': {'useDefault': False},
             'extendedProperties': {'private': {'tsukiya_namespace': namespace, 'reservation_id': str(row['id'])}}}
 
 
 class Google:
-    def __init__(self, calendar_id):
+    def __init__(self, calendar_id, db_path=None):
         if calendar_id == 'primary' or not calendar_id.endswith('@group.calendar.google.com'):
             raise SyncError('dedicated_secondary_calendar_required')
+        self.db_path = db_path
         self.calendar_id = calendar_id
         self.token = None
         self.expires = 0
@@ -72,7 +77,7 @@ class Google:
             return self.token
         data = urllib.parse.urlencode({'client_id': os.environ['GOOGLE_CALENDAR_CLIENT_ID'],
             'client_secret': os.environ['GOOGLE_CALENDAR_CLIENT_SECRET'],
-            'refresh_token': os.environ['GOOGLE_CALENDAR_REFRESH_TOKEN'], 'grant_type': 'refresh_token'}).encode()
+            'refresh_token': calendar_auth.refresh_token(self.db_path), 'grant_type': 'refresh_token'}).encode()
         try:
             with urllib.request.urlopen(urllib.request.Request('https://oauth2.googleapis.com/token', data=data), timeout=20) as response:
                 result = json.load(response)
@@ -171,12 +176,12 @@ def reconcile(db_path, client, namespace, now=None):
 def loop(db_path):
     if os.getenv('GOOGLE_CALENDAR_SYNC_ENABLED') != '1':
         return
-    required = ('GOOGLE_CALENDAR_ID', 'GOOGLE_CALENDAR_CLIENT_ID', 'GOOGLE_CALENDAR_CLIENT_SECRET', 'GOOGLE_CALENDAR_REFRESH_TOKEN')
+    required = ('GOOGLE_CALENDAR_ID', 'GOOGLE_CALENDAR_CLIENT_ID', 'GOOGLE_CALENDAR_CLIENT_SECRET')
     if not all(os.getenv(key) for key in required):
         LOG.error('calendar sync disabled: missing configuration')
         return
     namespace = os.getenv('GOOGLE_CALENDAR_NAMESPACE', 'tsukiya-production')
-    client = Google(os.environ['GOOGLE_CALENDAR_ID'])
+    client = Google(os.environ['GOOGLE_CALENDAR_ID'], db_path)
     while True:
         try:
             with open(str(db_path) + '.calendar.lock', 'a') as lock:

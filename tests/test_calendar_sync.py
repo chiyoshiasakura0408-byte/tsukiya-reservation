@@ -76,7 +76,7 @@ class CalendarSyncTest(unittest.TestCase):
         row = dict(self.row, vip_through=1)
         body = sync.event_body(row, 'test')
         self.assertEqual(body['start']['dateTime'], '2026-10-19T19:00:00+09:00')
-        self.assertEqual(body['end']['dateTime'], '2026-10-20T00:00:00+09:00')
+        self.assertEqual(body['end']['dateTime'], '2026-10-19T23:00:00+09:00')
     def test_failure_retries_and_persists(self):
         self.client.fail = True
         self.assertEqual(self.tick()['failed'], 1)

