@@ -1202,6 +1202,55 @@ def availability_check(
     )
 
 
+def change_direct_time(c, rid, data):
+    """Change only the clock of an unpaid direct reservation, retaining its identity."""
+    r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+    if not r:
+        raise ValueError("予約が見つかりません")
+    if r["source"] != "DIRECT" or r["status"] != "CONFIRMED" or r["vip_through"] or r["square_invoice_id"] or r["payment_confirmed_at"]:
+        raise ValueError("この予約は時刻変更の対象外です")
+    if data.get("expected_visit_at") != r["visit_at"]:
+        raise ValueError("予約が更新されています。再読み込みしてください")
+    clock = data.get("time", "")
+    if not isinstance(clock, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", clock):
+        raise ValueError("時刻を確認してください")
+    visit = r["visit_at"][:10] + "T" + clock
+    if parse_dt(visit) <= datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None):
+        raise ValueError("過去の時刻には変更できません")
+    rnd = (1 if clock == "18:00" else 2) if r["seating_area"] == "COUNTER" else None
+    ok, message = availability_check(c, r["seating_area"], visit, r["party_size"], rnd, int(r["duration_minutes"] or 150), rid)
+    if not ok:
+        raise ValueError(message)
+    if visit != r["visit_at"]:
+        note = (r["guest_note"] or "") + "\n【開始時刻変更】" + r["visit_at"] + " → " + visit
+        c.execute("UPDATE reservations SET visit_at=?,counter_round=?,guest_note=?,updated_at=? WHERE id=?", (visit, rnd, note, now_iso(), rid))
+    return {"ok": True, "visit_at": visit}
+
+
+def change_direct_party(c, rid, data):
+    r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+    if not r or r["source"] != "DIRECT" or r["status"] != "CONFIRMED" or r["vip_through"] or r["square_invoice_id"] or r["payment_confirmed_at"]:
+        raise ValueError("この予約は人数変更の対象外です")
+    if data.get("expected_party_size") != r["party_size"] or data.get("expected_visit_at") != r["visit_at"] or data.get("expected_amount") != r["amount"]:
+        raise ValueError("予約が更新されています。再読み込みしてください")
+    party = data.get("party_size")
+    if type(party) is not int or not 1 <= party <= 8:
+        raise ValueError("人数を確認してください")
+    if parse_dt(r["visit_at"]) <= datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None):
+        raise ValueError("過去の予約は変更できません")
+    if not r["party_size"] or int(r["amount"]) % r["party_size"]:
+        raise ValueError("1名様の料金を確認してください")
+    ok, message = availability_check(c, r["seating_area"], r["visit_at"], party, r["counter_round"], int(r["duration_minutes"] or 150), rid,
+                                     allow_custom_start=bool(r["seating_area"] in ROOMS))
+    if not ok:
+        raise ValueError(message)
+    amount = int(r["amount"]) // r["party_size"] * party
+    if party != r["party_size"]:
+        note = (r["guest_note"] or "") + f"\n【人数変更】{r['party_size']}名 → {party}名（料理代 {r['amount']}円 → {amount}円）"
+        c.execute("UPDATE reservations SET party_size=?,amount=?,guest_note=?,updated_at=? WHERE id=?", (party, amount, note, now_iso(), rid))
+    return {"ok": True, "party_size": party, "amount": amount}
+
+
 def nearby_availability(c, visit_at, area, party_size, limit=6):
     """Offer actual free seats, prioritizing the requested day and time."""
     visit = parse_dt(visit_at)
@@ -2796,6 +2845,27 @@ class Handler(
                 return self.send_json({"error": str(exc)}, 400)
             except Exception:
                 return self.send_json({"error": "名刺の処理を完了できませんでした"}, 503)
+
+        time_change = re.fullmatch(r"/api/reservations/(\d+)/(time|party)", p)
+        if time_change:
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if self.headers.get("X-Tsukiya-Action") != "change-time":
+                return self.send_json({"error": "invalid request"}, 403)
+            c = con()
+            try:
+                data = self.read_json()
+                if not isinstance(data, dict):
+                    raise ValueError("入力内容を確認してください")
+                c.execute("BEGIN IMMEDIATE")
+                result = (change_direct_time if time_change[2] == "time" else change_direct_party)(c, int(time_change[1]), data)
+                c.commit()
+                return self.send_json(result)
+            except (ValueError, TypeError) as exc:
+                c.rollback()
+                return self.send_json({"error": str(exc)}, 400)
+            finally:
+                c.close()
 
         customer_path = re.fullmatch(r"/api/customers/(\d+)(?:/visits/(\d+))?", p)
         if customer_path:
