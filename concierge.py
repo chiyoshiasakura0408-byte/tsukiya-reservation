@@ -361,9 +361,16 @@ def respond(c, user, command, lookup, courses, base_url):
         return [text_message(f'{day}・{party}名様のお席をご案内できます。お料理代は合計 ¥{courses[slots[0]["course"]][1]*party:,}（税込）でございます。\nLINEコンシェルジュからは前受けなしでご予約いただけます。以下より内容をご確認のうえ、お申し込みください。' + ('\n\n'+personal if personal else '')),
                 {'type': 'template', 'altText': 'お席をお選びください', 'template': {'type': 'buttons', 'text': 'ご希望のお席・お時間をお選びください', 'actions': actions}}] + extra
     if command == 'VIP担当に相談':
-        c.execute("UPDATE concierge_customers SET state='request' WHERE user_id=?", (user,))
-        return [text_message('Contact Your Concierge\n\nご希望日時・お名前・ご要望をお送りください。VIP担当へ取り次ぎます。アレルギー等の対応可否はVIP担当からの回答をお待ちください。')]
+        c.execute("UPDATE concierge_customers SET state='vip-chat' WHERE user_id=?", (user,))
+        return [text_message('ご相談内容をお送り下さい。')]
     state = c.execute('SELECT state FROM concierge_customers WHERE user_id=?', (user,)).fetchone()[0]
+    if state == 'vip-chat' and command not in ('メニュー', 'キャンセル'):
+        if len(command)>2000:return [text_message('ご相談は2000文字以内でお送りください。')]
+        import concierge_ai
+        try:result=concierge_ai.vip_reply(command)
+        except Exception:result={'needs_owner':True}
+        if result['needs_owner']:return submit_request(c,user,command,base_url)
+        return [text_message(result['answer'])]
     if state.startswith('preference:') and command not in ('メニュー', 'キャンセル'):
         command = 'ご案内内容：'+state.removeprefix('preference:')+'\nお客様のご返答：'+command
         state = 'request'
@@ -383,7 +390,7 @@ def submit_request(c, user, command, base_url):
     owner = setting(c, 'owner')
     if owner:
         enqueue(c, owner, [text_message('【VIPからのご相談】受付 ' + request_id + '\n' + (profile(c, user).get('name', '未連携のお客様') + '様\n') + command + '\n回答はこちら：' + base_url + '/concierge', False)], channel='owner', kind='request')
-    return [text_message('ご相談を受け付けました（受付番号 ' + request_id + '）。VIP担当の確認・回答をお待ちください。この時点では予約・特別対応は確定していません。')]
+    return [text_message('ご相談内容をVIP担当スタッフに取り次ぎます。回答までしばらくお待ちください。')]
 
 
 def receive(db, raw, signature, lookup, courses, base_url):
