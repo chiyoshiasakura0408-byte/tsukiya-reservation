@@ -26,7 +26,7 @@ class LiffTests(unittest.TestCase):
         self.identity={'sub':self.user,'aud':'1234567890','iss':'https://access.line.me','exp':time.time()+600}
         self.reply=MagicMock();self.reply.__enter__.return_value.read.side_effect=lambda *a:json.dumps(self.identity).encode()
         p=patch.object(app.urllib.request,'urlopen',return_value=self.reply);p.start();self.addCleanup(p.stop)
-        self.data={'id_token':'x'*30,'date':str(datetime.now(bot.JST).date()+timedelta(days=800)), 'time':'17:00','party':2,'name':'VIP顧客','note':'個室希望','acknowledged':True,'nonce':'a'*32}
+        self.data={'id_token':'x'*30,'date':str(datetime.now(bot.JST).date()+timedelta(days=800)), 'time':'17:00','venue':'annex','party':2,'name':'VIP顧客','note':'個室希望','acknowledged':True,'nonce':'a'*32}
 
     def call(self,**kwargs):return app.handle(self.db,'request',{**self.data,**kwargs},'https://example.com')
 
@@ -68,6 +68,13 @@ class LiffTests(unittest.TestCase):
         self.assertEqual(payload['duration_minutes'],120)
         for duration in [True,0,-30,31,1500,'120']:
             with self.subTest(duration=duration),self.assertRaises(ValueError):self.call(duration_minutes=duration)
+
+    def test_venue_and_main_seating_rules(self):
+        self.call(venue='main',time='18:00',duration_minutes=120)
+        self.assertIn('本店｜カウンター（禁煙）',self.dbquery('SELECT * FROM concierge_requests')[0]['body'])
+        self.call(venue='main',time='20:30',nonce='e'*32)
+        for changes in [{'venue':''},{'venue':'other'},{'venue':'main','time':'19:00'},{'venue':'main','time':'18:00','duration_minutes':180}]:
+            with self.subTest(changes=changes),self.assertRaises(ValueError):self.call(**changes)
 
     def test_liff_idempotency_concurrent_and_new_nonce(self):
         with ThreadPoolExecutor(max_workers=4) as pool:results=list(pool.map(lambda _:self.call(),range(4)))

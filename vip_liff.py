@@ -95,10 +95,15 @@ def handle(db, action, data, base_url):
         if cake and (not isinstance(plate,str) or not 1 <= len(plate.strip()) <= 80):
             raise ValueError('プレート名を入力してください（80文字以内）。')
         plate = plate.strip() if cake else ''
+        venue = data.get('venue')
+        if venue not in ('main','annex'):raise ValueError('店舗を選択してください。')
         duration = data.get('duration_minutes')
+        if venue == 'main':
+            if clock not in ('18:00','20:30') or duration not in (None,120):raise ValueError('本店は18:00・20:30開始、2時間制です。')
+            duration = 120
         if duration is not None and (type(duration) is not int or not 30 <= duration <= 1440 or duration % 30):
             raise ValueError('ご利用時間を30分単位で入力してください。')
-        payload = json.dumps({'date':day,'time':clock,'party':party,'name':name.strip(),'note':note.strip(),'cake':cake,'cake_type':cake_type,'bouquet':bouquet,'plate_name':plate,'duration_minutes':duration},ensure_ascii=False,sort_keys=True)
+        payload = json.dumps({'date':day,'time':clock,'party':party,'name':name.strip(),'note':note.strip(),'cake':cake,'cake_type':cake_type,'bouquet':bouquet,'plate_name':plate,'duration_minutes':duration,'venue':venue},ensure_ascii=False,sort_keys=True)
         with c:
             c.execute('BEGIN IMMEDIATE')
             schema(c)
@@ -117,6 +122,7 @@ def handle(db, action, data, base_url):
             request_id=uuid.uuid4().hex[:12]
             body=f'【VIP予約リクエスト】\n{day} {clock}\n{name.strip()}様\n{party}名様\n{concierge_menu.course_name_for_day(visit)}\n\n料理代の事前決済なし。受付開始前の日程を含むリクエストです。席・コース・料金の確認後に確定してください。\n冬季ドリンクオールインは18:00または20:30開始・滞在時間2時間の場合に適用。それ以外は飲料別途当日精算。'
             body+='\n\nケーキ：'+({'whole':'ホールケーキ','cut':'カットケーキ'}.get(cake_type,'希望しない'))+'\n花束：'+('希望する' if bouquet else '希望しない')
+            body+='\n店舗：'+('本店｜カウンター（禁煙）' if venue=='main' else '別邸｜個室（喫煙）')
             if duration is not None:body+='\nご利用時間：'+str(duration)+'分'
             if cake:body+='\nプレート名：'+plate
             if note.strip():body+='\n\nご要望：'+note.strip()
