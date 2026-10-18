@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import line_receipts
+import line_reservations
 import concierge
 from datetime import datetime, timezone
 
@@ -74,7 +75,10 @@ def receive(db, raw, signature):
                     active = int(event['type'] not in ('leave', 'unfollow'))
                     c.execute('INSERT INTO line_sources VALUES (?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET last_seen=excluded.last_seen, active=excluded.active',
                               (source_id, kind, now, active))
-            line_receipts.enqueue(c, raw, signature, payload)
+            claimed = line_reservations.ingest(c, raw, signature, payload)
+            finance_payload = {**payload, "events": [e for e in events if e["webhookEventId"] not in claimed]}
+            finance_raw = json.dumps(finance_payload, ensure_ascii=False).encode() if claimed else raw
+            line_receipts.enqueue(c, finance_raw, signature, finance_payload)
             c.execute('INSERT OR REPLACE INTO line_connection_state VALUES (?,?)', ('last_verified_at', now))
     finally:
         c.close()
