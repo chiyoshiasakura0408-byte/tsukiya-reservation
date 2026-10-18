@@ -254,10 +254,11 @@ def send_invite_to_owner(c, token, base_url):
 
 
 def invitation_name(command):
-    """Accept 招待 〇〇様 and 〇〇様招待; preserve the actual guest name."""
+    """Accept 招待〇〇, 招待 〇〇様 and 〇〇様招待; preserve the actual guest name."""
     if not isinstance(command,str):return None
     command=command.strip()
-    match=re.fullmatch(r'(?:VIP招待|招待依頼|招待)[\s　:：]+(.+)',command)
+    if command in ('招待','VIP招待','招待依頼'):return None
+    match=re.fullmatch(r'(?:VIP招待|招待依頼|招待)[\s　:：]*(.+)',command)
     if match:
         name=match.group(1).strip()
     else:
