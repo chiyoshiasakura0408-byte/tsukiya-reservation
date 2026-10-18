@@ -24,6 +24,7 @@ def schema(c):
     c.execute('''CREATE TABLE IF NOT EXISTS line_booking_jobs(id TEXT PRIMARY KEY,event_id TEXT UNIQUE,actor TEXT NOT NULL,origin TEXT NOT NULL,group_id TEXT NOT NULL,text TEXT NOT NULL DEFAULT '',message_id TEXT,created REAL NOT NULL,state TEXT NOT NULL DEFAULT 'pending',error TEXT,raw BLOB,signature TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS line_booking_items(id TEXT PRIMARY KEY,job_id TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',reservation_id INTEGER,result TEXT NOT NULL DEFAULT '',sync_notice INTEGER NOT NULL DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS line_booking_audit(id INTEGER PRIMARY KEY,job_id TEXT NOT NULL,item_id TEXT NOT NULL,actor TEXT NOT NULL,action TEXT NOT NULL,reservation_id INTEGER,before_json TEXT,after_json TEXT,created REAL NOT NULL)''')
+    c.execute('CREATE TABLE IF NOT EXISTS line_note_sessions(actor TEXT NOT NULL,destination TEXT NOT NULL,payload TEXT NOT NULL,expires REAL NOT NULL,PRIMARY KEY(actor,destination))')
     if 'quoted_message_id' not in {r[1] for r in c.execute('PRAGMA table_info(line_booking_jobs)')}:
         c.execute('ALTER TABLE line_booking_jobs ADD COLUMN quoted_message_id TEXT')
 
@@ -58,7 +59,8 @@ def ingest(c,raw,signature,payload):
         image=m.get('type')=='image' and m.get('contentProvider',{}).get('type','line')=='line' and re.fullmatch(r'\d{1,30}',mid)
         quoted=str(m.get('quotedMessageId',''))
         if not re.fullmatch(r'\d{1,30}',quoted):quoted=''
-        if not image and not (m.get('type')=='text' and (PREFIX.match(text) or quoted)):continue
+        dialog=c.execute('SELECT 1 FROM line_note_sessions WHERE actor=? AND destination=?',(actor,destination)).fetchone() or c.execute("SELECT 1 FROM line_booking_jobs WHERE actor=? AND group_id=? AND state='pending' AND text IN ('予約追記','追加')",(actor,destination)).fetchone()
+        if not image and not (m.get('type')=='text' and (PREFIX.match(text) or quoted or text=='追加' or dialog)):continue
         ident=hashlib.sha256(e['webhookEventId'].encode()).hexdigest()[:16]
         c.execute('INSERT OR IGNORE INTO line_booking_jobs(id,event_id,actor,origin,group_id,text,message_id,created,raw,signature,quoted_message_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                   (ident,e['webhookEventId'],actor,'line',destination,text[:6000],mid if image else None,time.time(),raw if image else None,signature if image else None,quoted))
@@ -282,12 +284,93 @@ def admin_note(app,data):
         return {'ok':True,'reservation_id':rid}
     finally:c.close()
 
+def note_dialog(app,c,job):
+    text=job['text'];key=(job['actor'],job['group_id'])
+    record=c.execute('SELECT * FROM line_note_sessions WHERE actor=? AND destination=?',key).fetchone()
+    start=text in ('予約追記','追加') and not job['message_id']
+    if not start and not record:return False
+    # Explicit booking commands, quote replies and other owner workflows keep their routes.
+    if not start and (job.get('quoted_message_id') or job['message_id'] or PREFIX.match(text) or text.startswith(('招待','VIP','英語返信','つきや朝倉連携'))):
+        with c:c.execute('DELETE FROM line_note_sessions WHERE actor=? AND destination=?',key)
+        return False
+    c.execute('BEGIN IMMEDIATE')
+    try:
+        state=c.execute('SELECT state FROM line_booking_jobs WHERE id=?',(job['id'],)).fetchone()
+        if not state or state[0]!='pending':c.rollback();return True
+        def save(data):
+            c.execute('INSERT OR REPLACE INTO line_note_sessions VALUES(?,?,?,?)',(*key,json.dumps(data,ensure_ascii=False),time.time()+1200))
+        def clear():c.execute('DELETE FROM line_note_sessions WHERE actor=? AND destination=?',key)
+        def reply(body,**kw):notify(c,body,job['group_id'],**kw)
+        def show(row):
+            r=dict(row)
+            reply(f"【予約詳細】\n予約番号：{r['id']}\n日時：{r['visit_at'].replace('T',' ')}\n氏名：{r['guest_name']}様\n人数：{r['party_size']}名\n店舗：{'本店' if r['seating_area']=='COUNTER' else '別邸'} / {app.seating_label(r)}\n備考：{r.get('guest_note') or 'なし'}\nお祝い：{r.get('celebration_items') or 'なし'}\nプレート：{r.get('plate_message') or 'なし'}",command='追加内容を記入してください',reservation_id=r['id'])
+            save({'step':'note','id':r['id'],'identity':[r['guest_name'],r['visit_at'],r['party_size'],r['seating_area']]})
+        if start:
+            save({'step':'lookup'});reply('日付\n名前\n\nを教えて下さい')
+        elif text in ('中止','やめる'):
+            clear();reply('追記を中止しました。予約は変更していません。')
+        elif record['expires']<time.time():
+            clear();reply('追記の受付期限が切れました。未反映です。「追加」からやり直してください。')
+        else:
+            data=json.loads(record['payload'])
+            if data['step']=='lookup':
+                day=re.search(r'(?:(\d{4})[年/.-])?(\d{1,2})[月/.-](\d{1,2})日?',text)
+                remaining=text
+                if day:
+                    try:
+                        when=datetime(int(day[1] or datetime.now(JST).year),int(day[2]),int(day[3]))
+                        data['date']=when.strftime('%Y-%m-%d')
+                    except ValueError:raise ValueError('日付を確認してください')
+                    remaining=text[:day.start()]+text[day.end():]
+                else:
+                    relative=re.search(r'今日|明日|明後日',text)
+                    if relative:
+                        data['date']=(datetime.now(JST)+timedelta(days={'今日':0,'明日':1,'明後日':2}[relative[0]])).strftime('%Y-%m-%d')
+                        remaining=text[:relative.start()]+text[relative.end():]
+                name=re.sub(r'(?:日付|日時|氏名|名前)[：:]?', '',remaining).strip(' \n\t:：')
+                if name:data['name']=name
+                if not data.get('date') or not data.get('name'):
+                    save(data);reply(('日付' if not data.get('date') else '名前')+'\n\nを教えて下さい')
+                else:
+                    rows=[r for r in c.execute('SELECT * FROM reservations WHERE substr(visit_at,1,10)=? ORDER BY visit_at,id',(data['date'],)) if r['status'] in app.ACTIVE_STATUSES and norm(data['name']) in norm(r['guest_name'])]
+                    if len(rows)==1:show(rows[0])
+                    elif not rows:
+                        save({'step':'lookup'});reply('該当する予約が見つかりません。\n\n日付\n名前\n\nを教えて下さい')
+                    elif len(rows)>10:
+                        save({'step':'lookup','date':data['date']});reply('候補が多いため、フルネームを教えて下さい。')
+                    else:
+                        save({'step':'select','ids':[r['id'] for r in rows]})
+                        reply('複数の予約が見つかりました。番号を送信してください。\n\n'+'\n'.join(f"{i}. {r['visit_at'].replace('T',' ')} / {r['guest_name']}様 / {r['party_size']}名 / {'本店' if r['seating_area']=='COUNTER' else '別邸'}" for i,r in enumerate(rows,1)))
+            elif data['step']=='select':
+                if not re.fullmatch(r'[0-9]+',text) or not 1<=int(text)<=len(data['ids']):
+                    reply('表示された候補の番号を送信してください。中止する場合は「中止」と送信してください。')
+                else:
+                    row=c.execute('SELECT * FROM reservations WHERE id=?',(data['ids'][int(text)-1],)).fetchone()
+                    if not row or row['status'] not in app.ACTIVE_STATUSES:raise ValueError('対象予約が変更されています。「追加」からやり直してください')
+                    show(row)
+            elif data['step']=='note':
+                row=c.execute('SELECT * FROM reservations WHERE id=?',(data['id'],)).fetchone()
+                if not row or row['status'] not in app.ACTIVE_STATUSES:raise ValueError('対象予約が取消済みです。追記していません')
+                if [row['guest_name'],row['visit_at'],row['party_size'],row['seating_area']]!=data['identity']:
+                    reply('予約内容が変更されたため、最新の詳細を表示します。追記内容を再送してください。');show(row)
+                else:
+                    append_note(app,c,data['id'],text,job);clear()
+        c.execute("UPDATE line_booking_jobs SET state='done' WHERE id=?",(job['id'],))
+        c.commit();return True
+    except ValueError as e:
+        notify(c,'【追記未反映】\n'+str(e),job['group_id'])
+        c.execute("UPDATE line_booking_jobs SET state='needs_info',error=? WHERE id=?",(str(e),job['id']))
+        c.commit();return True
+    except Exception:
+        c.rollback();raise
+
 def process_job(app,job):
     text=job['text'];previous=None;target=None
     c=concierge.connect(app.DB)
     try:
         schema(c)
         if job['origin']=='line' and job['actor']!=owner(c):raise ValueError('LINE送信者の認証が変わりました')
+        if note_dialog(app,c,job):return
         if process_note(app,c,job):return
         follow=re.match(r'^予約補足\s+([a-f0-9]{16}-\d+)\s+(.+)',text,re.S)
         if follow:
