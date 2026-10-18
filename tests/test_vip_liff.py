@@ -26,7 +26,7 @@ class LiffTests(unittest.TestCase):
         self.identity={'sub':self.user,'aud':'1234567890','iss':'https://access.line.me','exp':time.time()+600}
         self.reply=MagicMock();self.reply.__enter__.return_value.read.side_effect=lambda *a:json.dumps(self.identity).encode()
         p=patch.object(app.urllib.request,'urlopen',return_value=self.reply);p.start();self.addCleanup(p.stop)
-        self.data={'id_token':'x'*30,'date':str(datetime.now(bot.JST).date()+timedelta(days=800)), 'time':'17:00','party':1,'name':'VIP顧客','note':'個室希望','acknowledged':True,'nonce':'a'*32}
+        self.data={'id_token':'x'*30,'date':str(datetime.now(bot.JST).date()+timedelta(days=800)), 'time':'17:00','party':2,'name':'VIP顧客','note':'個室希望','acknowledged':True,'nonce':'a'*32}
 
     def call(self,**kwargs):return app.handle(self.db,'request',{**self.data,**kwargs},'https://example.com')
 
@@ -41,9 +41,22 @@ class LiffTests(unittest.TestCase):
         self.assertEqual(app.handle(self.db,'profile',{'id_token':'x'*30},'')['times'],app.TIMES)
 
     def test_liff_boundary_times_and_party(self):
-        for i,(clock,party) in enumerate([('17:00',1),('17:30',8),('21:00',8)]):
+        for i,(clock,party) in enumerate([('17:00',2),('17:30',8),('21:00',8)]):
             self.call(time=clock,party=party,nonce=str(i)*32)
-        for changes in [{'time':'16:30'},{'time':'21:30'},{'time':'19:17'},{'party':0},{'party':9},{'party':True},{'party':'2'},{'date':'2020-01-01'},{'acknowledged':False}]:
+        for changes in [{'time':'16:30'},{'time':'21:30'},{'time':'19:17'},{'party':0},{'party':1},{'party':9},{'party':True},{'party':'2'},{'date':'2020-01-01'},{'acknowledged':False}]:
+            with self.subTest(changes=changes),self.assertRaises(ValueError):self.call(**changes)
+
+    def test_extras_reach_admin_and_plate_is_conditional(self):
+        result=self.call(cake=True,bouquet=True,plate_name='  Mako  ')
+        body=self.dbquery('SELECT * FROM concierge_requests')[0]['body']
+        self.assertIn('ケーキ：希望する',body)
+        self.assertIn('花束：希望する',body)
+        self.assertIn('プレート名：Mako',body)
+        self.assertEqual(self.call(cake=True,bouquet=True,plate_name='Mako')['request_id'],result['request_id'])
+        self.call(cake=False,plate_name='ignored',nonce='c'*32)
+        self.assertNotIn('ignored',self.dbquery('SELECT * FROM concierge_requests')[-1]['body'])
+        self.assertEqual(app.handle(self.db,'profile',{'id_token':'x'*30},'')['name'],'申請者')
+        for changes in [{'cake':True},{'cake':True,'plate_name':' '*5},{'cake':True,'plate_name':'a'*81},{'cake':'yes'},{'bouquet':1}]:
             with self.subTest(changes=changes),self.assertRaises(ValueError):self.call(**changes)
 
     def test_liff_idempotency_concurrent_and_new_nonce(self):
