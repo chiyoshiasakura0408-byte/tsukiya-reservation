@@ -17,6 +17,7 @@ import guest_service
 import line_delivery
 import finance_links
 import line_receipts
+import line_reservations
 import sys
 import os
 import re
@@ -1990,6 +1991,25 @@ class Handler(
         if calendar_auth.handle_get(self, p, parse_qs(u.query), DB, APP_BASE_URL):
             return
 
+        if p in ("/line-reservations", "/api/line/reservations/status") or p.startswith("/api/line/reservations/image/"):
+            if not self.auth():
+                return self.redirect("/login") if p == "/line-reservations" else self.send_json({"error":"unauthorized"},401)
+            if p == "/line-reservations":
+                return self.send_html((BASE / "public" / "line-reservations.html").read_text(),loader=False)
+            if p == "/api/line/reservations/status":
+                return self.send_json(line_reservations.status(sys.modules[__name__]),headers={"Cache-Control":"no-store"})
+            try:
+                content,mime=line_reservations.image_bytes(DB,p.rsplit('/',1)[-1])
+            except Exception:
+                return self.send_json({"error":"画像を取得できません。LINEで再送してください"},404)
+            self.send_response(200)
+            self.send_header("Content-Type",mime)
+            self.send_header("Cache-Control","private, no-store")
+            self.send_header("Content-Length",str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
+
         if p == "/vip-invite-qr":
             c=concierge.connect(DB)
             try:
@@ -2553,6 +2573,15 @@ class Handler(
 
         if calendar_auth.handle_post(self, p, APP_BASE_URL):
             return
+
+        if p == "/api/line/reservations/recover":
+            if not self.auth():return self.send_json({"error":"unauthorized"},401)
+            if self.headers.get("X-Tsukiya-Action") != "line-booking" or self.headers.get("Origin") != APP_BASE_URL.rstrip('/'):
+                return self.send_json({"error":"invalid origin or action"},403)
+            try:
+                line_reservations.recover(sys.modules[__name__],self.read_json().get("message_ids"))
+                return self.send_json({"queued":True})
+            except ValueError as e:return self.send_json({"error":str(e)},400)
 
         if p in ("/api/customers/tablecheck/preview", "/api/customers/tablecheck/import"):
             if not self.auth():
@@ -3751,6 +3780,7 @@ if __name__ == "__main__":
     c.close()
     threading.Thread(target=guest_service.loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=concierge.loop, args=(DB,), daemon=True).start()
+    threading.Thread(target=line_reservations.loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=calendar_sync.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=expiry_loop, daemon=True).start()
     threading.Thread(target=marketing.archive_loop, args=(sys.modules[__name__],), daemon=True).start()
