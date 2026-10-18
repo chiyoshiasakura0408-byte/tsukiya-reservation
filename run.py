@@ -2574,11 +2574,13 @@ class Handler(
         if calendar_auth.handle_post(self, p, APP_BASE_URL):
             return
 
-        if p == "/api/line/reservations/recover":
+        if p in ("/api/line/reservations/recover", "/api/line/reservations/note"):
             if not self.auth():return self.send_json({"error":"unauthorized"},401)
             if self.headers.get("X-Tsukiya-Action") != "line-booking" or self.headers.get("Origin") != APP_BASE_URL.rstrip('/'):
                 return self.send_json({"error":"invalid origin or action"},403)
             try:
+                if p.endswith('/note'):
+                    return self.send_json(line_reservations.admin_note(sys.modules[__name__],self.read_json()))
                 line_reservations.recover(sys.modules[__name__],self.read_json().get("message_ids"))
                 return self.send_json({"queued":True})
             except ValueError as e:return self.send_json({"error":str(e)},400)
