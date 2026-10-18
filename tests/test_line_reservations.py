@@ -94,4 +94,49 @@ class Tests(unittest.TestCase):
   with c:c.execute('INSERT INTO receipt_images VALUES(?,?,?,0)',('456',lb.GROUP,time.time()))
   c.close();lb.recover(run,['456']);lb.recover(run,['456'])
   c=sqlite3.connect(run.DB);self.assertEqual(c.execute('SELECT origin FROM line_booking_jobs').fetchall(),[('admin-recovery',)]);c.close()
+ def test_quote_notes_target_auth_and_deduplication(self):
+  c=concierge.connect(run.DB)
+  with c:
+   r,_,_=lb.perform(run,c,item())
+   other,_,_=lb.perform(run,c,item(guest_name='別のお客様',visit_at='2099-11-11T18:00'))
+   out=concierge.enqueue(c,OWNER,[{'type':'text','text':'予約通知'}],channel='owner',reservation_id=r['id'])
+   row=c.execute('SELECT * FROM concierge_outbox WHERE id=?',(out,)).fetchone()
+   concierge.remember_reservation_messages(c,row,json.dumps({'sentMessages':[{'id':'777'}]}))
+  c.close()
+  for i,body in enumerate(('花束用意','ケーキ用意','甲殻類アレルギー。ケーキは不要','プレートは Happy Birthday')):
+   e=self.event('note'+str(i),body);e['source']={'type':'user','userId':OWNER};e['message']['quotedMessageId']='777'
+   self.signed([e]);self.signed([e]);lb.drain(run)
+  bad=self.event('bad-note','ケーキ追加',actor='U'+'b'*32);bad['message']['quotedMessageId']='777';self.signed([bad]);lb.drain(run)
+  c=concierge.connect(run.DB)
+  after=dict(c.execute('SELECT * FROM reservations WHERE id=?',(r['id'],)).fetchone())
+  self.assertEqual(after['guest_note'].count('【朝倉追記】'),4)
+  self.assertIn('ケーキは不要',after['guest_note'])
+  for key in ('amount','status','party_size','celebration_items','seating_area','visit_at'):
+   self.assertEqual(after[key],r[key])
+  self.assertFalse(c.execute('SELECT guest_note FROM reservations WHERE id=?',(other['id'],)).fetchone()[0])
+  self.assertEqual(c.execute("SELECT COUNT(*) FROM line_booking_audit WHERE action='note'").fetchone()[0],4)
+  self.assertNotEqual(calendar_sync.event_body(after,'test'),calendar_sync.event_body(r,'test'))
+  c.close()
+ def test_unknown_quote_and_wrong_destination_do_not_mutate(self):
+  c=concierge.connect(run.DB)
+  with c:
+   r,_,_=lb.perform(run,c,item())
+   c.execute('INSERT INTO reservation_message_links VALUES(?,?,?,?)',('777','out',r['id'],OWNER))
+  c.close()
+  for i,mid in enumerate(('777','999')):
+   e=self.event('unknown'+str(i),'花束用意');e['message']['quotedMessageId']=mid
+   self.signed([e]);lb.drain(run)
+  c=concierge.connect(run.DB)
+  self.assertFalse(c.execute('SELECT guest_note FROM reservations').fetchone()[0])
+  self.assertEqual(c.execute("SELECT count(*) FROM line_booking_jobs WHERE state='needs_info'").fetchone()[0],2);c.close()
+ def test_explicit_note_and_admin_retry(self):
+  c=concierge.connect(run.DB)
+  with c:r,_,_=lb.perform(run,c,item())
+  c.close()
+  self.signed([self.event('explicit','予約追記 '+str(r['id'])+' ケーキ用意')]);lb.drain(run)
+  data={'reservation_id':r['id'],'note':'花束用意','request_id':'12345678-1234-1234-1234-123456789abc'}
+  lb.admin_note(run,data);lb.admin_note(run,data)
+  c=concierge.connect(run.DB)
+  self.assertEqual(c.execute('SELECT guest_note FROM reservations').fetchone()[0].count('花束用意'),1)
+  self.assertEqual(c.execute('SELECT COUNT(*) FROM line_booking_audit').fetchone()[0],2);c.close()
 if __name__=='__main__':unittest.main()
