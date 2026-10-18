@@ -25,6 +25,17 @@ class Tests(unittest.TestCase):
   c=sqlite3.connect(run.DB);self.assertEqual(c.execute('SELECT COUNT(*) FROM line_booking_jobs').fetchone()[0],1)
   self.assertEqual(c.execute('SELECT COUNT(*) FROM receipt_images').fetchone()[0],1);c.close()
   with patch.dict(os.environ,{'LINE_CHANNEL_SECRET':'test'}):self.assertEqual(line_bot.receive(run.DB,b'{"events":[]}','bad')[0],403)
+ def test_owner_dm_and_reply_destination(self):
+  e=self.event('dm','予約追加');e['source']={'type':'user','userId':OWNER}
+  other=self.event('not-owner','予約追加');other['source']={'type':'user','userId':'U'+'b'*32}
+  self.signed([e,other]);lb.drain(run)
+  c=concierge.connect(run.DB)
+  self.assertEqual(c.execute('SELECT COUNT(*) FROM line_booking_jobs').fetchone()[0],1)
+  self.assertEqual(c.execute('SELECT group_id FROM line_booking_jobs').fetchone()[0],OWNER)
+  c.close()
+  image=self.event('dm-image',image=True);image['source']=e['source'];self.signed([image])
+  with patch.object(lb,'extract',return_value={'is_reservation':True,'items':[item()]}),patch.object(lb,'image_bytes',return_value=(b'image','image/png')),patch.object(lb,'notify') as notify:
+   lb.drain(run);self.assertEqual(notify.call_args.args[2],OWNER)
  def test_add_duplicate_capacity_and_required(self):
   c=run.con()
   with c:
