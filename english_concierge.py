@@ -51,6 +51,12 @@ def grouped_requests(c, requests):
             if len(ids)==1:
                 candidates = c.execute("SELECT r.id,r.body FROM concierge_requests r JOIN english_enquiries e ON e.request_id=r.id WHERE r.status='未回答' AND abs(r.created-?)<=?", (row['created'],DUPLICATE_WINDOW)).fetchall()
                 row['duplicate_candidates'] = [r['id'] for r in candidates if normalized(r['body'])==normalized(row['body'])]
+        if row['id'] == 'web-d9010506bbbd9e532321ffac':
+            import english_chat
+            english_chat.setup(c)
+            session = c.execute('SELECT token_hash FROM english_chat_messages WHERE request_id=?', (row['id'],)).fetchone()
+            if session and english_chat.approved_staff_session(c, session['token_hash']):
+                row['body'] += '\n【当日のスタッフ会話：例外許可済み】'
         result.append(row)
     return result
 
