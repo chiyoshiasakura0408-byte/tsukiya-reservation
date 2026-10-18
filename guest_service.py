@@ -353,7 +353,8 @@ def sync_requests(app):
             owner=bot.setting(c,'owner')
             if owner:
                 for row in c.execute('SELECT b.id,r.body FROM booking_consultations b JOIN concierge_requests r ON r.id=b.request_id WHERE b.notified=0').fetchall():
-                    bot.enqueue(c,owner,[bot.text_message('【予約ページからのご相談】\n'+row['body'],False)],channel='owner',kind='request')
+                    match=re.match(r'予約番号 (\d+) ／',row['body'])
+                    bot.enqueue(c,owner,[bot.text_message('【予約ページからのご相談】\n'+row['body'],False)],channel='owner',kind='request',reservation_id=int(match[1]) if match else None)
                     c.execute('UPDATE booking_consultations SET notified=1 WHERE id=?',(row['id'],))
     finally:c.close()
 
