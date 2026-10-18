@@ -252,15 +252,15 @@ def respond(c, user, command, lookup, courses, base_url):
     if gated is not None:
         return gated
     cat = catalog(c)
-    command = {'予約': '空席案内', 'ご予約': '空席案内', '空席': '空席案内', '空席確認': '空席案内', 'コース・料金': 'ただいまのコース',
+    command = {'Reservations':'空席案内', 'Seasonal Calendar':'年間スケジュール', 'Contact Your Concierge':'VIP担当に相談', '予約': '空席案内', 'ご予約': '空席案内', '空席': '空席案内', '空席確認': '空席案内', 'コース・料金': 'ただいまのコース',
                '朝倉へ相談': 'VIP担当に相談', '写真': 'コース内容', '動画': 'コース内容', 'お品書き': 'コース内容',
                '蟹の時期': '年間スケジュール', '空席・ご予約': '空席案内', 'お料理・お品書き': 'コース内容'}.get(command, command)
     import vip_liff
     cfg=vip_liff.config(c)
     if cfg['liff_id'] and cfg['channel_id'] and (command in ('空席案内','1部・2部通し予約','時間指定（個室）') or command.startswith(('calendar:','visit:','予約リクエスト')) or re.match(r'^\d{4}-\d{2}-\d{2}\s+\d+名',command)):
         c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?",(user,))
-        return [{'type':'template','altText':'VIP Reservations — 予約画面を開く',
-                 'template':{'type':'buttons','text':'17:00〜21:00の希望時間をご指定いただけます。受付開始前の日程もリクエスト可能です。',
+        return [{'type':'template','altText':'Reservations',
+                 'template':{'type':'buttons','title':'Reservations','text':'17:00〜21:00の希望時間をご指定いただけます。受付開始前の日程もリクエスト可能です。',
                              'actions':[{'type':'uri','label':'Reservations','uri':'https://liff.line.me/'+cfg['liff_id']}]}}]
     if (command in ('1部・2部通し予約','時間指定（個室）') or re.search(r'通し|時間指定', command)) and not vip_access.approved(c, user):
         return [text_message('通し予約は承認済みVIPのお客様専用です。通常予約は18:00・20:30の二部制です。')]
@@ -362,7 +362,7 @@ def respond(c, user, command, lookup, courses, base_url):
                 {'type': 'template', 'altText': 'お席をお選びください', 'template': {'type': 'buttons', 'text': 'ご希望のお席・お時間をお選びください', 'actions': actions}}] + extra
     if command == 'VIP担当に相談':
         c.execute("UPDATE concierge_customers SET state='request' WHERE user_id=?", (user,))
-        return [text_message('ご希望日時・お名前・ご要望をお送りください。VIP担当へ取り次ぎます。アレルギー等の対応可否はVIP担当からの回答をお待ちください。')]
+        return [text_message('Contact Your Concierge\n\nご希望日時・お名前・ご要望をお送りください。VIP担当へ取り次ぎます。アレルギー等の対応可否はVIP担当からの回答をお待ちください。')]
     state = c.execute('SELECT state FROM concierge_customers WHERE user_id=?', (user,)).fetchone()[0]
     if state.startswith('preference:') and command not in ('メニュー', 'キャンセル'):
         command = 'ご案内内容：'+state.removeprefix('preference:')+'\nお客様のご返答：'+command

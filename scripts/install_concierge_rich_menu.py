@@ -13,9 +13,9 @@ IMAGE = ROOT / 'public/images/concierge-rich-menu-v3.jpg'
 
 def definition(liff_id=""):
     items = [
-        (0, 124, 768, 544, 'Reservations', '空席案内'),
-        (768, 124, 768, 544, 'Seasonal Calendar', '年間スケジュール'),
-        (0, 668, 1536, 356, 'Contact Concierge', 'VIP担当に相談'),
+        (0, 124, 768, 544, 'Reservations', 'Reservations'),
+        (768, 124, 768, 544, 'Seasonal Calendar', 'Seasonal Calendar'),
+        (0, 668, 1536, 356, 'Contact Concierge', 'Contact Your Concierge'),
     ]
     spec = {
         'size': {'width': 1536, 'height': 1024},

@@ -41,7 +41,7 @@ def catalog():
 
 
 def annual_courses(courses):
-    lines = ['【年間スケジュール】', annual_years()]
+    lines = ['【Seasonal Calendar】', annual_years()]
     for item in catalog()['courses']:
         lines.append(display_period(item) + '\n' + item['name'] + f"\nお一人様 ¥{item['price']:,}（税込）")
     lines.append('季節の目安です。入荷状況により、ご提供期間・内容が変わる場合がございます。')
@@ -129,9 +129,9 @@ def annual_message():
                 {'type':'text','text':item['name'],'size':'md','wrap':True,'weight':'bold','color':'#F5F0E4'},
                 {'type':'text','text':f"お一人様 ¥{item['price']:,}（税込）",'size':'sm','color':'#D8D2C6'},
                 {'type':'text','text':'コースのご紹介 ›','size':'xs','color':'#D8D2C6'}]})
-    return {'type':'flex','altText':'年間スケジュール '+annual_years()+'：コースをタップして詳細をご覧ください',
+    return {'type':'flex','altText':'Seasonal Calendar '+annual_years()+'：コースをタップして詳細をご覧ください',
         'contents':{'type':'bubble','size':'mega','body':{'type':'box','layout':'vertical','backgroundColor':'#0B0B09','spacing':'md','contents':[
-            {'type':'text','text':'年間スケジュール','size':'xl','weight':'bold','color':'#F5F0E4'},
+            {'type':'text','text':'Seasonal Calendar','size':'xl','weight':'bold','color':'#F5F0E4'},
             {'type':'text','text':annual_years(),'size':'sm','color':'#D8D2C6'},
             *rows,{'type':'text','text':'季節の目安です。入荷状況により、ご提供期間・内容が変わる場合がございます。','size':'xs','wrap':True,'color':'#D8D2C6'}]}}}
 
