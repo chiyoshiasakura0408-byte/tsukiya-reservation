@@ -32,8 +32,10 @@ def owner(c):
     except sqlite3.OperationalError:
         return ''
 
-def notify(c,text,destination=GROUP):
-    return concierge.enqueue(c,destination,[{'type':'text','text':text[:4900]}],channel='owner',kind='line-booking')
+def notify(c,text,destination=GROUP,command=None):
+    messages=[{'type':'text','text':text[:4900]}]
+    if command:messages.append({'type':'text','text':command})
+    return concierge.enqueue(c,destination,messages,channel='owner',kind='line-booking')
 
 def ingest(c,raw,signature,payload):
     """Called only after LINE signature verification, in the webhook transaction."""
@@ -210,9 +212,10 @@ def apply_item(app,ident):
             c.execute("UPDATE line_booking_items SET state='done',reservation_id=?,result=?,sync_notice=? WHERE id=?",(row['id'],text,int(done),ident))
             c.execute('INSERT INTO line_booking_audit(job_id,item_id,actor,action,reservation_id,before_json,after_json,created) VALUES(?,?,?,?,?,?,?,?)',(item['job_id'],ident,item['actor'],action,row['id'],json.dumps(before,ensure_ascii=False),json.dumps(row,ensure_ascii=False),time.time()))
         except ValueError as e:
-            text=f"【予約未処理】受付 {ident}\n{x.get('guest_name') or '氏名未確認'}\n{e}\n新規予約は未登録、既存予約は未変更です。\n「予約補足 {ident} 足りない情報」と返信してください。"
+            text=f"【予約未処理】受付 {ident}\n{x.get('guest_name') or '氏名未確認'}\n{e}\n新規予約は未登録、既存予約は未変更です。\n次のメッセージをコピーし、必要な情報を記入して返信してください。"
             c.execute("UPDATE line_booking_items SET state='needs_info',result=? WHERE id=?",(text,ident))
-        notify(c,text,item['group_id']);c.commit()
+        command=(f'予約補足 {ident}\n日時\n氏名\n人数\n店舗\n（本店／別邸）' if c.execute('SELECT state FROM line_booking_items WHERE id=?',(ident,)).fetchone()[0]=='needs_info' else None)
+        notify(c,text,item['group_id'],command=command);c.commit()
     finally:c.close()
 
 def process_job(app,job):
@@ -235,7 +238,7 @@ def process_job(app,job):
             return
         if text in ('予約','予約追加') and not job['message_id']:
             with c:
-                notify(c,'予約日時・氏名・人数・店舗（本店カウンター／別邸個室）を送信してください。写真は朝倉様から送信すると個別に読み取ります。既に送った写真は各受付の結果をご確認ください。',job['group_id'])
+                notify(c,'日時\n氏名\n人数\n店舗\n（本店／別邸）\nを送信してください。',job['group_id'],command='予約追加\n日時\n氏名\n人数\n店舗\n（本店／別邸）')
                 c.execute("UPDATE line_booking_jobs SET state='done' WHERE id=?",(job['id'],))
             return
     finally:c.close()
