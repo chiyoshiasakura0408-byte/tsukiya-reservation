@@ -173,7 +173,7 @@ class VipTests(unittest.TestCase):
         self.assertEqual(len(self.dbquery('SELECT * FROM reservations')),2)
 
     def test_through_room_blocks_entire_evening_even_with_late_start(self):
-        self.approve();token=self.proposal(area='PRIVATE');browser=self.verify(token);self.book(token,browser,'21:10')
+        self.approve();token=self.proposal(area='PRIVATE');browser=self.verify(token);self.book(token,browser,'21:00')
         c=run.con()
         for clock in ('18:00','20:30'):
             self.assertFalse(run.availability_check(c,'PRIVATE1',str(self.day)+'T'+clock,2)[0])
@@ -181,7 +181,7 @@ class VipTests(unittest.TestCase):
 
     def test_start_bounds_and_stale_capacity(self):
         self.approve();token=self.proposal();browser=self.verify(token)
-        for clock in ('17:59','23:00','25:00','18:00:00','abc'):
+        for clock in ('16:59','21:01','23:00','25:00','18:00:00','abc'):
             with self.assertRaises(ValueError):self.book(token,browser,clock)
         self.insert(area='PRIVATE1',clock='20:30');self.insert(area='PRIVATE2',clock='20:30')
         with self.assertRaises(ValueError):self.book(token,browser)

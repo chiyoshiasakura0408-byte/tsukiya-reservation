@@ -242,6 +242,10 @@ def deliver(app):
                     if not eligible:
                         with c:c.execute("UPDATE guest_jobs SET state='cancelled' WHERE id=?",(job['id'],))
                         continue
+                # VIP automatic care is disabled, including email/SMS fallback.
+                if job['kind']=='sake' or (r and r.get('source')=='CONCIERGE_LINE' and job['kind']!='staff-sake'):
+                    with c:c.execute("UPDATE guest_jobs SET state='cancelled' WHERE id=?",(job['id'],))
+                    continue
                 user=None;channel='customer'
                 if job['kind']=='staff-sake':
                     import line_delivery

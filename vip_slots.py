@@ -30,7 +30,7 @@ def choose(app,c,day,area,party):
 
 
 def valid_start(app, day, clock, course):
-    if not isinstance(clock,str) or not re.fullmatch(r'(18|19|20|21|22):[0-5][0-9]',clock):return False
+    if not isinstance(clock,str) or not re.fullmatch(r'(?:(17|18|19|20):[0-5][0-9]|21:00)',clock):return False
     return app.bookable_course_key(day)==course and datetime.fromisoformat(str(day)+'T'+clock)>datetime.now(app.concierge.JST).replace(tzinfo=None)
 
 
@@ -60,7 +60,7 @@ def staff_slot(app,c,area,visit_at,party):
     key=app.bookable_course_key(visit.date())
     clock=visit_at[11:]
     if not key or not valid_start(app,visit.date(),clock,key):
-        raise ValueError('受付期間内の18:00〜22:59の未来の時刻を指定してください。')
+        raise ValueError('受付期間内の17:00〜21:00の未来の時刻を指定してください。')
     through=clock!='20:30'
     rooms=app.ROOMS if area=='PRIVATE' else (area,)
     room=next((r for r in rooms if app.public_party_allowed(r,party) and

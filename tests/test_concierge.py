@@ -48,15 +48,12 @@ class ConciergeTests(unittest.TestCase):
         self.send('メニュー','a'); self.send('メニュー','a')
         self.assertEqual(len(self.rows('concierge_outbox')),1)
 
-    def test_automatic_change_and_stop(self):
+    def test_automatic_change_is_disabled(self):
         self.send('メニュー')
         bot.configure(self.db,{'action':'catalog','crab':'蟹A','origin':'北海道','arrival_date':'2026-11-10'})
-        self.assertTrue(any(x['kind']=='announcement' for x in self.rows('concierge_outbox')))
-        self.send('入荷案内を受け取る')
-        for _ in range(2): bot.configure(self.db,{'action':'catalog','crab':'蟹B','origin':'北海道','arrival_date':'2026-11-10'})
-        self.assertEqual(sum(x['kind']=='announcement' for x in self.rows('concierge_outbox')),2)
-        self.send('配信停止')
-        self.assertEqual([x['state'] for x in self.rows('concierge_outbox') if x['kind']=='announcement'],['cancelled','cancelled'])
+        self.send('配信再開')
+        self.assertFalse(any(x['kind']=='announcement' for x in self.rows('concierge_outbox')))
+        self.assertEqual(self.rows('concierge_arrivals')[0]['state'],'cancelled')
 
     def test_private_owner_pairing_only(self):
         with self.assertRaises(ValueError):bot.configure(self.db,{'action':'pair'})
@@ -138,10 +135,10 @@ class ConciergeTests(unittest.TestCase):
             self.assertEqual(call.call_args.args[0].get_header('X-line-retry-key'),first['id'])
         self.assertEqual(self.rows('concierge_outbox')[0]['state'],'accepted')
 
-    def test_arrival_waits_until_enabled(self):
+    def test_arrival_does_not_wait_for_reenable(self):
         bot.configure(self.db,{'action':'disable'})
         bot.configure(self.db,{'action':'catalog','crab':'新しい蟹','origin':'北海道','arrival_date':'2026-11-10'})
-        self.assertEqual(bot.status(self.db)['arrivals_pending'],1)
+        self.assertEqual(bot.status(self.db)['arrivals_pending'],0)
 
 
 if __name__=='__main__': unittest.main()

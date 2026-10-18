@@ -67,7 +67,7 @@ def booking(app, token, data=None, browser=None):
         if through:
             start=data.get('start_time','')
             if not vip_slots.valid_start(app,day,start,slot['course']):
-                raise ValueError('開始時刻は18:00〜22:59の未来の時刻をお選びください。閉店は23:00です。')
+                raise ValueError('開始時刻は17:00〜21:00の未来の時刻をお選びください。閉店は23:00です。')
             slot['time']=start
             through=start!='20:30'
         if not through and not app.public_slot_allowed(day, slot['time'], slot['course']):

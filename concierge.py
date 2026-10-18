@@ -20,7 +20,7 @@ from urllib.parse import urlencode, urlparse
 LOCK = threading.RLock()
 DELIVERY_LOCK = threading.Lock()
 JST = timezone(timedelta(hours=9))
-MENU = ['空席案内', 'ただいまのコース', 'コース内容', '年間スケジュール', 'VIP担当に相談', '配信停止', '配信再開']
+MENU = ['空席案内', '年間スケジュール', 'VIP担当に相談']
 
 
 def connect(db):
@@ -66,8 +66,6 @@ def text_message(text, menu=True):
     # Keep navigation available until the fixed menu has been installed successfully.
     if menu and not os.path.isfile(os.path.join(os.environ.get('DATA_DIR', '.'), 'concierge-rich-menu-ready')):
         message['quickReply'] = {'items': [{'type': 'action', 'action': {'type': 'message', 'label': label, 'text': label}} for label in MENU]}
-    if menu:
-        message.setdefault('quickReply',{'items':[]})['items'].append({'type':'action','action':{'type':'message','label':'退会','text':'VIP退会'}})
     return message
 
 
@@ -114,6 +112,15 @@ def configure(db, data):
         try:
             with c:
                 action = data.get('action')
+                if action == 'install-menu':
+                    import subprocess
+                    import sys
+                    from pathlib import Path
+                    script = Path(__file__).parent / 'scripts/install_concierge_rich_menu.py'
+                    result = subprocess.run([sys.executable, str(script), '--apply'], capture_output=True, text=True, timeout=180)
+                    if result.returncode:
+                        raise ValueError('LINEメニューの反映に失敗しました。接続設定とサーバーログを確認してください。')
+                    return {'installed': True, 'version': 3}
                 if action == 'pair':
                     if setting(c,'owner'):
                         raise ValueError('朝倉さんの個人LINEは連携済みです。管理画面から連携先は変更できません。')
@@ -159,6 +166,12 @@ def configure(db, data):
                     if bool(new['video']) != bool(new['preview']):
                         raise ValueError('動画にはサムネイル画像URLも必要です')
                     previous = catalog(c)
+                    course_id = data.get('course_id', '')
+                    new['course_media'] = previous.get('course_media', {})
+                    if course_id:
+                        if course_id not in {x['id'] for x in concierge_menu.catalog()['courses']}:
+                            raise ValueError('コースを確認してください')
+                        new['course_media'][course_id] = {k:new[k] for k in ('photo','menu','menu_url')}
                     changed = bool(new['crab']) and any(new[k] != previous.get(k, '') for k in ('crab', 'origin', 'arrival_date'))
                     if new['crab']:
                         if not new['origin'] or not new['arrival_date']:
@@ -240,9 +253,26 @@ def respond(c, user, command, lookup, courses, base_url):
                '蟹の時期': '年間スケジュール', '空席・ご予約': '空席案内', 'お料理・お品書き': 'コース内容'}.get(command, command)
     if (command in ('1部・2部通し予約','時間指定（個室）') or re.search(r'通し|時間指定', command)) and not vip_access.approved(c, user):
         return [text_message('通し予約は承認済みVIPのお客様専用です。通常予約は18:00・20:30の二部制です。')]
+    request_match = re.fullmatch(r'予約リクエスト(?: (\d{4}-\d{2}-\d{2}) (\d+)名)?', command)
+    if request_match:
+        context = ''
+        if request_match[1]:
+            try:
+                if date.fromisoformat(request_match[1]) < datetime.now(JST).date() or not 1 <= int(request_match[2]) <= 99:
+                    raise ValueError()
+            except ValueError:
+                return [text_message('ご希望日・人数をご確認ください。')]
+            context = request_match[1]+' '+request_match[2]+'名様'
+        c.execute('UPDATE concierge_customers SET state=? WHERE user_id=?', ('booking-request:'+context, user))
+        return [text_message((context+'\n\n' if context else '')+'ご希望日・人数・お名前・開始時刻（17:00〜21:00）をお送りください。受付開始前の日程も承ります。担当者の確認後に予約確定となります。')]
+    request_state = c.execute('SELECT state FROM concierge_customers WHERE user_id=?',(user,)).fetchone()[0]
+    if request_state.startswith('booking-request:') and command not in (*MENU, 'メニュー','キャンセル','ただいまのコース','コース内容') and not command.startswith(('calendar:','visit:','course:')):
+        return submit_request(c,user,'【予約リクエスト】\n'+request_state.removeprefix('booking-request:')+'\n'+command,base_url)
     if command in ('1部・2部通し予約','時間指定（個室）'):
-        return [text_message('時間指定（個室）をご希望の日付・人数を「2026-11-10 2名 通し」の形式でお送りください。18:00〜22:59の開始時刻を指定でき、23時までお過ごしいただけます。20:30開始は通常の2部です。通し予約は冬季ドリンクオールイン適用外で、お飲み物代は別途当日精算です。')]
-    if command in MENU or command.startswith(('calendar:', 'visit:')):
+        return [text_message('時間指定（個室）をご希望の日付・人数を「2026-11-10 2名 通し」の形式でお送りください。17:00〜21:00の開始時刻を指定でき、23時までお過ごしいただけます。20:30開始は通常の2部です。通し予約は冬季ドリンクオールイン適用外で、お飲み物代は別途当日精算です。')]
+    if command in ('ただいまのコース', 'コース内容'):
+        command = '年間スケジュール'
+    if command in MENU or command.startswith(('calendar:', 'visit:', 'course:')):
         c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
     if command == '空席案内' or command.startswith('calendar:'):
         return [concierge_menu.calendar_message(command[9:] if command.startswith('calendar:') else None)]
@@ -254,30 +284,14 @@ def respond(c, user, command, lookup, courses, base_url):
                 raise ValueError()
         except ValueError:
             return [text_message('日付を確認できませんでした。\n\n「空席案内」から、もう一度ご希望日をお選びください。')]
-        message = text_message(f'{day.year}年{day.month}月{day.day}日\n\nご来店人数をお選びください。\n\n1名様・9名様以上のご相談は「VIP担当に相談」へお願いいたします。', False)
+        course_name = concierge_menu.course_name_for_day(day)
+        message = text_message(f'{day.year}年{day.month}月{day.day}日\n\n{course_name}\n\nご来店人数をお選びください。\n\n1名様・9名様以上のご相談は「VIP担当に相談」へお願いいたします。', False)
         message['quickReply'] = {'items': [{'type':'action','action':{'type':'message','label':f'{n}名様','text':f'{day} {n}名'}} for n in range(2,9)] + [{'type':'action','action':{'type':'message','label':'VIP担当に相談','text':'VIP担当に相談'}}]}
         return [message]
-    if command == 'ただいまのコース':
-        return [text_message(concierge_menu.current_courses(courses))]
     if command == '年間スケジュール':
-        return [text_message(concierge_menu.annual_courses(courses))]
-    if command == 'コース内容':
-        details = ['【コース内容】']
-        if cat.get('crab'):
-            details.append(cat['crab'])
-        details.append(cat.get('menu') or '\n\n'.join(item['name'] + '\n' + item['description'] for item in concierge_menu.catalog()['courses'] if item['online_booking'] and item['description']))
-        if cat.get('menu_url'):
-            details.append(cat['menu_url'])
-        if not cat.get('photo'):
-            details.append('料理写真は準備中でございます。')
-        if not (cat.get('video') and cat.get('preview')):
-            details.append('料理動画は準備中でございます。')
-        messages = [text_message('\n\n'.join(details))]
-        if cat.get('photo'):
-            messages.append({'type':'image','originalContentUrl':cat['photo'],'previewImageUrl':cat['photo']})
-        if cat.get('video') and cat.get('preview'):
-            messages.append({'type':'video','originalContentUrl':cat['video'],'previewImageUrl':cat['preview']})
-        return messages
+        return [concierge_menu.annual_message()]
+    if command.startswith('course:'):
+        return concierge_menu.course_messages(command[7:], cat, text_message)
     if command in ('記念日・食事の相談','忘れ物'):
         c.execute("UPDATE concierge_customers SET state='request' WHERE user_id=?",(user,))
         return [text_message('ご来店日・お名前と、詳しい内容をお聞かせください。VIP担当へ確認のうえ、ご案内いたします。')]
@@ -300,7 +314,7 @@ def respond(c, user, command, lookup, courses, base_url):
         return [text_message('蟹の変更・入荷案内の配信を停止しました。空席確認・ご予約は引き続きご利用いただけます。')]
     if command in ('配信再開', '入荷案内を受け取る'):
         c.execute('UPDATE concierge_customers SET subscribed=1,stopped=0 WHERE user_id=?', (user,))
-        return [text_message('蟹の変更・入荷案内をお届けします。「配信停止」でいつでも停止できます。')]
+        return [text_message('現在、自動通知は停止しております。コースのご案内は年間スケジュールからご覧いただけます。')]
     match = re.fullmatch(r'(\d{4}-\d{2}-\d{2})\s+(\d+)\s*名?(?:\s+(通し|時間指定))?', command)
     if match:
         try:
@@ -316,7 +330,9 @@ def respond(c, user, command, lookup, courses, base_url):
         except Exception:
             return [text_message('現在、空席を確認できません。少し後にお試しいただくか、「VIP担当に相談」からお問い合わせください。')]
         if not slots:
-            return [text_message(f'{day}・{party}名様は、満席または受付期間外です。別の日付をお送りいただくか、VIP担当へご相談ください。')]
+            message = text_message(f'{day}・{party}名様は、現在オンラインで確定できるお席がございません。受付開始前の日程も、下のボタンから予約リクエストを承ります。担当者の確認後に予約確定となります。', False)
+            message['quickReply'] = {'items':[{'type':'action','action':{'type':'message','label':'予約リクエスト','text':f'予約リクエスト {day} {party}名'}}]}
+            return [message]
         actions = []
         for slot in slots[:4]:
             token = secrets.token_urlsafe(32)
@@ -328,7 +344,7 @@ def respond(c, user, command, lookup, courses, base_url):
             c.execute('UPDATE concierge_customers SET state=? WHERE user_id=?', ('preference:'+str(day)+' '+str(party)+'名様\n'+personal, user))
         extra = []
         if not match[3]:
-            m = text_message('①1部18:00、②2部20:30のほか、③時間指定（個室）をお選びいただけます。18:30・19:00開始など、23時までご利用いただけます。通し予約は冬季ドリンクオールイン適用外で、お飲み物代は別途当日精算です。', False)
+            m = text_message('①1部18:00、②2部20:30のほか、③時間指定（個室）をお選びいただけます。17:00〜21:00の開始時刻をご指定いただけます。、23時までご利用いただけます。通し予約は冬季ドリンクオールイン適用外で、お飲み物代は別途当日精算です。', False)
             m['quickReply'] = {'items':[{'type':'action','action':{'type':'message','label':'③時間指定（個室）','text':str(day)+' '+str(party)+'名 通し'}}]}
             extra = [m]
         return [text_message(f'{day}・{party}名様のお席をご案内できます。お料理代は合計 ¥{courses[slots[0]["course"]][1]*party:,}（税込）でございます。\nLINEコンシェルジュからは前受けなしでご予約いただけます。以下より内容をご確認のうえ、お申し込みください。' + ('\n\n'+personal if personal else '')),
@@ -341,17 +357,22 @@ def respond(c, user, command, lookup, courses, base_url):
         command = 'ご案内内容：'+state.removeprefix('preference:')+'\nお客様のご返答：'+command
         state = 'request'
     if state == 'request' and command not in ('メニュー', 'キャンセル'):
-        if len(command) > 2000:
-            return [text_message('ご相談は2000文字以内でお送りください。')]
-        request_id = uuid.uuid4().hex[:12]
-        c.execute('INSERT INTO concierge_requests(id,user_id,body,created) VALUES (?,?,?,?)', (request_id, user, command, time.time()))
-        c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
-        owner = setting(c, 'owner')
-        if owner:
-            enqueue(c, owner, [text_message('【VIPからのご相談】受付 ' + request_id + '\n' + (profile(c, user).get('name', '未連携のお客様') + '様\n') + command + '\n回答はこちら：' + base_url + '/concierge', False)], channel='owner', kind='request')
-        return [text_message('ご相談を受け付けました（受付番号 ' + request_id + '）。VIP担当の確認・回答をお待ちください。この時点では予約・特別対応は確定していません。')]
+        return submit_request(c,user,command,base_url)
     c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
     return [text_message('西天満つきやのコンシェルジュでございます。\n\nお席のご相談や、お料理のご案内を承ります。\n\nご希望の項目を、下の「ご案内メニュー」からお選びください ↓')]
+
+
+
+def submit_request(c, user, command, base_url):
+    if len(command) > 2000:
+        return [text_message('ご相談は2000文字以内でお送りください。')]
+    request_id = uuid.uuid4().hex[:12]
+    c.execute('INSERT INTO concierge_requests(id,user_id,body,created) VALUES (?,?,?,?)', (request_id, user, command, time.time()))
+    c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?", (user,))
+    owner = setting(c, 'owner')
+    if owner:
+        enqueue(c, owner, [text_message('【VIPからのご相談】受付 ' + request_id + '\n' + (profile(c, user).get('name', '未連携のお客様') + '様\n') + command + '\n回答はこちら：' + base_url + '/concierge', False)], channel='owner', kind='request')
+    return [text_message('ご相談を受け付けました（受付番号 ' + request_id + '）。VIP担当の確認・回答をお待ちください。この時点では予約・特別対応は確定していません。')]
 
 
 def receive(db, raw, signature, lookup, courses, base_url):
@@ -463,7 +484,7 @@ def deliver(db):
                         payload = concierge_ai.owner_messages(payload)
                         # Persist translation before sending, keeping the retry body stable.
                         with c:c.execute('UPDATE concierge_outbox SET payload=? WHERE id=?', (json.dumps(payload,ensure_ascii=False),row['id']))
-                    body = json.dumps({'to': row['user_id'], 'messages': payload}).encode()
+                    body = json.dumps({'to': row['user_id'], 'messages': payload, 'notificationDisabled': row['channel'] == 'customer'}).encode()
                     req = urllib.request.Request('https://api.line.me/v2/bot/message/push', data=body, headers={'Authorization': 'Bearer '+token, 'Content-Type': 'application/json', 'X-Line-Retry-Key': row['id']})
                     try:
                         with urllib.request.urlopen(req, timeout=10) as response:
@@ -567,13 +588,6 @@ def announcement(c, user, cat):
 
 
 def queue_arrivals(c):
-    if setting(c, 'enabled') != '1':
-        return
-    for event in c.execute("SELECT * FROM concierge_arrivals WHERE state='pending'").fetchall():
-        cat = json.loads(event['body'])
-        for row in c.execute("SELECT user_id FROM concierge_customers WHERE active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'").fetchall():
-            if not vip_access.approved(c, row[0]):continue
-            enqueue(c, row[0], [text_message(announcement(c,row[0],cat))], kind='announcement')
-        c.execute("UPDATE concierge_arrivals SET state='queued' WHERE id=?", (event['id'],))
-
-
+    # No unsolicited VIP broadcasts. Retire queued events so they cannot replay later.
+    c.execute("UPDATE concierge_arrivals SET state='cancelled' WHERE state='pending'")
+    c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE channel='customer' AND kind IN ('announcement','guest-service') AND state='pending'")

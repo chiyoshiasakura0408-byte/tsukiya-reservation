@@ -8,23 +8,20 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = ROOT / 'public/images/concierge-rich-menu-vip.jpg'
+IMAGE = ROOT / 'public/images/concierge-rich-menu-v3.png'
 
 
 def definition():
     items = [
-        (0, 124, 768, 306, '空席・ご予約', '空席案内'),
-        (768, 124, 768, 306, 'ただいまのコース', 'ただいまのコース'),
-        (0, 430, 768, 303, 'コース内容', 'コース内容'),
-        (768, 430, 768, 303, '年間スケジュール', '年間スケジュール'),
-        (0, 733, 1073, 291, 'VIP担当に相談', 'VIP担当に相談'),
-        (1073, 733, 463, 291, '退会', 'VIP退会'),
+        (0, 124, 768, 544, 'Reservations', '空席案内'),
+        (768, 124, 768, 544, 'Seasonal Calendar', '年間スケジュール'),
+        (0, 668, 1536, 356, 'Contact Concierge', 'VIP担当に相談'),
     ]
     return {
         'size': {'width': 1536, 'height': 1024},
         'selected': True,
         'name': 'tsukiya-concierge-' + hashlib.sha256(IMAGE.read_bytes()).hexdigest()[:12],
-        'chatBarText': 'ご案内メニュー',
+        'chatBarText': 'Menu',
         'areas': [{'bounds': dict(zip(('x', 'y', 'width', 'height'), (x, y, w, h))),
                    'action': {'type': 'message', 'label': label, 'text': command}}
                   for x, y, w, h, label, command in items],
@@ -42,7 +39,7 @@ def main():
         headers = {'Authorization': 'Bearer ' + token}
         if image:
             body = data
-            headers['Content-Type'] = 'image/jpeg'
+            headers['Content-Type'] = 'image/png'
         elif data is not None:
             body = json.dumps(data, ensure_ascii=False).encode()
             headers['Content-Type'] = 'application/json'
@@ -91,7 +88,7 @@ def main():
     downloaded = api('richmenu/' + rich_id + '/content', image=True)
     assert hashlib.sha256(downloaded).digest() == hashlib.sha256(IMAGE.read_bytes()).digest()
     (backup.parent / 'concierge-rich-menu-ready').write_text(rich_id, encoding='utf-8')
-    print('INSTALLED_AND_VERIFIED', rich_id, '6 buttons; default open', flush=True)
+    print('INSTALLED_AND_VERIFIED', rich_id, '3 buttons; default open', flush=True)
 
 
 if __name__ == '__main__':
