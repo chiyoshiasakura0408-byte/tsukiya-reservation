@@ -47,6 +47,16 @@ class EnglishConciergeTests(unittest.TestCase):
         c.close()
         self.assertEqual(self.call(dict(action='status', token=secrets.token_hex(32)))[0], 404)
 
+    def test_follow_up_preserves_reply_and_deduplicates_retry(self):
+        _, result = self.call()
+        for text in ['First reply.', 'Annex address.', 'Annex address.']:
+            concierge.configure(self.db, dict(action='answer', id=result['id'], body=text))
+        response = self.call(dict(action='status', token=self.data['token']))[1]
+        self.assertEqual(response['answer'], 'First reply.\n\nAnnex address.')
+        with patch('english_concierge.time.time', return_value=result['expires']+1):
+            with self.assertRaises(ValueError):
+                concierge.configure(self.db, dict(action='answer', id=result['id'], body='Expired follow-up.'))
+
     def test_different_key_same_content_is_not_registered_or_disclosed(self):
         self.call()
         code, response = self.call({**self.data, 'token':secrets.token_hex(32)})
