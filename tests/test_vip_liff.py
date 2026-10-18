@@ -63,7 +63,7 @@ class LiffTests(unittest.TestCase):
 
     def test_planned_stay_is_saved_and_validated(self):
         self.call(duration_minutes=120)
-        self.assertIn('予定滞在時間：120分',self.dbquery('SELECT * FROM concierge_requests')[0]['body'])
+        self.assertIn('ご利用時間：120分',self.dbquery('SELECT * FROM concierge_requests')[0]['body'])
         payload=json.loads(self.dbquery('SELECT * FROM vip_liff_requests')[0]['payload'])
         self.assertEqual(payload['duration_minutes'],120)
         for duration in [True,0,-30,31,1500,'120']:
