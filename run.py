@@ -1,4 +1,6 @@
 from email.utils import formataddr, parseaddr
+import calendar_sync
+import calendar_auth
 import business_cards
 import tablecheck_import
 import refunds
@@ -1985,6 +1987,9 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        if calendar_auth.handle_get(self, p, parse_qs(u.query), DB, APP_BASE_URL):
+            return
+
         if p == "/vip-invite-qr":
             c=concierge.connect(DB)
             try:
@@ -2545,6 +2550,9 @@ class Handler(
         if lengths and int(lengths[0]) > limit:
             self.close_connection = True
             return self.send_json({"error": "request too large"}, 413)
+
+        if calendar_auth.handle_post(self, p, APP_BASE_URL):
+            return
 
         if p in ("/api/customers/tablecheck/preview", "/api/customers/tablecheck/import"):
             if not self.auth():
@@ -3743,6 +3751,7 @@ if __name__ == "__main__":
     c.close()
     threading.Thread(target=guest_service.loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=concierge.loop, args=(DB,), daemon=True).start()
+    threading.Thread(target=calendar_sync.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=expiry_loop, daemon=True).start()
     threading.Thread(target=marketing.archive_loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=line_receipts.loop, args=(DB,), daemon=True).start()
