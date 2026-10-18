@@ -12,7 +12,7 @@ VIP通し予約は当日23時まで、それ以外は保存されたduration_min
    承認済みリダイレクトURIに `https://tsukiya-reservation.onrender.com/calendar-sync/callback` を登録する。
    `/calendar-sync` を管理者ログイン済みのSafariで開き、Googleに接続する。
    アカウントと非公開カレンダーを検証した後、オフライン用トークンをDBと同じ永続ディスクに0600で保存する。
-   必要なスコープはcalendar.events、calendar.calendars.readonly、calendar.acl.readonly、openid、userinfo.email。
+   必要なスコープはcalendar.events、calendar.calendars.readonly、calendar.acls.readonly、openid、userinfo.email。
    OAuthアプリがTestingのままだとrefresh tokenの有効期限に制約があるため、
    長期運用に適した公開状態・同意画面設定を確認する。
 3. RenderのSecret環境変数に以下を設定する。トークンをGitHub・ログ・チャットに貼らない。

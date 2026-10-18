@@ -17,7 +17,7 @@ EXPECTED_EMAIL = 'chiyoshiasakura0408@gmail.com'
 CALLBACK = '/calendar-sync/callback'
 SCOPES = ('openid', 'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/calendar.events',
           'https://www.googleapis.com/auth/calendar.calendars.readonly',
-          'https://www.googleapis.com/auth/calendar.acl.readonly')
+          'https://www.googleapis.com/auth/calendar.acls.readonly')
 PENDING = {}
 LOCK = threading.Lock()
 
