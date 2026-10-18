@@ -1,5 +1,6 @@
 from email.utils import formataddr, parseaddr
 import business_cards
+import calendar_sync
 import tablecheck_import
 import refunds
 import marketing
@@ -3674,6 +3675,7 @@ if __name__ == "__main__":
     threading.Thread(target=guest_service.loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=concierge.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=expiry_loop, daemon=True).start()
+    threading.Thread(target=calendar_sync.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=marketing.archive_loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=line_receipts.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=line_delivery.loop, args=(DB, PORT, ADMIN_TOKEN, APP_BASE_URL), daemon=True).start()
@@ -3689,6 +3691,7 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
+
 
 
 
