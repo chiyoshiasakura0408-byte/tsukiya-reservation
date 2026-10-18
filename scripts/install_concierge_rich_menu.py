@@ -11,13 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 IMAGE = ROOT / 'public/images/concierge-rich-menu-v3.png'
 
 
-def definition():
+def definition(liff_id=""):
     items = [
         (0, 124, 768, 544, 'Reservations', '空席案内'),
         (768, 124, 768, 544, 'Seasonal Calendar', '年間スケジュール'),
         (0, 668, 1536, 356, 'Contact Concierge', 'VIP担当に相談'),
     ]
-    return {
+    spec = {
         'size': {'width': 1536, 'height': 1024},
         'selected': True,
         'name': 'tsukiya-concierge-' + hashlib.sha256(IMAGE.read_bytes()).hexdigest()[:12],
@@ -27,10 +27,17 @@ def definition():
                   for x, y, w, h, label, command in items],
     }
 
+    if liff_id:
+        import re
+        if not re.fullmatch(r'\d{6,20}-[A-Za-z0-9]{5,30}', liff_id):raise ValueError('Invalid LIFF ID')
+        spec['areas'][0]['action']={'type':'uri','label':'Reservations','uri':'https://liff.line.me/'+liff_id}
+    return spec
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--liff-id',default='')
     args = parser.parse_args()
     token = os.environ['CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN']
 
@@ -55,7 +62,7 @@ def main():
     bot = api('info')
     if bot.get('basicId') != '@387reour':
         raise SystemExit('Wrong LINE account; no changes made.')
-    spec = definition()
+    spec = definition(args.liff_id)
     api('richmenu/validate', 'POST', spec)
     try:
         previous = api('user/all/richmenu').get('richMenuId')

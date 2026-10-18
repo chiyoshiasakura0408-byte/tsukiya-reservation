@@ -2087,6 +2087,15 @@ class Handler(
             return self.send_json(concierge.concierge_menu.catalog(), headers={"Access-Control-Allow-Origin": "*"})
         if p == "/concierge/en":
             return self.send_html((BASE / "public" / "concierge-en.html").read_text(encoding="utf-8"), loader=False)
+        if p == "/concierge/vip":
+            return self.send_html((BASE / "public" / "vip-liff.html").read_text(), loader=False)
+        if p == "/api/vip-liff/config":
+            import vip_liff
+            c=concierge.connect(DB)
+            try:
+                cfg=vip_liff.config(c)
+                return self.send_json({'liff_id':cfg['liff_id'], 'configured':bool(cfg['liff_id'] and cfg['channel_id'])},headers={"Cache-Control":"no-store"})
+            finally:c.close()
         if p == "/concierge/book":
             return self.send_html((BASE / "public" / "concierge-book.html").read_text(), loader=False)
         if p == "/concierge":
@@ -2698,6 +2707,20 @@ class Handler(
                 return self.send_json(result)
             except (ValueError,TypeError,AttributeError) as exc:return self.send_json({"error":str(exc)},400)
             finally:c.close()
+
+        if p in ("/api/vip-liff/profile", "/api/vip-liff/course", "/api/vip-liff/request"):
+            headers={"Cache-Control":"no-store","Referrer-Policy":"no-referrer"}
+            try:
+                if self.headers.get("Transfer-Encoding") or not 0 < int(self.headers.get("Content-Length","0")) <= 16384:
+                    return self.send_json({"error":"invalid request"},400,headers=headers)
+                if self.headers.get("X-Tsukiya-Action") != "vip-liff":
+                    return self.send_json({"error":"invalid request"},403,headers=headers)
+                self.connection.settimeout(10)
+                import vip_liff
+                return self.send_json(vip_liff.handle(DB,p.rsplit("/",1)[-1],self.read_json(),APP_BASE_URL),headers=headers)
+            except PermissionError as exc:return self.send_json({"error":str(exc)},403,headers=headers)
+            except (ValueError,TypeError,AttributeError) as exc:return self.send_json({"error":str(exc)},400,headers=headers)
+            except Exception:return self.send_json({"error":"一時的に接続できません。同じ画面から再度送信してください。"},503,headers=headers)
 
         if p in ("/api/concierge/booking-info", "/api/concierge/book", "/api/concierge/verify"):
             try:

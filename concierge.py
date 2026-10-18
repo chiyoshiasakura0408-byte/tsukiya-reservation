@@ -112,12 +112,16 @@ def configure(db, data):
         try:
             with c:
                 action = data.get('action')
+                if action == 'liff':
+                    import vip_liff
+                    return vip_liff.configure(c,data)
                 if action == 'install-menu':
                     import subprocess
                     import sys
                     from pathlib import Path
                     script = Path(__file__).parent / 'scripts/install_concierge_rich_menu.py'
-                    result = subprocess.run([sys.executable, str(script), '--apply'], capture_output=True, text=True, timeout=180)
+                    import vip_liff
+                    result = subprocess.run([sys.executable, str(script), '--apply', '--liff-id', vip_liff.config(c)['liff_id']], capture_output=True, text=True, timeout=180)
                     if result.returncode:
                         raise ValueError('LINEメニューの反映に失敗しました。接続設定とサーバーログを確認してください。')
                     return {'installed': True, 'version': 3}
@@ -251,6 +255,13 @@ def respond(c, user, command, lookup, courses, base_url):
     command = {'予約': '空席案内', 'ご予約': '空席案内', '空席': '空席案内', '空席確認': '空席案内', 'コース・料金': 'ただいまのコース',
                '朝倉へ相談': 'VIP担当に相談', '写真': 'コース内容', '動画': 'コース内容', 'お品書き': 'コース内容',
                '蟹の時期': '年間スケジュール', '空席・ご予約': '空席案内', 'お料理・お品書き': 'コース内容'}.get(command, command)
+    import vip_liff
+    cfg=vip_liff.config(c)
+    if cfg['liff_id'] and cfg['channel_id'] and (command in ('空席案内','1部・2部通し予約','時間指定（個室）') or command.startswith(('calendar:','visit:','予約リクエスト')) or re.match(r'^\d{4}-\d{2}-\d{2}\s+\d+名',command)):
+        c.execute("UPDATE concierge_customers SET state='{}' WHERE user_id=?",(user,))
+        return [{'type':'template','altText':'VIP Reservations — 予約画面を開く',
+                 'template':{'type':'buttons','text':'17:00〜21:00の希望時間をご指定いただけます。受付開始前の日程もリクエスト可能です。',
+                             'actions':[{'type':'uri','label':'Reservations','uri':'https://liff.line.me/'+cfg['liff_id']}]}}]
     if (command in ('1部・2部通し予約','時間指定（個室）') or re.search(r'通し|時間指定', command)) and not vip_access.approved(c, user):
         return [text_message('通し予約は承認済みVIPのお客様専用です。通常予約は18:00・20:30の二部制です。')]
     request_match = re.fullmatch(r'予約リクエスト(?: (\d{4}-\d{2}-\d{2}) (\d+)名)?', command)
