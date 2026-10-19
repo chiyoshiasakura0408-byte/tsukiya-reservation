@@ -82,14 +82,14 @@ class LiffTests(unittest.TestCase):
         import concierge_ai
         c=bot.connect(self.db)
         start=bot.respond(c,self.user,'Contact Your Concierge',None,{},'https://example.com')
-        self.assertEqual(start[0]['text'],'ご相談内容をお送り下さい。')
+        self.assertEqual(start[0]['text'],'Please send us your inquiry.')
         with patch.object(concierge_ai,'vip_reply',return_value={'answer':'活蟹を使用しています。','needs_owner':False}):
             result=bot.respond(c,self.user,'つきやのこだわりは？',None,{},'https://example.com')
         self.assertEqual(result[0]['text'],'活蟹を使用しています。')
         self.assertEqual(c.execute('SELECT count(*) FROM concierge_requests').fetchone()[0],0)
         with patch.object(concierge_ai,'vip_reply',side_effect=RuntimeError('offline')):
             result=bot.respond(c,self.user,'詳しく相談したい',None,{},'https://example.com')
-        self.assertEqual(result[0]['text'].replace('\n',''),'ご相談内容をVIP担当スタッフに取り次ぎます。回答までしばらくお待ちください。')
+        self.assertEqual(result[0]['text'].replace('\n',''),'We will forward your inquiry to our VIP concierge team. Please allow us some time to respond.')
         self.assertEqual(c.execute('SELECT count(*) FROM concierge_requests').fetchone()[0],1)
         self.assertEqual(c.execute("SELECT count(*) FROM concierge_outbox WHERE channel='owner' AND kind='request'").fetchone()[0],1)
         c.close()
