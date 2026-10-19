@@ -71,6 +71,12 @@ class DeliveryTests(unittest.TestCase):
 ＊事前決済なし
 ＊記念日利用(リクエストなし)"""
         self.assertEqual(d.message(self.db,'2026-10-19')['text'], expected)
+        with patch.object(d,'capture',return_value={'type':'image'}) as capture, patch.object(d,'api',return_value={}) as api:
+            self.assertTrue(d.resend_briefing(self.db,'2026-10-19',charts=(1,'admin','https://example.com'))['resent'])
+            self.assertTrue(d.resend_briefing(self.db,'2026-10-19',charts=(1,'admin','https://example.com'))['already_sent'])
+            self.assertEqual(capture.call_count,2)
+            self.assertEqual(api.call_count,1)
+            self.assertEqual(len(api.call_args.args[1]['messages']),2)
 
     def test_correction_sent_once(self):
         with patch.object(d,'api',return_value={}) as api, patch.object(d,'message',return_value={'type':'text','text':'corrected'}):

@@ -158,7 +158,7 @@ def capture(db, day, port, admin, base_url, session=None):
     cards = []
     y = 205
     for row in rows:
-        details = '\n'.join(str(row[k]).strip() for k in ('celebration_items','plate_message','guest_note') if row[k] and str(row[k]).strip())
+        details = '\n'.join('＊' + note for note in briefing_requests(row)[1])
         left_width = 330 if details else 600
         left = [(wrap(row['visit_at'][11:16] + ('〜23:00 通し' if row.get('vip_through') else '') + '　' + labels.get(row['seating_area'], row['seating_area'] or '席未設定'),23,left_width),23),
                 (wrap(str(row['guest_name']) + ' 様　' + str(row['party_size']) + '名',29,left_width),29),
@@ -266,7 +266,7 @@ def message(db, day):
     finally:
         c.close()
 
-def resend_briefing(db, day=None):
+def resend_briefing(db, day=None, charts=None):
     """Explicit correction: one text-only resend per day and exact payload."""
     day = day or datetime.now(JST).date().isoformat()
     with LOCK:
@@ -276,7 +276,15 @@ def resend_briefing(db, day=None):
                 raise RuntimeError('通知先グループの接続が確認できません')
             payload = {'to': TARGET, 'messages': [message(db, day)]}
             encoded = json.dumps(payload, ensure_ascii=False)
-            key = day + ':correction:' + hashlib.sha256(encoded.encode()).hexdigest()[:24]
+            if charts:
+                snapshot = [dict(r) for r in c.execute("SELECT * FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,id", (day,))]
+                encoded = json.dumps(snapshot, sort_keys=True, ensure_ascii=False)
+            key = day + (':charts:' if charts else ':correction:') + hashlib.sha256(encoded.encode()).hexdigest()[:24]
+            existing = c.execute('SELECT * FROM line_deliveries WHERE day=?', (key,)).fetchone()
+            if charts and not existing:
+                port, admin, base_url = charts
+                payload = {'to': TARGET, 'messages': [capture(db, day, port, admin, base_url, session) for session in ('18:00','20:30')]}
+                encoded = json.dumps(payload, ensure_ascii=False)
             c.execute("INSERT OR IGNORE INTO line_deliveries VALUES(?,?,?,'READY',NULL,?)", (key, str(uuid.uuid4()), encoded, time.time()))
             c.commit()
             row = c.execute('SELECT * FROM line_deliveries WHERE day=?', (key,)).fetchone()
