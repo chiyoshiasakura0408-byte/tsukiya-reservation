@@ -484,6 +484,10 @@ def deliver(db):
                 current = c.execute('SELECT state FROM concierge_outbox WHERE id=?', (row['id'],)).fetchone()
                 if not current or current['state'] != 'pending':
                     continue
+                # Accounting bank requests now belong only in the morning digest.
+                if row['kind'] == 'bank-transfer' and row['user_id'].startswith('C'):
+                    with c:c.execute("UPDATE concierge_outbox SET state='cancelled',error='moved to morning digest' WHERE id=?",(row['id'],))
+                    continue
                 if row['kind'] == 'guest-service':
                     import guest_service
                     if not guest_service.ready_delivery(c,row['id']):continue

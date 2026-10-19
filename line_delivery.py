@@ -12,6 +12,7 @@ import urllib.error
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import line_bot
+import bank_transfer
 
 JST = timezone(timedelta(hours=9))
 LOCK = threading.Lock()
@@ -334,7 +335,7 @@ def deliver(db, port, admin, base_url, day=None):
                     payload = json.loads(row['payload'])
                 else:
                     api('info')  # Validate token before generating the screenshot.
-                    payload = {'to':TARGET,'messages':[message(db,day)] + [capture(db,day,port,admin,base_url,session) for session in ('18:00','20:30')] + [printable_message(db,day,base_url)]}
+                    payload = {'to':TARGET,'messages':[message(db,day)] + [capture(db,day,port,admin,base_url,session) for session in ('18:00','20:30')] + [printable_message(db,day,base_url)] + bank_transfer.accounting_digest(db,base_url)}
                     c.execute("UPDATE line_deliveries SET payload=?,state='READY',updated=? WHERE day=?", (json.dumps(payload),time.time(),day))
                     c.commit()
                 api('message/push',payload,row['retry_key'])

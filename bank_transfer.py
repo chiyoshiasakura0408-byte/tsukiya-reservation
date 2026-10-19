@@ -46,7 +46,7 @@ def enqueue(c, r, app, stage='requested'):
                '予約は取消済みです。入金がある場合は返金等を個別に確認してください。' if stage=='cancelled' else
                '銀行明細の名義・金額を照合し、決済管理で全額着金を記録してください。銀行口座の自動監視・自動確定は行いません。')
             + '\n' + app.APP_BASE_URL.rstrip('/') + '/')
-    for destination in (line_receipts.GROUP, owner):
+    for destination in (owner,):
         if c.execute('INSERT OR IGNORE INTO bank_notices(reservation_id,stage,destination) VALUES(?,?,?)',(r['id'],stage,destination)).rowcount:
             key=concierge.enqueue(c,destination,[{'type':'text','text':text}],channel='owner',kind='bank-transfer',reservation_id=r['id'])
             c.execute('UPDATE bank_notices SET outbox_id=? WHERE reservation_id=? AND stage=? AND destination=?',(key,r['id'],stage,destination))
@@ -92,3 +92,30 @@ def overdue(app):
     try: pending=[dict(r) for r in c.execute("SELECT * FROM reservations WHERE payment_method='BANK' AND status='PENDING' AND bank_email_status IS NULL LIMIT 20")]
     finally:c.close()
     for row in pending: receipt(app,row)
+
+
+def accounting_digest(db, base_url):
+    """One bounded text in the existing 09:00 briefing; current unpaid requests."""
+    import sqlite3
+    c=sqlite3.connect(db);c.row_factory=sqlite3.Row
+    try:
+        if 'payment_method' not in {r[1] for r in c.execute('PRAGMA table_info(reservations)')}:
+            return []
+        rows=c.execute("SELECT * FROM reservations WHERE payment_method='BANK' AND status='PENDING' ORDER BY bank_due_at,id").fetchall()
+        if not rows:return []
+        now=datetime.now(timezone.utc)
+        text=f"【銀行振込・朝の入金確認依頼】\n未確認 {len(rows)}件／合計 {sum(r['amount'] for r in rows):,}円\n銀行明細の名義・全額着金を照合してください。\n"
+        shown=0
+        for r in rows:
+            due=datetime.fromisoformat(r['bank_due_at'])
+            item=(f"\n予約 #{r['id']} {r['guest_name']} 様\n"
+                  f"来店：{r['visit_at']}／{r['party_size']}名\n金額：{r['amount']:,}円\n"
+                  f"名義：{r['bank_payer']}／予定日：{r['bank_planned_date'] or '未指定'}\n"
+                  f"期限：{due.astimezone(JST).strftime('%m/%d %H:%M')}（日本時間）"
+                  + ('【期限経過・要確認】' if due<=now else '') + '\n')
+            if len((text+item).encode('utf-16-le'))//2>4400:break
+            text+=item;shown+=1
+        if shown<len(rows):text+=f"\nほか {len(rows)-shown}件。全件は決済管理で確認してください。\n"
+        text+='\n確認後は決済管理から予約確定してください。\n'+base_url.rstrip('/')+'/'
+        return [{'type':'text','text':text}]
+    finally:c.close()
