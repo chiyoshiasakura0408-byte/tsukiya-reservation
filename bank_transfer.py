@@ -17,6 +17,7 @@ def parse(x):
     method = x.get('payment_method', 'CARD')
     if method not in ('CARD', 'BANK'): raise ValueError('invalid payment method')
     if method == 'CARD': return method, '', ''
+    if x.get('booking_language') == 'en': raise ValueError('English reservations accept credit cards only')
     payer = x.get('bank_payer', '')
     planned = x.get('bank_planned_date', '')
     if not isinstance(payer, str) or not 1 <= len(payer.strip()) <= 80 or any(ord(ch)<32 for ch in payer):
