@@ -375,7 +375,7 @@ def respond(c, user, command, lookup, courses, base_url):
                 {'type': 'template', 'altText': 'お席をお選びください', 'template': {'type': 'buttons', 'text': 'ご希望のお席・お時間をお選びください', 'actions': actions}}] + extra
     if command == 'VIP担当に相談':
         c.execute("UPDATE concierge_customers SET state='vip-chat' WHERE user_id=?", (user,))
-        return [text_message('ご相談内容をお送り下さい。')]
+        return [text_message('Please send us your inquiry.')]
     state = c.execute('SELECT state FROM concierge_customers WHERE user_id=?', (user,)).fetchone()[0]
     if state == 'vip-chat' and command not in ('メニュー', 'キャンセル'):
         if len(command)>2000:return [text_message('ご相談は2000文字以内でお送りください。')]
@@ -403,7 +403,7 @@ def submit_request(c, user, command, base_url):
     owner = setting(c, 'owner')
     if owner:
         enqueue(c, owner, [text_message('【VIPからのご相談】受付 ' + request_id + '\n' + (profile(c, user).get('name', '未連携のお客様') + '様\n') + command + '\n回答はこちら：' + base_url + '/concierge', False)], channel='owner', kind='request')
-    return [text_message('ご相談内容をVIP担当スタッフに取り次ぎます。回答までしばらくお待ちください。')]
+    return [text_message('We will forward your inquiry to our VIP concierge team. Please allow us some time to respond.')]
 
 
 def receive(db, raw, signature, lookup, courses, base_url):
