@@ -119,28 +119,48 @@ def annual_years():
     return f'{years[0]}年〜{years[-1]}年' if len(years) > 1 else f'{years[0] if years else datetime.now(JST).year}年'
 
 
-def annual_message():
+EN_DESCRIPTIONS = {
+'matsuba-fukahire': 'As winter deepens and fishing moves into deeper waters, we select the finest Matsuba crabs available. Each guest enjoys one whole live Matsuba crab weighing approximately 1–1.2 kg, plus one-quarter of a boiled Matsuba crab. Discover the fresh sweetness of live crab preparations alongside the concentrated flavour of boiled crab.\n\nOur menu changes in the new year, introducing our winter speciality: shark fin in a rich sauce. Selected beverages are included; certain drinks cost extra. Dinner is served in two sittings.',
+'hairy': 'As the drift ice recedes from the Sea of Okhotsk in early spring, the awaited hairy crab season begins. We select exceptionally large crabs weighing at least 1.2 kg from the newly ice-free waters.\n\nEnjoy delicately sweet meat and rich yet refined crab tomalley. These extra-large crabs offer generous portions and deep flavour, available only in limited quantities during a short spring season.',
+'zuwaigani': 'Crab is not only a winter delicacy. In summer, we select premium live snow crab from the waters off western Sakhalin, Russia. Each guest receives one whole live crab weighing at least 1 kg, complemented by boiled crab to showcase different preparations.\n\nSummer specialities include fragrant tomalley grilled in the shell and shabu-shabu with rich crab tomalley. Savour the delicate sweetness and distinctive flavours of our summer crab menu.',
+ 'tarabagani': 'Large king crabs are increasingly scarce as global demand grows. We select rare live king crabs weighing 3–3.9 kg, serving one crab for every two guests.\n\nEnjoy thick, springy meat and refined sweetness through a variety of preparations. We take care of the shell removal, leaving you free to savour every bite at its best.',
+'matsuba-seko': 'We select the finest live Matsuba crabs according to their condition, rather than a particular port or region. Each guest receives one whole live Matsuba crab weighing approximately 1–1.2 kg, plus one rare female Seko crab.\n\nThe Seko fishing season runs from November 6 to December 31. Enjoy the rich flavour of its internal roe and the delicate texture of its external eggs, alongside the elegant sweetness of male Matsuba crab.\n\nSelected beverages are included; certain drinks cost extra. Dinner is served in two sittings.'}
+
+def english_period(item):
+    if item['id'] == 'tarabagani': return 'October – November'
+    return item.get('period_en', '')
+
+def annual_message(language="ja"):
     rows = []
+    en = language == 'en'
     for item in catalog()['courses']:
         rows.append({'type':'box','layout':'vertical','spacing':'sm','paddingAll':'md',
-            'action':{'type':'postback','label':item['name'][:20],'data':'course:'+item['id'],'displayText':item['name']+'（'+display_period(item)+'）'},
+            'action':{'type':'postback','label':item['name'][:20],'data':'course:'+item['id'],'displayText':(item['name_en'] if en else item['name'])+' ('+(english_period(item) if en else display_period(item))+')'},
             'contents':[
-                {'type':'text','text':display_period(item),'size':'sm','color':'#D8D2C6'},
-                {'type':'text','text':item['name'],'size':'md','wrap':True,'weight':'bold','color':'#F5F0E4'},
-                {'type':'text','text':f"お一人様 ¥{item['price']:,}（税込）",'size':'sm','color':'#D8D2C6'},
-                {'type':'text','text':'コースのご紹介へ ›','size':'md','color':'#D8D2C6'}]})
+                {'type':'text','text':english_period(item) if en else display_period(item),'size':'sm','color':'#D8D2C6'},
+                {'type':'text','text':item['name_en'] if en else item['name'],'size':'md','wrap':True,'weight':'bold','color':'#F5F0E4'},
+                {'type':'text','text':f"JPY {item['price']:,} per guest (tax included)" if en else f"お一人様 ¥{item['price']:,}（税込）",'size':'sm','color':'#D8D2C6'},
+                {'type':'text','text':'Explore this course ›' if en else 'コースのご紹介へ ›','size':'md','color':'#D8D2C6'}]})
     return {'type':'flex','altText':'Seasonal Calendar '+annual_years()+'：コースをタップして詳細をご覧ください',
         'contents':{'type':'bubble','size':'mega','body':{'type':'box','layout':'vertical','backgroundColor':'#0B0B09','spacing':'md','contents':[
             {'type':'text','text':'Seasonal Calendar','size':'xl','weight':'bold','color':'#F5F0E4'},
-            {'type':'text','text':annual_years(),'size':'sm','color':'#D8D2C6'},
-            *rows,{'type':'text','text':'季節の目安です。入荷状況により、ご提供期間・内容が変わる場合がございます。','size':'xs','wrap':True,'color':'#D8D2C6'}]}}}
+            {'type':'text','text':annual_years().replace('年','').replace('〜','–') if en else annual_years(),'size':'sm','color':'#D8D2C6'},
+            *rows,{'type':'text','text':'Seasonal availability is approximate. Dates and menus may change depending on supply.' if en else '季節の目安です。入荷状況により、ご提供期間・内容が変わる場合がございます。','size':'xs','wrap':True,'color':'#D8D2C6'}]}}}
 
 
-def course_messages(course_id, registered, text_message):
+def course_messages(course_id, registered, text_message, language="ja"):
     item = next((x for x in catalog()['courses'] if x['id'] == course_id), None)
     if not item:
         return [text_message('コースを確認できませんでした。年間スケジュールからお選びください。')]
     media = registered.get('course_media', {}).get(course_id, {})
+    if language == 'en':
+        parts = [item['name_en'], english_period(item), f"JPY {item['price']:,} per guest (tax included)", media.get('menu_en') or EN_DESCRIPTIONS.get(course_id, item.get('description_en',''))]
+        if course_id.startswith('matsuba-'):parts.append('Beverages are charged separately for extended bookings spanning both sittings.')
+        if not item['online_booking']:parts.append('Standard reservations are not yet open. VIP guests may submit a reservation request through Reservations.')
+        messages = [text_message('\n\n'.join(filter(None,parts)))]
+        photo = media.get('photo') or item.get('photo')
+        if isinstance(photo,str) and photo.startswith('https://'):messages.append({'type':'image','originalContentUrl':photo,'previewImageUrl':photo})
+        return messages
     description = media.get('menu') or item.get('description', '')
     parts = [item['name'], display_period(item), f"お一人様 ¥{item['price']:,}（税込）", description]
     if item['id'].startswith('matsuba-'):

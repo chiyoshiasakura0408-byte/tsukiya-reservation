@@ -252,6 +252,17 @@ def respond(c, user, command, lookup, courses, base_url):
     if gated is not None:
         return gated
     cat = catalog(c)
+    c.execute("CREATE TABLE IF NOT EXISTS concierge_language(user_id TEXT PRIMARY KEY,language TEXT NOT NULL DEFAULT 'ja',last_course TEXT)")
+    c.execute("INSERT OR IGNORE INTO concierge_language(user_id) VALUES(?)",(user,))
+    language_row=c.execute('SELECT language,last_course FROM concierge_language WHERE user_id=?',(user,)).fetchone()
+    language=language_row[0]
+    english_request=bool(re.fullmatch(r'(?i)(english(?:\s+please)?|in english(?:\s+please)?|英語(?:版)?(?:で|に)?(?:表示|お願い|お願いします|ください|下さい)?)[。.!！ ]*',command.strip()))
+    japanese_request=bool(re.fullmatch(r'(日本語(?:版)?(?:で|に)?(?:表示|お願い|お願いします|ください|下さい)?|Japanese)[。.!！ ]*',command.strip(),re.I))
+    if english_request or japanese_request:
+        language='en' if english_request else 'ja'
+        c.execute('UPDATE concierge_language SET language=? WHERE user_id=?',(language,user))
+        if language_row[1]:return concierge_menu.course_messages(language_row[1],cat,text_message,language)
+        return [concierge_menu.annual_message(language)]
     command = {'Reservations':'空席案内', 'Seasonal Calendar':'年間スケジュール', 'Contact Your Concierge':'VIP担当に相談', '予約': '空席案内', 'ご予約': '空席案内', '空席': '空席案内', '空席確認': '空席案内', 'コース・料金': 'ただいまのコース',
                '朝倉へ相談': 'VIP担当に相談', '写真': 'コース内容', '動画': 'コース内容', 'お品書き': 'コース内容',
                '蟹の時期': '年間スケジュール', '空席・ご予約': '空席案内', 'お料理・お品書き': 'コース内容'}.get(command, command)
@@ -300,9 +311,11 @@ def respond(c, user, command, lookup, courses, base_url):
         message['quickReply'] = {'items': [{'type':'action','action':{'type':'message','label':f'{n}名様','text':f'{day} {n}名'}} for n in range(2,9)] + [{'type':'action','action':{'type':'message','label':'VIP担当に相談','text':'VIP担当に相談'}}]}
         return [message]
     if command == '年間スケジュール':
-        return [concierge_menu.annual_message()]
+        c.execute('UPDATE concierge_language SET last_course=NULL WHERE user_id=?',(user,))
+        return [concierge_menu.annual_message(language)]
     if command.startswith('course:'):
-        return concierge_menu.course_messages(command[7:], cat, text_message)
+        c.execute('UPDATE concierge_language SET last_course=? WHERE user_id=?',(command[7:],user))
+        return concierge_menu.course_messages(command[7:], cat, text_message,language)
     if command in ('記念日・食事の相談','忘れ物'):
         c.execute("UPDATE concierge_customers SET state='request' WHERE user_id=?",(user,))
         return [text_message('ご来店日・お名前と、詳しい内容をお聞かせください。VIP担当へ確認のうえ、ご案内いたします。')]
