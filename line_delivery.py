@@ -274,7 +274,7 @@ def printable_message(db, day, base_url):
     doorman_pdf.generate(db, day, path)
     expiry = int(time.time()) + 48 * 3600
     url = f'{base_url}/line-image/{path.name}?expires={expiry}&sig={image_signature(path.name, expiry)}'
-    return {'type':'text','text':f'ドアマン用・印刷用予約リスト（{day}）\nA4縦／到着チェック欄付き\n{url}\n＊リンクの有効期限は48時間です。'}
+    return {'type':'template','altText':f'{day} ドアマン用予約表 PDF','template':{'type':'buttons','title':'ドアマン用予約表','text':f'{day}｜A4・2ページ\n有効期限：48時間','actions':[{'type':'uri','label':'PDFを開く','uri':url}]}}
 
 def resend_briefing(db, day=None, charts=None, printable=None):
     """Explicit correction: one text-only resend per day and exact payload."""
@@ -289,7 +289,7 @@ def resend_briefing(db, day=None, charts=None, printable=None):
             if charts or printable:
                 snapshot = [dict(r) for r in c.execute("SELECT * FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,id", (day,))]
                 encoded = json.dumps(snapshot, sort_keys=True, ensure_ascii=False)
-            key = day + (':pdf:' if printable else ':charts:' if charts else ':correction:') + hashlib.sha256(encoded.encode()).hexdigest()[:24]
+            key = day + (':pdf-card:' if printable else ':charts:' if charts else ':correction:') + hashlib.sha256(encoded.encode()).hexdigest()[:24]
             existing = c.execute('SELECT * FROM line_deliveries WHERE day=?', (key,)).fetchone()
             if printable and not existing:
                 encoded = json.dumps({'to':TARGET,'messages':[printable_message(db,day,printable)]},ensure_ascii=False)
