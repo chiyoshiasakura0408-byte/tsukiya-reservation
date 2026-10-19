@@ -156,7 +156,7 @@ def course_messages(course_id, registered, text_message, language="ja"):
     if language == 'en':
         parts = [item['name_en'], english_period(item), f"JPY {item['price']:,} per guest (tax included)", media.get('menu_en') or EN_DESCRIPTIONS.get(course_id, item.get('description_en',''))]
         if course_id.startswith('matsuba-'):parts.append('Beverages are charged separately for extended bookings spanning both sittings.')
-        if not item['online_booking']:parts.append('Standard reservations are not yet open. VIP guests may submit a reservation request through Reservations.')
+        if not item['online_booking']:parts.append('Reservations are not currently available.' if course_id == 'tarabagani' else 'Standard reservations are not yet open. VIP guests may submit a reservation request through Reservations.')
         messages = [text_message('\n\n'.join(filter(None,parts)))]
         photo = media.get('photo') or item.get('photo')
         if isinstance(photo,str) and photo.startswith('https://'):messages.append({'type':'image','originalContentUrl':photo,'previewImageUrl':photo})

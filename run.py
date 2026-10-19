@@ -124,7 +124,6 @@ ROOMS = (
 PUBLIC_COURSE_PRICE = 60000  # 税込・1名あたり
 PUBLIC_PAYMENT_HOURS = 48
 PUBLIC_COURSES = {
-    "tarabagani": ("活たらば蟹おまかせコース", 45000),
     "matsuba-seko": ("松葉蟹おまかせコース", PUBLIC_COURSE_PRICE),
     "matsuba-fukahire": ("松葉蟹おまかせコース", PUBLIC_COURSE_PRICE),
 }
