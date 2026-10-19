@@ -266,6 +266,32 @@ def message(db, day):
     finally:
         c.close()
 
+def resend_briefing(db, day=None):
+    """Explicit correction: one text-only resend per day and exact payload."""
+    day = day or datetime.now(JST).date().isoformat()
+    with LOCK:
+        c = connect(db)
+        try:
+            if not c.execute("SELECT 1 FROM line_sources WHERE source_id=? AND source_type='group' AND active=1", (TARGET,)).fetchone():
+                raise RuntimeError('通知先グループの接続が確認できません')
+            payload = {'to': TARGET, 'messages': [message(db, day)]}
+            encoded = json.dumps(payload, ensure_ascii=False)
+            key = day + ':correction:' + hashlib.sha256(encoded.encode()).hexdigest()[:24]
+            c.execute("INSERT OR IGNORE INTO line_deliveries VALUES(?,?,?,'READY',NULL,?)", (key, str(uuid.uuid4()), encoded, time.time()))
+            c.commit()
+            row = c.execute('SELECT * FROM line_deliveries WHERE day=?', (key,)).fetchone()
+            if row['state'] == 'SENT':
+                return {'ok': True, 'already_sent': True}
+            if time.time() - row['updated'] > 23 * 3600:
+                raise RuntimeError('再送期限を超えています。送信履歴の確認が必要です')
+            api('message/push', json.loads(row['payload']), row['retry_key'])
+            c.execute("UPDATE line_deliveries SET state='SENT',error=NULL,updated=? WHERE day=?", (time.time(),key))
+            c.commit()
+            return {'ok': True, 'resent': True}
+        finally:
+            c.close()
+
+
 def deliver(db, port, admin, base_url, day=None):
     day = day or datetime.now(JST).date().isoformat()
     if not base_url.startswith('https://') or not admin:

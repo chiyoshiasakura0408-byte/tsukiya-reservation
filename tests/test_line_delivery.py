@@ -72,6 +72,13 @@ class DeliveryTests(unittest.TestCase):
 ＊記念日利用(リクエストなし)"""
         self.assertEqual(d.message(self.db,'2026-10-19')['text'], expected)
 
+    def test_correction_sent_once(self):
+        with patch.object(d,'api',return_value={}) as api, patch.object(d,'message',return_value={'type':'text','text':'corrected'}):
+            self.assertTrue(d.resend_briefing(self.db,'2026-10-19')['resent'])
+            self.assertTrue(d.resend_briefing(self.db,'2026-10-19')['already_sent'])
+            self.assertEqual(api.call_count,1)
+            self.assertEqual(api.call_args.args[1]['to'],d.TARGET)
+
     def test_default_disabled(self):self.assertFalse(d.status(self.db)['delivery_enabled'])
 
 if __name__=='__main__':unittest.main()

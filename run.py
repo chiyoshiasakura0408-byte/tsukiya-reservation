@@ -2841,13 +2841,15 @@ class Handler(
             except Exception:
                 return self.send_json({"error":"receipt unavailable"},503)
 
-        if p in ("/api/line/test", "/api/line/enable", "/api/line/disable"):
+        if p in ("/api/line/test", "/api/line/enable", "/api/line/disable", "/api/line/resend-briefing"):
             if not self.auth():
                 return self.send_json({"error":"unauthorized"},401)
             if self.headers.get("X-Tsukiya-Action") != "line-settings":
                 return self.send_json({"error":"invalid request"},403)
             try:
-                if p.endswith("test"):
+                if p.endswith("resend-briefing"):
+                    result = line_delivery.resend_briefing(DB)
+                elif p.endswith("test"):
                     result = line_delivery.deliver(DB, PORT, ADMIN_TOKEN, APP_BASE_URL)
                 else:
                     if p.endswith("enable"):
