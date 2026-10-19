@@ -66,7 +66,7 @@ def briefing_html(db, day, font_data, session=None):
     from html import escape
     c = connect(db)
     try:
-        rows = [dict(r) for r in c.execute("SELECT guest_name,party_size,visit_at,seating_area,status,celebration_items,plate_message,guest_note,vip_through FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,seating_area,id", (day,))]
+        rows = [dict(r) for r in c.execute("SELECT guest_name,party_size,visit_at,seating_area,status,celebration_items,plate_message,guest_note,vip_through FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY seating_area,visit_at,id", (day,))]
     finally:
         c.close()
     if session is not None:
@@ -135,7 +135,7 @@ def capture(db, day, port, admin, base_url, session=None):
             temp.unlink(missing_ok=True)
     c = connect(db)
     try:
-        rows = [dict(r) for r in c.execute("SELECT guest_name,party_size,visit_at,seating_area,status,celebration_items,plate_message,guest_note,vip_through FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,seating_area,id", (day,))]
+        rows = [dict(r) for r in c.execute("SELECT guest_name,party_size,visit_at,seating_area,status,celebration_items,plate_message,guest_note,vip_through FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY seating_area,visit_at,id", (day,))]
     finally:
         c.close()
     if session is not None:
