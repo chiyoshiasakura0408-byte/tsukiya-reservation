@@ -31,40 +31,56 @@ def generate(db, day, output):
     date=datetime.strptime(day,'%Y-%m-%d');label=f'{date.year}年{date.month}月{date.day}日（{"月火水木金土日"[date.weekday()]}）'
     def text(x,y,t,size=12):
         c.setFont('DoormanJP',size);c.drawString(x,y,t)
-    def header():
-        text(40,794,'西天満つきや',13);text(40,758,'本日のご予約リスト',23)
-        text(40,729,label+'　｜　ドアマン用',12);c.line(40,712,555,712)
-        text(40,686,f'合計{len(rows)}組・{sum(r["party_size"] for r in rows)}名',15)
-        items=[item for item in ('花束','ケーキ') if any(item in delivery.briefing_requests(r)[0] for r in rows)]
-        if items:text(40,660,'＊'+'と'.join(items)+'のリクエストあり。',11)
-        for x,t in [(40,'到着'),(81,'開始'),(154,'お名前'),(397,'人数'),(455,'お席')]:text(x,624,t,10)
-    def footer():text(40,35,'作成：'+datetime.now(delivery.JST).strftime('%Y/%m/%d %H:%M')+'　｜　変更は予約管理画面をご確認ください。',9)
-    def wrap(t,width=390):
-        lines=[];line=''
-        for ch in t:
-            if pdfmetrics.stringWidth(line+ch,'DoormanJP',11)>width:lines.append(line);line=''
-            line+=ch
-        if line:lines.append(line)
-        return lines
-    header();y=607
-    seats={'PRIVATE1':'別邸・個室①','PRIVATE2':'別邸・個室②','PRIVATE3':'別邸・個室③','COUNTER':'本店・カウンター'}
-    for r in rows:
+    def fit(x,y,t,width,size=11):
+        text(x,y,t,min(size,width/max(pdfmetrics.stringWidth(t,'DoormanJP',1),1)))
+    def notes(r):
         payment='事前決済済み' if r.get('payment_confirmed_at') else ('事前決済なし' if r['source'] in ('DIRECT','CONCIERGE_LINE') else '事前決済未完了')
-        notes=[line for n in [payment]+delivery.briefing_requests(r)[1] for line in wrap('＊'+n)]
-        height=max(93,74+19*(len(notes)-1))
-        if y-height<110:footer();c.showPage();header();y=607
-        c.setLineWidth(.5);c.line(40,y,555,y);c.rect(44,y-35,15,15)
-        text(81,y-32,r['visit_at'][11:16],16)
-        name=str(r['guest_name']).removesuffix('様').strip()+'様'
-        size=min(16,230/max(pdfmetrics.stringWidth(name,'DoormanJP',1),1));text(154,y-32,name,size)
-        text(397,y-32,str(r['party_size'])+'名',14);text(455,y-32,seats.get(r['seating_area'],'席未設定'),10)
-        for i,n in enumerate(notes):
-            if y-56-i*19<90:
-                footer();c.showPage();header();y=607+56+i*19
-            text(154,y-56-i*19,n,11)
-        y-=height
-    c.line(40,y,555,y)
-    if y>160:
-        text(40,y-27,'連絡・引継ぎメモ',11)
-        for yy in (y-56,y-83):c.line(40,yy,555,yy)
-    footer();c.save()
+        return [payment]+delivery.briefing_requests(r)[1]
+    def grid(xs,top,height):
+        c.setLineWidth(.5);c.rect(xs[0],top-height,xs[-1]-xs[0],height)
+        for x in xs[1:-1]:c.line(x,top,x,top-height)
+    for page,session in enumerate(('18:00','20:30'),1):
+        selected=[r for r in rows if r.get('vip_through') or ('18:00' if r['visit_at'][11:16]<'20:30' else '20:30')==session]
+        text(35,800,'西天満つきや｜ドアマン用予約表',19)
+        text(35,773,label+'　'+session+'の回',14)
+        text(35,750,'当日の追加予約は空欄にご記入ください。',10)
+        text(35,717,'本店｜カウンター8席',14)
+        counter=[r for r in selected if r['seating_area']=='COUNTER']
+        if sum(r['party_size'] for r in counter)>8:
+            raise RuntimeError('カウンター席数が8席を超えています。予約管理画面をご確認ください')
+        if not counter:text(35,699,'＊9時時点でのご予約はなし',8)
+        for x,t in [(43,'席番号'),(104,'お名前'),(334,'人数'),(383,'メモ・到着確認')]:text(x,678,t,10)
+        y=666;seat=1
+        for r in counter:
+            n=r['party_size'];height=33*n
+            grid([35,96,328,375,560],y,height)
+            for offset in range(n):
+                text(53,y-22-33*offset,str(seat+offset),11)
+                if offset:c.line(35,y-33*offset,96,y-33*offset)
+            fit(104,y-25,str(r['guest_name']).removesuffix('様')+'様',216)
+            text(334,y-height/2-4,str(n)+'名',12)
+            for j,note in enumerate(notes(r)):fit(383,y-16-12*j,note,165,8)
+            c.rect(538,y-height+9,9,9)
+            y-=height;seat+=n
+        while seat<=8:
+            grid([35,96,328,375,560],y,33);text(53,y-22,str(seat),11)
+            if counter:text(104,y-26,'＊9時時点でのご予約はなし',7)
+            c.rect(538,y-22,9,9);y-=33;seat+=1
+        text(35,355,'別邸｜個室',14)
+        for x,t in [(43,'お席'),(104,'開始'),(161,'お名前'),(334,'人数'),(383,'ご要望・到着確認')]:text(x,332,t,10)
+        y=320
+        for number in (1,2,3):
+            room=[r for r in selected if r['seating_area']=='PRIVATE'+str(number)]
+            grid([35,96,153,328,375,560],y,71);text(43,y-25,'個室'+'①②③'[number-1],11)
+            if not room:text(161,y-58,'＊9時時点でのご予約はなし',8)
+            for index,r in enumerate(room):
+                offset=index*(60/max(len(room),1))
+                text(104,y-25-offset,r['visit_at'][11:16],10)
+                fit(161,y-25-offset,str(r['guest_name']).removesuffix('様')+'様',160,11)
+                text(334,y-25-offset,str(r['party_size'])+'名',11)
+                for j,note in enumerate(notes(r)):fit(383,y-16-offset-j*11,note,165,7 if len(room)>1 else 8)
+            c.rect(383,y-62,9,9);text(398,y-61,'到着',8);y-=71
+        text(35,87,'連絡・引継ぎメモ',10);c.line(35,65,560,65)
+        text(35,42,'＊空欄は9時時点の情報です。追加・変更は予約管理画面をご確認ください。',8)
+        text(527,42,str(page)+'/2',9);c.showPage()
+    c.save()
