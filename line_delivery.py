@@ -48,7 +48,7 @@ def image_signature(name, expiry):
     return hmac.new(key.encode(), (name + ':' + str(expiry)).encode(), hashlib.sha256).hexdigest()
 
 def image_path(db, name, expiry, signature):
-    if name not in ('original.jpg', 'preview.jpg') and not __import__('re').fullmatch(r'[0-9a-f]{32}-(original|preview)\.jpg', name):
+    if name not in ('original.jpg', 'preview.jpg') and not __import__('re').fullmatch(r'(?:[0-9a-f]{32}-(?:original|preview)\.jpg|[0-9a-f]{32}-doorman\.pdf)', name):
         return None
     try:
         expiry = int(expiry)
@@ -266,7 +266,17 @@ def message(db, day):
     finally:
         c.close()
 
-def resend_briefing(db, day=None, charts=None):
+def printable_message(db, day, base_url):
+    import doorman_pdf
+    folder = Path(db).parent / 'line-images'
+    folder.mkdir(exist_ok=True)
+    path = folder / (uuid.uuid4().hex + '-doorman.pdf')
+    doorman_pdf.generate(db, day, path)
+    expiry = int(time.time()) + 48 * 3600
+    url = f'{base_url}/line-image/{path.name}?expires={expiry}&sig={image_signature(path.name, expiry)}'
+    return {'type':'text','text':f'ドアマン用・印刷用予約リスト（{day}）\nA4縦／到着チェック欄付き\n{url}\n＊リンクの有効期限は48時間です。'}
+
+def resend_briefing(db, day=None, charts=None, printable=None):
     """Explicit correction: one text-only resend per day and exact payload."""
     day = day or datetime.now(JST).date().isoformat()
     with LOCK:
@@ -276,11 +286,13 @@ def resend_briefing(db, day=None, charts=None):
                 raise RuntimeError('通知先グループの接続が確認できません')
             payload = {'to': TARGET, 'messages': [message(db, day)]}
             encoded = json.dumps(payload, ensure_ascii=False)
-            if charts:
+            if charts or printable:
                 snapshot = [dict(r) for r in c.execute("SELECT * FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,id", (day,))]
                 encoded = json.dumps(snapshot, sort_keys=True, ensure_ascii=False)
-            key = day + (':charts:' if charts else ':correction:') + hashlib.sha256(encoded.encode()).hexdigest()[:24]
+            key = day + (':pdf:' if printable else ':charts:' if charts else ':correction:') + hashlib.sha256(encoded.encode()).hexdigest()[:24]
             existing = c.execute('SELECT * FROM line_deliveries WHERE day=?', (key,)).fetchone()
+            if printable and not existing:
+                encoded = json.dumps({'to':TARGET,'messages':[printable_message(db,day,printable)]},ensure_ascii=False)
             if charts and not existing:
                 port, admin, base_url = charts
                 payload = {'to': TARGET, 'messages': [capture(db, day, port, admin, base_url, session) for session in ('18:00','20:30')]}
@@ -322,7 +334,7 @@ def deliver(db, port, admin, base_url, day=None):
                     payload = json.loads(row['payload'])
                 else:
                     api('info')  # Validate token before generating the screenshot.
-                    payload = {'to':TARGET,'messages':[message(db,day)] + [capture(db,day,port,admin,base_url,session) for session in ('18:00','20:30')]}
+                    payload = {'to':TARGET,'messages':[message(db,day)] + [capture(db,day,port,admin,base_url,session) for session in ('18:00','20:30')] + [printable_message(db,day,base_url)]}
                     c.execute("UPDATE line_deliveries SET payload=?,state='READY',updated=? WHERE day=?", (json.dumps(payload),time.time(),day))
                     c.commit()
                 api('message/push',payload,row['retry_key'])

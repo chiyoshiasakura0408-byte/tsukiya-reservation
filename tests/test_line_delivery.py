@@ -10,6 +10,8 @@ class DeliveryTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
         self.db=Path(self.tmp.name)/'test.sqlite'
+        self.pdf_patch=patch.object(d,'printable_message',return_value={'type':'text','text':'PDF'})
+        self.pdf_patch.start();self.addCleanup(self.pdf_patch.stop)
         c=d.connect(self.db)
         c.execute('INSERT INTO line_sources VALUES(?,?,?,1)',(d.TARGET,'group','now'))
         c.commit();c.close()
@@ -77,6 +79,9 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(capture.call_count,2)
             self.assertEqual(api.call_count,1)
             self.assertEqual(len(api.call_args.args[1]['messages']),2)
+            self.assertTrue(d.resend_briefing(self.db,'2026-10-19',printable='https://example.com')['resent'])
+            self.assertTrue(d.resend_briefing(self.db,'2026-10-19',printable='https://example.com')['already_sent'])
+            self.assertEqual(api.call_count,2)
 
     def test_correction_sent_once(self):
         with patch.object(d,'api',return_value={}) as api, patch.object(d,'message',return_value={'type':'text','text':'corrected'}):

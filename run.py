@@ -2126,7 +2126,7 @@ class Handler(
                 return self.send_error(404)
             data = path.read_bytes()
             self.send_response(200)
-            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Type", "application/pdf" if path.suffix == ".pdf" else "image/jpeg")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "private, no-store")
             self.end_headers()
@@ -2841,13 +2841,15 @@ class Handler(
             except Exception:
                 return self.send_json({"error":"receipt unavailable"},503)
 
-        if p in ("/api/line/test", "/api/line/enable", "/api/line/disable", "/api/line/resend-briefing", "/api/line/resend-charts"):
+        if p in ("/api/line/test", "/api/line/enable", "/api/line/disable", "/api/line/resend-briefing", "/api/line/resend-charts", "/api/line/resend-printable"):
             if not self.auth():
                 return self.send_json({"error":"unauthorized"},401)
             if self.headers.get("X-Tsukiya-Action") != "line-settings":
                 return self.send_json({"error":"invalid request"},403)
             try:
-                if p.endswith("resend-charts"):
+                if p.endswith("resend-printable"):
+                    result = line_delivery.resend_briefing(DB, printable=APP_BASE_URL)
+                elif p.endswith("resend-charts"):
                     result = line_delivery.resend_briefing(DB, charts=(PORT, ADMIN_TOKEN, APP_BASE_URL))
                 elif p.endswith("resend-briefing"):
                     result = line_delivery.resend_briefing(DB)
