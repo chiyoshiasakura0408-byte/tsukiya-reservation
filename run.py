@@ -1,3 +1,4 @@
+import bank_transfer
 from email.utils import formataddr, parseaddr
 import calendar_sync
 import calendar_auth
@@ -272,7 +273,13 @@ def con():
         )
     }
 
+    bank_transfer.schema(c)
     wanted = {
+        "payment_method": "TEXT NOT NULL DEFAULT 'CARD'",
+        "bank_payer": "TEXT",
+        "bank_planned_date": "TEXT",
+        "bank_due_at": "TEXT",
+        "bank_email_status": "TEXT",
         "confirmation_email_status": "TEXT",
         "confirmation_sms_status": "TEXT",
         "confirmation_sms_sid": "TEXT",
@@ -639,6 +646,8 @@ def send_confirmation_sms(reservation):
 
 
 def make_invoice(r):
+    if dict(r).get("payment_method") == "BANK":
+        raise ValueError("銀行振込希望のためカード請求は作成しません")
     if not r["email"] and not r["phone"]:
         raise RuntimeError(
             "メールアドレスまたは電話番号が必要です"
@@ -959,7 +968,7 @@ def expire_public_reservations():
         c.execute("BEGIN IMMEDIATE")
         rows = c.execute(
             "SELECT id,square_invoice_id FROM reservations WHERE "
-            "((source='WEB' AND square_invoice_id IS NULL AND created_at<=?) "
+            "((source='WEB' AND payment_method!='BANK' AND square_invoice_id IS NULL AND created_at<=?) "
             "OR (source IN ('WEB','PHONE') AND square_invoice_id IS NOT NULL "
             "AND COALESCE(invoice_issued_at,created_at)<=? "
             "AND reminder_status IN ('SENT','SKIPPED_LEGACY'))) "
@@ -995,6 +1004,7 @@ def expiry_loop():
             refunds.process(sys.modules[__name__])
             reconcile_reservations()
             expire_public_reservations()
+            bank_transfer.overdue(sys.modules[__name__])
         except Exception as exc:
             print(f"Public reservation expiry failed: {exc}")
         time.sleep(300)
@@ -2443,14 +2453,18 @@ class Handler(
             c = con()
             try:
                 rows = [dict(x) for x in c.execute(
-                    "SELECT id,guest_name,visit_at,amount,square_invoice_id "
-                    "FROM reservations WHERE status='INVOICED' AND square_invoice_id IS NOT NULL "
+                    "SELECT id,guest_name,visit_at,amount,square_invoice_id,payment_method,bank_payer,bank_planned_date,bank_due_at,bank_email_status "
+                    "FROM reservations WHERE (status='INVOICED' AND square_invoice_id IS NOT NULL) OR (payment_method='BANK' AND status='PENDING') "
                     "ORDER BY visit_at,id"
                 )]
             finally:
                 c.close()
             result = []
             for row in rows:
+                if row["payment_method"] == "BANK" and not row["square_invoice_id"]:
+                    row["square_status"]="BANK_PENDING"
+                    result.append(row)
+                    continue
                 try:
                     invoice = square(f"/v2/invoices/{row['square_invoice_id']}")["invoice"]
                     row["square_status"] = invoice["status"]
@@ -3055,12 +3069,13 @@ class Handler(
                 return self.send_json({"error": "入力形式が不正です"}, 400)
             if body_length > 4096:
                 return self.send_json({"error": "入力が長すぎます"}, 413)
-            if not SQUARE_TOKEN or not SQUARE_LOCATION_ID:
-                return self.send_json({"error": "現在お申し込みを受け付けられません"}, 503)
             try:
                 x = self.read_json()
                 if not isinstance(x, dict):
                     raise ValueError("invalid booking")
+                payment_method, bank_payer, bank_planned_date = bank_transfer.parse(x)
+                if test_booking and payment_method == "BANK":
+                    raise ValueError("bank test disabled")
                 booking_policy.require_public(x)
                 day = date.fromisoformat(str(x.get("date", "")))
                 time_text = str(x.get("time", ""))
@@ -3076,6 +3091,11 @@ class Handler(
                 guest_note, celebration_items, plate_message = guest_requests(x)
             except (ValueError, TypeError, json.JSONDecodeError):
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
+            if payment_method == "BANK":
+                if not bank_transfer.ready(DB):
+                    return self.send_json({"error":"振込受付の通知設定を確認中です。店舗へご連絡ください"},503)
+            elif not SQUARE_TOKEN or not SQUARE_LOCATION_ID:
+                return self.send_json({"error":"現在お申し込みを受け付けられません"},503)
             today_jp = datetime.now(timezone(timedelta(hours=9))).date()
             if not policy_accepted:
                 return self.send_json({"error": "キャンセルポリシーへの同意が必要です"}, 400)
@@ -3098,11 +3118,13 @@ class Handler(
             try:
                 c.execute("BEGIN IMMEDIATE")
                 existing = c.execute(
-                    "SELECT id,square_invoice_url,status FROM reservations "
+                    "SELECT * FROM reservations "
                     "WHERE public_request_id=?", (request_id,)
                 ).fetchone()
                 if existing:
                     c.rollback()
+                    if existing["payment_method"] == "BANK" and existing["status"] != "CANCELLED":
+                        return self.send_json(bank_transfer.response(existing))
                     if existing["square_invoice_url"] and existing["status"] != "CANCELLED":
                         return self.send_json({
                             "reservation_id": existing["id"],
@@ -3141,11 +3163,18 @@ class Handler(
                      150, "PENDING", request_id, ts, ts, ts, guest_note, celebration_items, plate_message)
                 )
                 rid = cur.lastrowid
+                if payment_method == "BANK":
+                    due=(datetime.fromisoformat(ts)+timedelta(hours=PUBLIC_PAYMENT_HOURS)).isoformat()
+                    c.execute("UPDATE reservations SET payment_method='BANK',bank_payer=?,bank_planned_date=?,bank_due_at=? WHERE id=?",(bank_payer,bank_planned_date,due,rid))
+                    bank_transfer.enqueue(c,c.execute("SELECT * FROM reservations WHERE id=?",(rid,)).fetchone(),sys.modules[__name__])
                 marketing.bind(c,rid,x.get("attribution"),ts,test_booking)
                 c.commit()
                 row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
             finally:
                 c.close()
+            if payment_method == "BANK":
+                bank_transfer.receipt(sys.modules[__name__],row)
+                return self.send_json(bank_transfer.response(row))
             try:
                 customer_id, order_id, invoice_id, payment_url = make_invoice(row)
                 c = con()
@@ -3286,27 +3315,29 @@ class Handler(
                 row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
                 if not row:
                     return self.send_json({"error": "not found"}, 404)
-                if row["status"] != "INVOICED" or not row["square_invoice_id"]:
+                bank_pending = row["payment_method"] == "BANK" and row["status"] == "PENDING" and not row["square_invoice_id"]
+                if not bank_pending and (row["status"] != "INVOICED" or not row["square_invoice_id"]):
                     return self.send_json({"error": "請求済みの予約のみ確認できます"}, 409)
                 if amount != row["amount"]:
                     return self.send_json({"error": "振込金額が前受け金額と一致しません"}, 409)
 
-                # Stop card collection before recording a direct bank transfer.
-                try:
-                    invoice_id = row["square_invoice_id"]
-                    current = square(f"/v2/invoices/{invoice_id}")["invoice"]
-                    if current["status"] != "UNPAID":
-                        return self.send_json({"error": "Square請求書が未決済ではありません。状態を確認してください"}, 409)
-                    square(
-                        f"/v2/invoices/{invoice_id}/cancel",
-                        body={"version": current["version"]}
-                    )
-                except Exception as e:
-                    return self.send_json({"error": f"Square請求書を停止できません: {e}"}, 502)
+                if not bank_pending:
+                    # Stop card collection before recording a direct bank transfer.
+                    try:
+                        invoice_id = row["square_invoice_id"]
+                        current = square(f"/v2/invoices/{invoice_id}")["invoice"]
+                        if current["status"] != "UNPAID":
+                            return self.send_json({"error": "Square請求書が未決済ではありません。状態を確認してください"}, 409)
+                        square(
+                            f"/v2/invoices/{invoice_id}/cancel",
+                            body={"version": current["version"]}
+                        )
+                    except Exception as e:
+                        return self.send_json({"error": f"Square請求書を停止できません: {e}"}, 502)
 
                 
                 fresh = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
-                if fresh["status"] != "INVOICED":
+                if fresh["status"] != ("PENDING" if bank_pending else "INVOICED"):
                     c.rollback()
                     return self.send_json({"error": "予約の状態が変わりました。再確認してください"}, 409)
                 ts = now_iso()
@@ -3320,6 +3351,8 @@ class Handler(
                     "VALUES(?,?,?,?,?,?)",
                     (rid, "BANK", amount, reference, staff, ts)
                 )
+                if bank_pending:
+                    bank_transfer.enqueue(c,row,sys.modules[__name__],"confirmed")
                 c.commit()
                 confirmed = dict(c.execute(
                     "SELECT * FROM reservations WHERE id=?", (rid,)
@@ -3362,6 +3395,8 @@ class Handler(
                         return self.send_json({"error": "請求書を停止できませんでした"}, 502)
                 c.execute("UPDATE reservations SET status='CANCELLED',staff_seen_at=NULL,cancellation_reason='MANUAL',cancelled_at=?,updated_at=? WHERE id=?",
                           (now_iso(), now_iso(), rid))
+                if row["payment_method"] == "BANK":
+                    bank_transfer.enqueue(c,row,sys.modules[__name__],"cancelled")
                 if row["status"] == "CONFIRMED":
                     now = datetime.now(timezone(timedelta(hours=9)))
                     visit = datetime.fromisoformat(row["visit_at"])
@@ -3653,6 +3688,10 @@ class Handler(
                     },
                     404
                 )
+
+            if r["payment_method"] == "BANK":
+                c.close()
+                return self.send_json({"error":"銀行振込希望のためカード請求は発行しません"},409)
 
             if r["source"] == "DIRECT":
                 c.close()
