@@ -128,7 +128,7 @@ def annual_message():
                 {'type':'text','text':display_period(item),'size':'sm','color':'#D8D2C6'},
                 {'type':'text','text':item['name'],'size':'md','wrap':True,'weight':'bold','color':'#F5F0E4'},
                 {'type':'text','text':f"お一人様 ¥{item['price']:,}（税込）",'size':'sm','color':'#D8D2C6'},
-                {'type':'text','text':'コースのご紹介 ›','size':'xs','color':'#D8D2C6'}]})
+                {'type':'text','text':'コースのご紹介へ ›','size':'md','color':'#D8D2C6'}]})
     return {'type':'flex','altText':'Seasonal Calendar '+annual_years()+'：コースをタップして詳細をご覧ください',
         'contents':{'type':'bubble','size':'mega','body':{'type':'box','layout':'vertical','backgroundColor':'#0B0B09','spacing':'md','contents':[
             {'type':'text','text':'Seasonal Calendar','size':'xl','weight':'bold','color':'#F5F0E4'},
