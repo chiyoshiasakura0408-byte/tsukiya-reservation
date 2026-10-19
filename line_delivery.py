@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -205,21 +206,59 @@ def capture(db, day, port, admin, base_url, session=None):
         return f'{base_url}/line-image/{path.name}?expires={expiry}&sig={image_signature(path.name, expiry)}'
     return {'type':'image','originalContentUrl':url(original),'previewImageUrl':url(preview)}
 
+def briefing_requests(row):
+    """Keep service requests, excluding import provenance and amendment history."""
+    raw = str(row['guest_note'] or '')
+    extra = str(row['celebration_items'] or '')
+    text = extra + '。' + raw
+    requested = []
+    for item in ('花束', 'ケーキ'):
+        if item in extra or re.search(item + r'(?:とケーキ)?の(?:ご)?(?:要望|希望|リクエスト)(?:あり|有)', text):
+            requested.append(item)
+    notes = []
+    if requested:
+        notes.append('と'.join(requested) + 'のご要望あり。')
+    for part in re.split(r'[。\n]+', raw):
+        part = re.sub(r'^【朝倉追記】\s*', '', part).strip()
+        if not part or re.search(r'カレンダー|画像|に基づ|本人同定|紐付|連絡先|旧予約|開始時刻変更|→|事前決済|当日精算|未指定|確認|^\d{1,2}/\d{1,2}|^\d{1,2}月\d{1,2}日', part):
+            continue
+        if re.search(r'(花束|ケーキ).*の(?:ご)?(?:要望|希望|リクエスト)(あり|有)', part):
+            continue
+        if '記念日利用' in part and not requested:
+            part = '記念日利用(リクエストなし)'
+        if part not in notes:
+            notes.append(part)
+    if extra and not requested:
+        notes.insert(0, extra)
+    if row['plate_message']:
+        notes.append('プレート：' + str(row['plate_message']).strip())
+    return requested, notes
+
+
 def message(db, day):
     c = connect(db)
     try:
-        rows = c.execute("SELECT guest_name,celebration_items,plate_message,guest_note,visit_at,party_size FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,id", (day,)).fetchall()
+        rows = c.execute("SELECT * FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,id", (day,)).fetchall()
         date = datetime.strptime(day, '%Y-%m-%d')
         date_label = f'{date.year}年{date.month}月{date.day}日（{"月火水木金土日"[date.weekday()]}）'
-        lines = ['おはようございます。', date_label, '本日のご予約状況をお伝え致します。',
+        lines = ['おはようございます。', date_label, '本日のご予約状況をお伝え致します。', '',
                  f'合計{len(rows)}組・{sum(r["party_size"] for r in rows)}名']
-        requests = []
-        for r in rows:
-            details = [str(r[key] or '').strip() for key in ('celebration_items', 'plate_message', 'guest_note')]
-            details = [value for value in details if value]
-            if details:
-                requests.append('・' + r['visit_at'][11:16] + ' ' + r['guest_name'] + '様：' + '／'.join(details))
-        lines.extend(requests or ['本日特別なリクエストはありません。'])
+        details = [briefing_requests(r) for r in rows]
+        items = [item for item in ('花束', 'ケーキ') if any(item in requested for requested, _ in details)]
+        if items:
+            lines.append('＊' + 'と'.join(items) + 'のリクエストあり。')
+        for r, (_, notes) in zip(rows, details):
+            seat = '個室' if str(r['seating_area'] or '').startswith('PRIVATE') else {'COUNTER':'カウンター'}.get(r['seating_area'], '席未設定')
+            name = str(r['guest_name']).removesuffix('様').strip()
+            lines.extend(['', f'・{r["visit_at"][11:16]} {name}様　{r["party_size"]}名、{seat}'])
+            if r['payment_confirmed_at']:
+                payment = '事前決済済み'
+            elif r['source'] in ('DIRECT', 'CONCIERGE_LINE'):
+                payment = '事前決済なし'
+            else:
+                payment = '事前決済未完了'
+            lines.append('＊' + payment)
+            lines.extend('＊' + note for note in notes)
         text = '\n'.join(lines)
         if len(text.encode('utf-16-le')) // 2 > 4900:
             raise RuntimeError('リクエストが多いため予約表を確認してください')

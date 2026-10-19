@@ -38,6 +38,40 @@ class DeliveryTests(unittest.TestCase):
             self.assertIsNone(d.image_path(self.db,name,exp,'bad'))
             self.assertIsNone(d.image_path(self.db,name,0,d.image_signature(name,0)))
             self.assertIsNone(d.image_path(self.db,'../secret',exp,sig))
+    def test_briefing_format_and_current_time(self):
+        c=d.connect(self.db)
+        c.execute("CREATE TABLE reservations(id INTEGER PRIMARY KEY,guest_name TEXT,visit_at TEXT,party_size INTEGER,seating_area TEXT,status TEXT,source TEXT,payment_confirmed_at TEXT,celebration_items TEXT,plate_message TEXT,guest_note TEXT)")
+        rows = [
+            ('すがの', '17:30', 4, '10/18朝倉様のカレンダー画像に基づく。10/19 17:30、4名、個室。事前決済なし・当日精算。連絡先未確認。顧客候補は本人同定できないため紐付けなし。', ''),
+            ('もりせ あつこ', '18:00', 2, '10/18に朝倉様からいただいたカレンダー画像に基づく予約。10月19日18:00、2名、個室、事前決済なし・当日精算。', ''),
+            ('せと', '18:00', 2, '10/18朝倉様のカレンダー画像に基づく。10/19 18:30、2名、個室。事前決済なし・当日精算。花束とケーキのご要望あり。花束・ケーキの種類、予算、プレート文言は未指定のため朝倉様へ確認。\n【開始時刻変更】2026-10-19T18:30 → 2026-10-19T18:00\n【朝倉追記】小さい花束', '花束'),
+            ('May Wong', '20:30', 2, '朝倉様の10/18カレンダー画像・既承認の変更依頼に基づく。10/19 20:30、2名、個室、事前決済なし・当日精算。旧予約#11からの変更。記念日利用。', '')]
+        for name, clock, guests, note, items in rows:
+            c.execute("INSERT INTO reservations(guest_name,visit_at,party_size,seating_area,status,source,celebration_items,guest_note) VALUES(?,?,?,'PRIVATE1','CONFIRMED','DIRECT',?,?)", (name,'2026-10-19T'+clock,guests,items,note))
+        c.commit();c.close()
+        expected = """おはようございます。
+2026年10月19日（月）
+本日のご予約状況をお伝え致します。
+
+合計4組・10名
+＊花束とケーキのリクエストあり。
+
+・17:30 すがの様　4名、個室
+＊事前決済なし
+
+・18:00 もりせ あつこ様　2名、個室
+＊事前決済なし
+
+・18:00 せと様　2名、個室
+＊事前決済なし
+＊花束とケーキのご要望あり。
+＊小さい花束
+
+・20:30 May Wong様　2名、個室
+＊事前決済なし
+＊記念日利用(リクエストなし)"""
+        self.assertEqual(d.message(self.db,'2026-10-19')['text'], expected)
+
     def test_default_disabled(self):self.assertFalse(d.status(self.db)['delivery_enabled'])
 
 if __name__=='__main__':unittest.main()
