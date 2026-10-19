@@ -66,7 +66,9 @@ class LiffTests(unittest.TestCase):
         self.assertIn('ご利用時間：120分',self.dbquery('SELECT * FROM concierge_requests')[0]['body'])
         payload=json.loads(self.dbquery('SELECT * FROM vip_liff_requests')[0]['payload'])
         self.assertEqual(payload['duration_minutes'],120)
-        for duration in [True,0,-30,31,1500,'120']:
+        for duration in [150,180,210,240]:
+            self.call(duration_minutes=duration,nonce=str(duration)*10)
+        for duration in [True,0,-30,31,90,270,1500,'120']:
             with self.subTest(duration=duration),self.assertRaises(ValueError):self.call(duration_minutes=duration)
 
     def test_venue_and_main_seating_rules(self):

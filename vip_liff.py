@@ -101,8 +101,8 @@ def handle(db, action, data, base_url):
         if venue == 'main':
             if clock not in ('18:00','20:30') or duration not in (None,120):raise ValueError('本店は18:00・20:30開始、2時間制です。')
             duration = 120
-        if duration is not None and (type(duration) is not int or not 30 <= duration <= 1440 or duration % 30):
-            raise ValueError('ご利用時間を30分単位で入力してください。')
+        if duration is not None and (type(duration) is not int or not 120 <= duration <= 240 or duration % 30):
+            raise ValueError('ご利用時間は2〜4時間の間で、30分単位でお選びください。')
         payload = json.dumps({'date':day,'time':clock,'party':party,'name':name.strip(),'note':note.strip(),'cake':cake,'cake_type':cake_type,'bouquet':bouquet,'plate_name':plate,'duration_minutes':duration,'venue':venue},ensure_ascii=False,sort_keys=True)
         with c:
             c.execute('BEGIN IMMEDIATE')
