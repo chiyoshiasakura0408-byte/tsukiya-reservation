@@ -48,7 +48,7 @@ def handoff(c,user,body,lang,base):
 def respond(c,user,text,lang,courses,base,slots=None):
     en=lang=='en'; lower=text.lower();cat=bot.catalog(c)
     if re.search(r'extended|both sittings|all evening|通し|時間指定',lower):
-        return ('Our regular sittings begin at 18:00 and 20:30. Extended reservations are reserved for approved VIP guests and cannot be arranged through this English concierge. New reservations are temporarily paused.' if en else '通常予約は18:00・20:30の二部制です。通し予約は承認済みVIP専用で、この窓口では承れません。現在、新規予約受付を停止しております。')
+        return ('Our regular sittings begin at 18:00 and 20:30. Extended reservations are reserved for approved VIP guests and cannot be arranged through this English concierge. Online reservations are now open: https://tsukiya-reservation.onrender.com/book?lang=en' if en else '通常予約は18:00・20:30の二部制です。通し予約は承認済みVIP専用で、この窓口では承れません。公式予約ページから空席確認・ご予約を承ります。https://tsukiya-reservation.onrender.com/book')
     if text.startswith('お客様連携 '):
         result=bot.link_customer(c,user,text)
         return ('Your guest profile has been linked. We look forward to offering a more personal service.' if '完了' in result else 'We could not verify this link. Please contact the restaurant.') if en else result
