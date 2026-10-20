@@ -120,7 +120,7 @@ class MenuFlow(unittest.TestCase):
 
     def test_course_seasons_and_no_invented_summer_menu(self):
         text=menu.current_courses(self.courses)
-        self.assertIn('60,000',text); self.assertIn('11月10日',text); self.assertIn('03月20日',text)
+        self.assertIn('66,000',text); self.assertIn('11月10日',text); self.assertIn('03月20日',text)
         annual=menu.annual_courses(self.courses)
         self.assertIn('10月〜11月',annual)
         self.assertIn('活たらば蟹おまかせコース',annual)

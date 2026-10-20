@@ -160,7 +160,7 @@ class VipTests(unittest.TestCase):
         result=self.book(token,browser,'18:30')
         self.assertEqual(self.book(token,browser),result)
         row=self.dbquery('SELECT * FROM reservations')[0]
-        self.assertEqual((row['amount'],row['vip_through'],row['duration_minutes']),(120000,1,270))
+        self.assertEqual((row['amount'],row['vip_through'],row['duration_minutes']),(132000,1,270))
         self.insert(area='PRIVATE2')
         token=self.proposal();browser=self.verify(token);result=self.book(token,browser,'20:30')
         row=self.dbquery('SELECT * FROM reservations WHERE id=?',(result['reservation_id'],))[0]

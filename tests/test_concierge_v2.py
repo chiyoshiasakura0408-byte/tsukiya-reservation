@@ -51,7 +51,7 @@ class ConciergeV2(unittest.TestCase):
         self.assertEqual(first,second)
         c=run.con();row=c.execute('SELECT * FROM reservations').fetchone();c.close()
         self.assertEqual(row['source'],'CONCIERGE_LINE');self.assertEqual(row['status'],'CONFIRMED');self.assertIsNone(row['square_invoice_id'])
-        self.assertEqual(row['amount'],120000)
+        self.assertEqual(row['amount'],132000)
         self.assertEqual(row['celebration_items'],'花束,ホールケーキ');self.assertEqual(row['plate_message'],'Happy Birthday');self.assertEqual(row['guest_note'],'卵不可')
 
     def test_booking_rechecks_sold_out_and_consent(self):

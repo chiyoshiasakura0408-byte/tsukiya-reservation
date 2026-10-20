@@ -122,7 +122,7 @@ ROOMS = (
     "PRIVATE3"
 )
 
-PUBLIC_COURSE_PRICE = 60000  # 税込・1名あたり
+PUBLIC_COURSE_PRICE = 66000  # 税込・1名あたり
 PUBLIC_PAYMENT_HOURS = 48
 PUBLIC_COURSES = {
     "matsuba-seko": ("松葉蟹おまかせコース", PUBLIC_COURSE_PRICE),

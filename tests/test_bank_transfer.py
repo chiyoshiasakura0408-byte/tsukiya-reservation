@@ -30,12 +30,12 @@ class BankTransferTest(unittest.TestCase):
   code,res=self.call('/api/public/reservations',self.body);self.assertEqual(code,200,res);return res['reservation_id']
  def test_bank_booking_atomic_idempotent_targets_and_hold(self):
   rid=self.book();self.assertEqual(self.book(),rid);self.mock_invoice.assert_not_called()
-  c=run.con();r=dict(c.execute('SELECT * FROM reservations').fetchone());self.assertEqual((r['status'],r['payment_method'],r['payment_source'],r['square_invoice_id']),('PENDING','BANK',None,None));self.assertEqual(r['amount'],120000)
+  c=run.con();r=dict(c.execute('SELECT * FROM reservations').fetchone());self.assertEqual((r['status'],r['payment_method'],r['payment_source'],r['square_invoice_id']),('PENDING','BANK',None,None));self.assertEqual(r['amount'],132000)
   targets={x[0] for x in c.execute("SELECT user_id FROM concierge_outbox WHERE kind='bank-transfer'")};self.assertEqual(targets,{'U'+'1'*32});self.assertEqual(c.execute('SELECT count(*) FROM concierge_outbox').fetchone()[0],1)
   self.assertFalse(run.availability_check(c,'COUNTER',str(self.day)+'T18:00',8,1)[0]);c.close()
   code,unpaid=self.call('/api/unpaid-invoices',auth=True);self.assertEqual(unpaid[0]['square_status'],'BANK_PENDING')
  def test_confirm_requires_auth_amount_audit_and_no_square(self):
-  rid=self.book();url=f'/api/reservations/{rid}/confirm-bank-payment';body={'amount':120000,'reference':'銀行明細照合','confirmed_by':'担当者'}
+  rid=self.book();url=f'/api/reservations/{rid}/confirm-bank-payment';body={'amount':132000,'reference':'銀行明細照合','confirmed_by':'担当者'}
   self.assertEqual(self.call(url,body)[0],401);self.assertEqual(self.call(url,{**body,'amount':1},True)[0],409)
   with patch.object(run,'square') as square,patch.object(run,'deliver_confirmation',side_effect=lambda r:r):
    self.assertEqual(self.call(url,body,True)[0],200);self.assertEqual(self.call(url,body,True)[0],409);square.assert_not_called()
@@ -78,7 +78,7 @@ class BankTransferTest(unittest.TestCase):
   import line_delivery as d
   rid=self.book()
   digest=bank_transfer.accounting_digest(run.DB,'https://example.com')
-  self.assertEqual(len(digest),1);self.assertIn('未確認 1件',digest[0]['text']);self.assertIn('120,000円',digest[0]['text']);self.assertIn('テスト',digest[0]['text'])
+  self.assertEqual(len(digest),1);self.assertIn('未確認 1件',digest[0]['text']);self.assertIn('132,000円',digest[0]['text']);self.assertIn('テスト',digest[0]['text'])
   c=d.connect(run.DB);c.execute('INSERT INTO line_sources VALUES(?,?,?,1)',(d.TARGET,'group','now'));c.commit();c.close()
   with patch.object(d,'api',return_value={}) as send,patch.object(d,'message',return_value={'type':'text','text':'morning'}),patch.object(d,'capture',return_value={'type':'image'}),patch.object(d,'printable_message',return_value={'type':'text','text':'pdf'}):
    d.deliver(run.DB,1,'admin','https://example.com');d.deliver(run.DB,1,'admin','https://example.com')

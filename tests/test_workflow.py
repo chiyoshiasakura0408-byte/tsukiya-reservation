@@ -64,8 +64,8 @@ class WorkflowTest(unittest.TestCase):
     def test_october_course_boundaries(self):
         from datetime import date
         for text, price in [("2026-10-14", None), ("2026-10-15", 45000),
-                            ("2026-11-09", 45000), ("2026-11-10", 60000),
-                            ("2027-03-20", 60000), ("2027-03-21", None)]:
+                            ("2026-11-09", 45000), ("2026-11-10", 66000),
+                            ("2027-03-20", 66000), ("2027-03-21", None)]:
             day = date.fromisoformat(text)
             result = run.bookable_course(day)
             self.assertEqual(result[1] if result else None, price)
@@ -134,7 +134,7 @@ class WorkflowTest(unittest.TestCase):
             result = json.load(urllib.request.urlopen(req))
             row = self.get(result["id"])
             self.assertEqual((row["course_name"], row["amount"]),
-                             (run.PUBLIC_COURSES["matsuba-seko"][0], 180000))
+                             (run.PUBLIC_COURSES["matsuba-seko"][0], 198000))
             body["visit_at"] = "2027-04-01T18:00"
             req = urllib.request.Request(base + "/api/reservations/phone",
                                          data=json.dumps(body).encode(),
@@ -506,8 +506,8 @@ class WorkflowTest(unittest.TestCase):
         self.assertTrue(run.public_slot_allowed(date(2027, 3, 20), "18:00", "matsuba-fukahire"))
         self.assertFalse(run.public_slot_allowed(date(2026, 12, 31), "18:00", "matsuba-fukahire"))
         self.assertFalse(run.public_slot_allowed(date(2027, 3, 21), "18:00", "matsuba-fukahire"))
-        self.assertEqual(run.PUBLIC_COURSES["matsuba-seko"][1], 60000)
-        self.assertEqual(run.PUBLIC_COURSES["matsuba-fukahire"][1], 60000)
+        self.assertEqual(run.PUBLIC_COURSES["matsuba-seko"][1], 66000)
+        self.assertEqual(run.PUBLIC_COURSES["matsuba-fukahire"][1], 66000)
 
     def test_english_booking_creates_english_invoice_content(self):
         rid = self.reservation()
