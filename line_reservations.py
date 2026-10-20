@@ -21,6 +21,7 @@ LOCK = threading.Lock()
 PREFIX = re.compile(r'^(予約追記|予約追加|予約変更|人数変更|予約取消|予約キャンセル|予約補足|予約再試行|予約)(?:\s|[：:]|$)')
 
 def schema(c):
+    c.execute('CREATE TABLE IF NOT EXISTS english_message_links(message_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,request_id TEXT NOT NULL,destination TEXT NOT NULL)')
     c.execute('''CREATE TABLE IF NOT EXISTS line_booking_jobs(id TEXT PRIMARY KEY,event_id TEXT UNIQUE,actor TEXT NOT NULL,origin TEXT NOT NULL,group_id TEXT NOT NULL,text TEXT NOT NULL DEFAULT '',message_id TEXT,created REAL NOT NULL,state TEXT NOT NULL DEFAULT 'pending',error TEXT,raw BLOB,signature TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS line_booking_items(id TEXT PRIMARY KEY,job_id TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',reservation_id INTEGER,result TEXT NOT NULL DEFAULT '',sync_notice INTEGER NOT NULL DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS line_booking_audit(id INTEGER PRIMARY KEY,job_id TEXT NOT NULL,item_id TEXT NOT NULL,actor TEXT NOT NULL,action TEXT NOT NULL,reservation_id INTEGER,before_json TEXT,after_json TEXT,created REAL NOT NULL)''')
@@ -59,6 +60,9 @@ def ingest(c,raw,signature,payload):
         image=m.get('type')=='image' and m.get('contentProvider',{}).get('type','line')=='line' and re.fullmatch(r'\d{1,30}',mid)
         quoted=str(m.get('quotedMessageId',''))
         if not re.fullmatch(r'\d{1,30}',quoted):quoted=''
+        if quoted and c.execute('SELECT 1 FROM english_message_links WHERE message_id=? AND destination=?', (quoted, destination)).fetchone():
+            claimed.add(e['webhookEventId'])
+            continue
         dialog=c.execute('SELECT 1 FROM line_note_sessions WHERE actor=? AND destination=?',(actor,destination)).fetchone() or c.execute("SELECT 1 FROM line_booking_jobs WHERE actor=? AND group_id=? AND state='pending' AND text IN ('予約追記','追加')",(actor,destination)).fetchone()
         if not image and not (m.get('type')=='text' and (PREFIX.match(text) or quoted or text=='追加' or dialog)):continue
         ident=hashlib.sha256(e['webhookEventId'].encode()).hexdigest()[:16]

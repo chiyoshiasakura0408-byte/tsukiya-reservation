@@ -96,7 +96,7 @@ def enquiry_text(combined):
     else:
         name = 'Instagramのお客様'
         body = combined.split('\n', 2)[-1]
-    body = re.split(r'\n受付：', body, maxsplit=1)[0]
+    body = re.split(r'\n受付：|\n\nこの通知をLINEの「リプライ」で選び', body, maxsplit=1)[0]
     return name, body.strip()
 
 
@@ -132,6 +132,8 @@ def owner_messages(messages):
         header = '【英語問い合わせ・朝倉確認】\nお客様：'+name+'\n要約：'+summary+'\n確認理由：'+review_reason(body)+'\n\n日本語訳：\n'+translation
     except Exception:
         header = '【英語問い合わせ・朝倉確認】\nお客様：'+name+'\n日本語訳：現在自動翻訳を利用できません。英語原文をご確認ください。\n確認理由：'+review_reason(body)
+    if 'この通知をLINEの「リプライ」で選び' in combined:
+        header += '\n\nこの通知をLINEの「リプライ」で選び、日本語の回答だけ送ってください。'
     # Separate text messages preserve the full original and LINE length limits.
     texts = [header, '英語原文・顧客情報・受付番号：\n'+combined]
     return [{'type': 'text', 'text': text[i:i+4500]} for text in texts for i in range(0, len(text), 4500)][:5]

@@ -32,6 +32,8 @@ def connect(db):
     CREATE TABLE IF NOT EXISTS concierge_events (id TEXT PRIMARY KEY,received REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS concierge_requests (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,body TEXT NOT NULL,created REAL NOT NULL,status TEXT NOT NULL DEFAULT '未回答',delivery_id TEXT);
     CREATE TABLE IF NOT EXISTS concierge_outbox (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,channel TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',created REAL NOT NULL,next_try REAL NOT NULL,attempts INTEGER DEFAULT 0,error TEXT);
+    CREATE TABLE IF NOT EXISTS english_notice_links(outbox_id TEXT PRIMARY KEY,request_id TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS english_message_links(message_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,request_id TEXT NOT NULL,destination TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS reservation_notice_links(outbox_id TEXT PRIMARY KEY,reservation_id INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS reservation_message_links(message_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,reservation_id INTEGER NOT NULL,destination TEXT NOT NULL);
     ''')
@@ -189,6 +191,9 @@ def configure(db, data):
                 elif action == 'merge-english':
                     import english_concierge
                     return english_concierge.merge(c, data.get('ids'))
+                elif action == 'english-reply-notice':
+                    import english_concierge
+                    return english_concierge.resend_notice(c, data.get('id'))
                 elif action == 'answer':
                     body = data.get('body', '')
                     if not isinstance(body, str) or not 1 <= len(body.strip()) <= 2000:
@@ -533,7 +538,10 @@ def deliver(db):
                     except (OSError, TimeoutError):
                         error, retryable = 'LINE connection failed', True
                 with c:
-                    if accepted:remember_reservation_messages(c,row,response_body)
+                    if accepted:
+                        remember_reservation_messages(c,row,response_body)
+                        import english_concierge
+                        english_concierge.remember_messages(c,row,response_body)
                     if row['kind'] == 'answer' and (accepted or not retryable):
                         c.execute('UPDATE concierge_requests SET status=? WHERE delivery_id=?', ('回答LINE受付済み' if accepted else '回答送信失敗', row['id']))
                     c.execute('UPDATE concierge_outbox SET state=?,error=?,attempts=attempts+1,next_try=? WHERE id=?',
