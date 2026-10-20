@@ -109,51 +109,81 @@ def status(db):
     finally:
         c.close()
 
+
+MENTION_STAFF = (('なかがわさん', 'nakagawa'), ('やまもとさん', 'yamamoto'),
+                 ('いまむらさん', 'imamura'), ('さやさん', 'saya'))
+MENTION_DAY = '2026-10-21'
+
+
 def register_inventory_mention(c, events):
-    """Bind an explicitly mentioned member only on the owner's signed command."""
-    import re
+    """Owner-authorized, one-day ordered registration; never infer from names."""
+    import re, time
+    from datetime import timedelta
     claimed = set()
     owner = concierge.setting(c, 'owner')
+    group = __import__('line_delivery').TARGET
+    state_key = 'inventory_mention_bulk:' + MENTION_DAY
     for event in events:
         src, msg = event.get('source', {}), event.get('message', {})
+        if not (owner and src.get('type') == 'group' and src.get('groupId') == group
+                and src.get('userId') == owner and msg.get('type') == 'text'):
+            continue
         text = msg.get('text', '').strip()
-        if not (src.get('type') == 'group' and src.get('groupId') == __import__('line_delivery').TARGET
-                and src.get('userId') == owner and owner
-                and msg.get('type') == 'text'
-                and text.startswith('メンション登録 やまもとさん')):
+        explicit = next(((name, key) for name, key in MENTION_STAFF
+                         if text.startswith('メンション登録 ' + name)), None)
+        timestamp = event.get('timestamp')
+        event_day = (datetime.fromtimestamp(timestamp / 1000, timezone(timedelta(hours=9))).date().isoformat()
+                     if isinstance(timestamp, (int, float)) else '')
+        completed = json.loads(concierge.setting(c, state_key, '[]'))
+        mentions = msg.get('mention', {}).get('mentionees', [])
+        ordered = sorted(mentions, key=lambda m: m.get('index', 0))
+        if not explicit and not (event_day == MENTION_DAY and len(completed) < len(MENTION_STAFF) and mentions):
             continue
         eid = event['webhookEventId']
         claimed.add(eid)
-        if not c.execute('INSERT OR IGNORE INTO supply_commands VALUES(?,?)',
-                         (eid, __import__('time').time())).rowcount:
+        if not c.execute('INSERT OR IGNORE INTO supply_commands VALUES(?,?)', (eid, time.time())).rowcount:
             continue
-        people = [m.get('userId') for m in msg.get('mention', {}).get('mentionees', [])
-                  if m.get('type') == 'user' and not m.get('isSelf')]
-        valid = len(people) == 1 and re.fullmatch(r'U[0-9a-fA-F]{32}', people[0] or '')
+        people = [m.get('userId') for m in ordered if m.get('type') == 'user' and not m.get('isSelf')]
+        count = 1 if explicit else len(MENTION_STAFF) - len(completed)
+        valid = (people and len(people) <= count and len(people) == len(mentions)
+                 and len(set(people)) == len(people)
+                 and all(re.fullmatch(r'U[0-9a-fA-F]{32}', uid or '') for uid in people)
+                 and (bool(explicit) or not set(people).intersection(completed)))
         if valid:
             try:
-                __import__('line_delivery').api('group/' + src['groupId'] + '/member/' + people[0])
-            except RuntimeError:
+                for uid in people:
+                    __import__('line_delivery').api('group/' + group + '/member/' + uid)
+            except Exception:
                 valid = False
         if valid:
-            concierge.put(c, 'inventory_mention_yamamoto', people[0])
-            concierge.put(c, 'inventory_mention_group', src['groupId'])
-            answer = 'やまもとさんのメンションを登録しました。今後の担当依頼に実際の@メンションを付けます。'
+            targets = [explicit] if explicit else MENTION_STAFF[len(completed):len(completed) + len(people)]
+            for (name, key), uid in zip(targets, people):
+                concierge.put(c, 'inventory_mention_' + key, uid)
+            concierge.put(c, 'inventory_mention_group', group)
+            if not explicit:
+                completed.extend(people)
+                concierge.put(c, state_key, json.dumps(completed))
+            answer = 'メンション登録済み：' + '、'.join(name for name, _ in targets) + '。'
+            if not explicit:
+                answer += ('4名全員の登録が完了しました。' if len(completed) == 4
+                           else '次は' + MENTION_STAFF[len(completed)][0] + 'を@メンションしてください。')
         else:
-            answer = '登録できませんでした。「メンション登録 やまもとさん」に続けて、真瑚さん1名をLINEの候補から@メンションしてください。@Allや名前の文字入力だけでは登録できません。'
-        supplies.queue(c, 'mention-bind:' + eid, src['groupId'], [{'type': 'text', 'text': answer}])
+            answer = '登録できませんでした。対象者をLINEの候補から@選択してください。@All、重複、名前の文字入力では登録しません。順番は進めていません。'
+        supplies.queue(c, 'mention-bind:' + eid, group, [{'type': 'text', 'text': answer}])
     return claimed
 
 
 def inventory_mention(c, text):
-    """Use only an owner-verified group-bound identity; otherwise retain wording."""
+    """Render real mentions only for identities explicitly bound by the owner."""
     import re
-    uid = concierge.setting(c, 'inventory_mention_yamamoto')
-    group = concierge.setting(c, 'inventory_mention_group')
-    if ('やまもとさん、備品在庫表' not in text or
-            group != __import__('line_delivery').TARGET or
-            not re.fullmatch(r'U[0-9a-fA-F]{32}', uid)):
+    if concierge.setting(c, 'inventory_mention_group') != __import__('line_delivery').TARGET:
         return {'type': 'text', 'text': text}
     escaped = text.replace('{', '{{').replace('}', '}}')
-    return {'type': 'textV2', 'text': escaped.replace('やまもとさん、備品在庫表', '{yamamoto}、備品在庫表', 1),
-            'substitution': {'yamamoto': {'type': 'mention', 'mentionee': {'type': 'user', 'userId': uid}}}}
+    substitutions = {}
+    for name, key in MENTION_STAFF:
+        uid = concierge.setting(c, 'inventory_mention_' + key)
+        if name in escaped and re.fullmatch(r'U[0-9a-fA-F]{32}', uid):
+            escaped = escaped.replace(name, '{' + key + '}')
+            substitutions[key] = {'type': 'mention', 'mentionee': {'type': 'user', 'userId': uid}}
+    return ({'type': 'textV2', 'text': escaped, 'substitution': substitutions}
+            if substitutions else {'type': 'text', 'text': text})
