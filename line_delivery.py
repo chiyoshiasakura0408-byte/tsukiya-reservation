@@ -289,16 +289,27 @@ def message(db, day, base_url=None):
             access = supplies.connect(db)
             try:
                 with access:
+                    supply_link = supplies.new_link(access, base_url, page='supplies')
                     drink_link = supplies.new_link(access, base_url, page='drinks')
+                    # Owner-requested pinned inventory links: valid until revoked
+                    # by removing their hashes; regular links still expire in 8 days.
+                    for link in (supply_link, drink_link):
+                        token = link.split('#access=', 1)[1]
+                        access.execute('UPDATE supply_access SET expires=? WHERE hash=?',
+                                       (253402300799, hashlib.sha256(token.encode()).hexdigest()))
             finally:
                 access.close()
             lines.extend(['', '【酒類・飲料の容量確認のお願い】',
                 '本店・別邸の各商品について、容器容量と1杯あたりの提供量を教えてください。',
                 '商品名／容器容量（ml）／1杯の提供量（ml）の順で、この経理LINEへご返信ください。瓶・缶をそのまま提供する商品は「1本・1缶」、店舗で量が異なる場合は店舗名も記載してください。容量はラベル写真でも構いません。',
                 '原価計算は行わず、オールイン提供分の機会損失（通常売価換算の参考額）の試算に使用します。',
-                '', '【酒類在庫表】', drink_link,
+                '', '【在庫表・アナウンス固定のお願い】',
+                'このメッセージを長押しし「アナウンス」でグループ上部に固定してください。今後は固定したリンクから直接開いてご利用ください。利用のたびに「備品」「酒類」と投稿する必要はありません。',
+                '', '備品在庫表：', supply_link,
+                '本店・別邸を選び、在庫を入力・確認してください。',
+                '', '酒類在庫表：', drink_link,
                 '本店・別邸を選び、未開封本数・開封残を入力して「朝倉へ在庫送信」を押してください。',
-                '専用リンクは8日間有効です。いつでも経理LINEに「酒類」と送ると、新しいリンクが届きます。'])
+                '上記は継続利用できる固定用リンクです。経理グループ内でご利用ください。'])
         text = '\n'.join(lines)
         if len(text.encode('utf-16-le')) // 2 > 4900:
             raise RuntimeError('リクエストが多いため予約表を確認してください')
