@@ -1,5 +1,13 @@
 """Server-owned reservation category and beverage policy; never a client price override."""
-from datetime import datetime
+from datetime import date, datetime
+
+
+def main_restaurant_sunday_closed(day, seating_area):
+    """Owner instruction: no main-restaurant Sunday bookings through 2027-03-20."""
+    if seating_area != 'COUNTER':
+        return False
+    day = date.fromisoformat(str(day)[:10])
+    return date(2026, 10, 21) <= day <= date(2027, 3, 20) and day.weekday() == 6
 
 
 def details(reservation):

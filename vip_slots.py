@@ -1,6 +1,7 @@
 """A single reservation holds both rounds without doubling its price."""
 import json
 import re
+import booking_policy
 from datetime import datetime, timedelta
 
 
@@ -19,6 +20,8 @@ def counter_assignments(app,c,day,clock):
 
 
 def choose(app,c,day,area,party):
+    if booking_policy.main_restaurant_sunday_closed(day,area):
+        return None
     if area=='COUNTER':
         free=set(range(1,9))
         for clock in ('18:00','20:30'):

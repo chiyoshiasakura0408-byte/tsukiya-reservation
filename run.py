@@ -1056,6 +1056,9 @@ def availability_check(
 
     visit = parse_dt(visit_at)
 
+    if booking_policy.main_restaurant_sunday_closed(visit.date(), seating_area):
+        return False, "2027年3月20日まで、本店は日曜日の全時間帯でご予約受付を停止しております。"
+
     if seating_area == "PRIVATE":
         eligible = [area for area in ROOMS if public_party_allowed(area, party_size)]
         if not eligible:
