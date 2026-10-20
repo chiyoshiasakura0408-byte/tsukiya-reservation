@@ -284,6 +284,21 @@ def message(db, day, base_url=None):
             request = supplies.briefing_request(db, day, base_url)
             if request:
                 lines.extend(['', request])
+        if day == '2026-10-21' and base_url:
+            import supplies
+            access = supplies.connect(db)
+            try:
+                with access:
+                    drink_link = supplies.new_link(access, base_url, page='drinks')
+            finally:
+                access.close()
+            lines.extend(['', '【酒類・飲料の容量確認のお願い】',
+                '本店・別邸の各商品について、容器容量と1杯あたりの提供量を教えてください。',
+                '商品名／容器容量（ml）／1杯の提供量（ml）の順で、この経理LINEへご返信ください。瓶・缶をそのまま提供する商品は「1本・1缶」、店舗で量が異なる場合は店舗名も記載してください。容量はラベル写真でも構いません。',
+                '原価計算は行わず、オールイン提供分の機会損失（通常売価換算の参考額）の試算に使用します。',
+                '', '【酒類在庫表】', drink_link,
+                '本店・別邸を選び、未開封本数・開封残を入力して「朝倉へ在庫送信」を押してください。',
+                '専用リンクは8日間有効です。いつでも経理LINEに「酒類」と送ると、新しいリンクが届きます。'])
         text = '\n'.join(lines)
         if len(text.encode('utf-16-le')) // 2 > 4900:
             raise RuntimeError('リクエストが多いため予約表を確認してください')
