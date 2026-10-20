@@ -17,6 +17,7 @@ import instagram_concierge
 import guest_service
 import line_delivery
 import supplies
+import drinks
 import finance_links
 import line_receipts
 import line_reservations
@@ -1999,12 +2000,13 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
-        if p == "/supplies":
-            return self.send_html((BASE / "public" / "supplies.html").read_text(), loader=False)
-        if p == "/api/supplies":
+        if p in ("/supplies", "/drinks"):
+            return self.send_html((BASE / "public" / (p[1:] + ".html")).read_text(), loader=False)
+        if p in ("/api/supplies", "/api/drinks"):
             if not self.auth() and not supplies.authorized(DB, self.headers.get("X-Supplies-Token", "")):
                 return self.send_json({"error": "経理LINEから新しいリンクを開いてください"}, 401)
-            return self.send_json(supplies.view(DB))
+            inventory = drinks if p == "/api/drinks" else supplies
+            return self.send_json(inventory.view(DB), headers={"Cache-Control": "no-store"})
 
         if calendar_auth.handle_get(self, p, parse_qs(u.query), DB, APP_BASE_URL):
             return
@@ -2607,7 +2609,7 @@ class Handler(
         if calendar_auth.handle_post(self, p, APP_BASE_URL):
             return
 
-        if p in ("/api/supplies/save", "/api/supplies/report"):
+        if p in ("/api/supplies/save", "/api/supplies/report", "/api/drinks/save", "/api/drinks/report"):
             if not self.auth() and not supplies.authorized(DB, self.headers.get("X-Supplies-Token", "")):
                 return self.send_json({"error": "経理LINEから新しいリンクを開いてください"}, 401)
             if self.headers.get("Origin") != APP_BASE_URL.rstrip('/') or self.headers.get("X-Tsukiya-Action") != "supplies":
@@ -2616,7 +2618,8 @@ class Handler(
                 return self.send_json({"error": "入力が長すぎます"}, 413)
             try:
                 x = self.read_json()
-                result = supplies.save(DB, x) if p.endswith('/save') else supplies.submit(DB, x, APP_BASE_URL)
+                inventory = drinks if p.startswith('/api/drinks/') else supplies
+                result = inventory.save(DB, x) if p.endswith('/save') else inventory.submit(DB, x, APP_BASE_URL)
                 return self.send_json(result)
             except supplies.Conflict as exc:
                 return self.send_json({"error": str(exc)}, 409)

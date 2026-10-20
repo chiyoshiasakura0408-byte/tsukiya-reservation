@@ -63,6 +63,8 @@ def schema(c):
                 note = '元表では別邸のみ。未開封分を数えてください'
             c.execute('INSERT OR IGNORE INTO supply_stock(branch,item_id,name,note,applicable) VALUES(?,?,?,?,?)',
                       (branch, i, name, note, int(not (branch == 'main' and i == 28))))
+    import drinks
+    drinks.schema(c)
 
 
 def connect(db):
@@ -84,14 +86,14 @@ def recipient_status(c):
     return owner, bool(re.fullmatch(r'U[0-9a-fA-F]{32}', owner)), group
 
 
-def new_link(c, base_url):
-    if not base_url.startswith('https://'):
+def new_link(c, base_url, page='supplies'):
+    if not base_url.startswith('https://') or page not in ('supplies', 'drinks'):
         raise ValueError('公開URLを確認してください')
     token = secrets.token_urlsafe(32)
     c.execute('DELETE FROM supply_access WHERE expires<?', (time.time(),))
     c.execute('INSERT INTO supply_access VALUES(?,?)', (hashlib.sha256(token.encode()).hexdigest(), time.time() + 8 * 86400))
     # Fragment is not sent to the web server or included in referrer URLs.
-    return base_url.rstrip('/') + '/supplies#access=' + token
+    return base_url.rstrip('/') + '/' + page + '#access=' + token
 
 
 def authorized(db, token):
@@ -293,6 +295,7 @@ def submit(db, data, base_url):
 
 def ingest(c, events, base_url):
     """Called inside the verified work-channel webhook transaction."""
+    import drinks
     claimed = set()
     owner, owner_ready, group_ready = recipient_status(c)
     for event in events:
@@ -300,13 +303,15 @@ def ingest(c, events, base_url):
         body = msg.get('text', '')
         destination = src.get('groupId') if src.get('type') == 'group' else src.get('userId')
         allowed = (group_ready and src.get('type') == 'group' and destination == line_delivery.TARGET) or (owner_ready and src.get('type') == 'user' and destination == owner)
-        if not allowed or msg.get('type') != 'text' or not isinstance(body, str) or body.strip() not in COMMANDS:
+        if not allowed or msg.get('type') != 'text' or not isinstance(body, str) or body.strip() not in COMMANDS | drinks.COMMANDS:
             continue
         claimed.add(event['webhookEventId'])
         if not c.execute('INSERT OR IGNORE INTO supply_commands VALUES(?,?)', (event['webhookEventId'], time.time())).rowcount:
             continue
-        link = new_link(c, base_url)
-        text = '【つきや・備品管理】\n店舗を選び、在庫数を入力して「確認」を押してください。\n最後に「朝倉へ報告」を押すと要発注一覧を送信します。\n\n' + link + '\n\nリンクは8日間有効です。経理LINE内でご利用ください。'
+        is_drinks = body.strip() in drinks.COMMANDS
+        link = new_link(c, base_url, page='drinks' if is_drinks else 'supplies')
+        text = ('【つきや・酒類在庫】\n店舗を選び、在庫数を入力して「朝倉へ在庫送信」を押してください。\n発注は朝倉が判断します。\n\n' if is_drinks else
+                '【つきや・備品管理】\n店舗を選び、在庫数を入力して「確認」を押してください。\n最後に「朝倉へ報告」を押すと要発注一覧を送信します。\n\n') + link + '\n\nリンクは8日間有効です。経理LINE内でご利用ください。'
         queue(c, 'command:' + event['webhookEventId'], destination, split_messages(text))
     return claimed
 
