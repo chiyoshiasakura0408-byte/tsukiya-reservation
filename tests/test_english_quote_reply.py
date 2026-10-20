@@ -21,6 +21,10 @@ class QuoteReplyTests(StaffChatTests):
    e=self.event(mid,event='reply-'+mid)
    with patch.object(concierge_ai,'request',return_value={'translation_en':'Reservations are now open.'}) as ai:
     english_concierge.owner_line_replies(self.db,[e,e]);self.assertEqual(ai.call_count,1)
+    context=json.loads(ai.call_args.args[1])
+    self.assertEqual(context['owner_reply_ja'],e['message']['text'])
+    self.assertIn(self.data['body'],context['guest_enquiry'])
+    self.assertIn('never applications',ai.call_args.args[0])
   _,j=english_chat.handle(self.db,{**self.data,'action':'chat-status'},'peer','https://example.invalid')
   self.assertEqual(j['messages'][0]['owner_answer'],'Reservations are now open.\n\nReservations are now open.')
  def test_wrong_owner_unknown_quote_conflicting_reference_and_group_rejected(self):
