@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 import concierge_ai
+import owner_notifications
 
 
 def line_get(path, token):
@@ -58,4 +59,4 @@ def check(db=None):
                     notice={'state':row['state'],'japanese_summary':('日本語要約：' in text or '要約：' in text),'japanese_translation':'日本語訳：' in text and '現在自動翻訳を利用できません' not in text}
                     break
         finally:c.close()
-    return {'latest_english_notice':notice,'booking_paused':False,'openai':ai,'customer_line':line_check('CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN',True),'owner_line':line_check('LINE_CHANNEL_ACCESS_TOKEN')}
+    return {'latest_english_notice':notice,'booking_paused':False,'openai':ai,'customer_line':line_check('CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN',True),'owner_line':{**line_check('LINE_CHANNEL_ACCESS_TOKEN'), 'quota':owner_notifications.quota()}}

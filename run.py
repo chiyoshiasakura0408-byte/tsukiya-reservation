@@ -363,6 +363,7 @@ def con():
         if field not in customer_cols:
             c.execute(f"ALTER TABLE customers ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
     c.execute("CREATE INDEX IF NOT EXISTS reservations_customer_idx ON reservations(customer_id)")
+    concierge.owner_notifications.capture_schema(c)
 
     c.commit()
     return c
@@ -2115,6 +2116,19 @@ class Handler(
                 return self.send_json({"error":"unauthorized"},401)
             import concierge_diagnostics
             return self.send_json(concierge_diagnostics.check(DB),headers={"Cache-Control":"no-store"})
+        if p == "/api/reservation-notifications":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            q = parse_qs(u.query)
+            rid = (q.get("reservation_id") or [""])[0]
+            if rid and not rid.isdigit():
+                return self.send_json({"error": "invalid reservation id"}, 400)
+            c = concierge.connect(DB)
+            try:
+                return self.send_json(concierge.owner_notifications.status(c, int(rid) if rid else None),
+                                      headers={"Cache-Control": "no-store"})
+            finally:
+                c.close()
         if p == "/api/concierge/status":
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
