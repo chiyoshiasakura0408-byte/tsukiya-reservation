@@ -254,7 +254,7 @@ def new_booking_summary(c, day):
     return (f'新規予約{count}件ございます、ご確認お願いします' if count else
             '新規ご予約はありません。')
 
-def message(db, day):
+def message(db, day, base_url=None):
     c = connect(db)
     try:
         rows = c.execute("SELECT * FROM reservations WHERE substr(visit_at,1,10)=? AND status!='CANCELLED' ORDER BY visit_at,id", (day,)).fetchall()
@@ -279,6 +279,11 @@ def message(db, day):
                 payment = '事前決済未完了'
             lines.append('＊' + payment)
             lines.extend('＊' + note for note in notes)
+        if base_url:
+            import supplies
+            request = supplies.briefing_request(db, day, base_url)
+            if request:
+                lines.extend(['', request])
         text = '\n'.join(lines)
         if len(text.encode('utf-16-le')) // 2 > 4900:
             raise RuntimeError('リクエストが多いため予約表を確認してください')
@@ -354,7 +359,7 @@ def deliver(db, port, admin, base_url, day=None):
                     payload = json.loads(row['payload'])
                 else:
                     api('info')  # Validate token before generating the screenshot.
-                    payload = {'to':TARGET,'messages':[message(db,day)] + [capture(db,day,port,admin,base_url,session) for session in ('18:00','20:30')] + [printable_message(db,day,base_url)] + bank_transfer.accounting_digest(db,base_url)}
+                    payload = {'to':TARGET,'messages':[message(db,day,base_url)] + [capture(db,day,port,admin,base_url,session) for session in ('18:00','20:30')] + [printable_message(db,day,base_url)] + bank_transfer.accounting_digest(db,base_url)}
                     c.execute("UPDATE line_deliveries SET payload=?,state='READY',updated=? WHERE day=?", (json.dumps(payload),time.time(),day))
                     c.commit()
                 api('message/push',payload,row['retry_key'])

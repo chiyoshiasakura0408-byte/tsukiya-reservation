@@ -2,9 +2,9 @@
 
 `/supplies` is the iPhone-first shared staff inventory. It is the source for weekly LINE reports; the original iCloud Numbers sheet and exported XLSX are references, not live inputs.
 
-The verified accounting LINE group and the already-paired owner receive an initial link once. Every Monday 12:00 JST the group receives a check request. Monday 17:00 JST the owner receives the current snapshot, including unchecked and unconfigured items. Staff can submit per-branch reports at any time. `備品`, `備品管理`, `備品在庫`, or `備品チェック` in that accounting group or the paired owner's direct work-channel conversation issues a fresh link. Other sources cannot request links.
+The verified accounting LINE group and the already-paired owner receive an initial link once. Every Saturday the existing 09:00 JST accounting briefing includes the check request and an inventory link in its text. Sunday 23:00 JST the owner receives the current snapshot, including unchecked and unconfigured items. Staff can submit per-branch reports at any time. `備品`, `備品管理`, `備品在庫`, or `備品チェック` in that accounting group or the paired owner's direct work-channel conversation issues a fresh link. Other sources cannot request links. The schedule change does not send an announcement or repeat onboarding.
 
-The existing durable `concierge_outbox` carries these messages using its owner/work channel and stable LINE retry keys. Acceptance means LINE API accepted the request, not that a person read it. Failures remain visible in the authenticated inventory view. There are no new Render services or external credentials.
+The existing durable `concierge_outbox` carries owner reports and introductory/command messages using its owner/work channel and stable LINE retry keys. Saturday requests share the daily briefing's saved payload and retry key in `line_deliveries`, without adding another LINE message slot. Acceptance means LINE API accepted the request, not that a person read it. There are no new Render services or external credentials.
 
 ## Access and records
 

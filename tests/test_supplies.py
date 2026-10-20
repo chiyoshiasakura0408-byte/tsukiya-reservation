@@ -98,15 +98,68 @@ class SuppliesTests(unittest.TestCase):
         c.close()
 
     def test_weekly_schedule_and_restart_idempotency(self):
-        mon=datetime(2026,10,26,12,0,tzinfo=supplies.JST)
-        for _ in range(2):supplies.tick(self.db,'https://example.invalid',mon)
-        for _ in range(2):supplies.tick(self.db,'https://example.invalid',mon.replace(hour=17))
+        wed=datetime(2026,10,21,9,0,tzinfo=supplies.JST)
+        supplies.tick(self.db,'https://example.invalid',wed)
+        # Already-onboarded deployments must not announce the schedule change.
+        for at in (wed, wed, datetime(2026,10,26,17,0,tzinfo=supplies.JST),
+                   datetime(2026,10,24,9,0,tzinfo=supplies.JST),
+                   datetime(2026,10,25,22,59,tzinfo=supplies.JST)):
+            supplies.tick(self.db,'https://example.invalid',at)
+        c=supplies.connect(self.db)
+        self.assertEqual(c.execute('SELECT COUNT(*) FROM supply_notices').fetchone()[0],2)
+        c.close()
+        sun=datetime(2026,10,25,23,0,tzinfo=supplies.JST)
+        for _ in range(2):supplies.tick(self.db,'https://example.invalid',sun)
+        c=supplies.connect(self.db)
+        self.assertEqual(c.execute('SELECT COUNT(*) FROM supply_notices').fetchone()[0],3)
+        recipients=[r[0] for r in c.execute('SELECT user_id FROM concierge_outbox')]
+        self.assertEqual(recipients.count(line_delivery.TARGET),1)
+        self.assertEqual(recipients.count('U'+'1'*32),2)
+        report=c.execute("SELECT o.payload FROM supply_notices n JOIN concierge_outbox o ON n.outbox_id=o.id WHERE n.key='weekly:report:2026-10-19'").fetchone()
+        self.assertIn('未確認 69品目',json.loads(report[0])[0]['text'])
+        c.close()
+        supplies.tick(self.db,'https://example.invalid',sun+timedelta(days=7))
         c=supplies.connect(self.db)
         self.assertEqual(c.execute('SELECT COUNT(*) FROM supply_notices').fetchone()[0],4)
-        recipients=[r[0] for r in c.execute('SELECT user_id FROM concierge_outbox')]
-        self.assertEqual(recipients.count(line_delivery.TARGET),2)
-        self.assertEqual(recipients.count('U'+'1'*32),2)
         c.close()
+
+    def test_saturday_briefing_request_and_retry_share_daily_payload(self):
+        c=line_delivery.connect(self.db)
+        c.execute('CREATE TABLE reservations(id INTEGER PRIMARY KEY,visit_at TEXT,status TEXT)')
+        c.commit();c.close()
+        url='https://example.invalid'
+        with patch.object(line_delivery,'new_booking_summary',return_value='新規ご予約はありません。'):
+            self.assertNotIn('備品チェック',line_delivery.message(self.db,'2026-10-23',url)['text'])
+            with patch.object(line_delivery,'api',side_effect=[{},RuntimeError('LINE API HTTP 500'),{}]) as api, \
+                 patch.object(line_delivery,'capture',return_value={'type':'image'}), \
+                 patch.object(line_delivery,'printable_message',return_value={'type':'text','text':'PDF'}), \
+                 patch.object(line_delivery.bank_transfer,'accounting_digest',return_value=[{'type':'text','text':'振込確認'}]):
+                with self.assertRaises(RuntimeError):
+                    line_delivery.deliver(self.db,1,'test-admin',url,'2026-10-24')
+                line_delivery.deliver(self.db,1,'test-admin',url,'2026-10-24')
+                self.assertEqual(api.call_args_list[1],api.call_args_list[2])
+                payload=api.call_args.args[1]
+                self.assertEqual(payload['to'],line_delivery.TARGET)
+                self.assertEqual(len(payload['messages']),5)
+                text=payload['messages'][0]['text']
+                self.assertIn('新規ご予約はありません。',text)
+                self.assertIn('明日（日曜）23時まで',text)
+                self.assertEqual(text.count('【今週の備品チェック】'),1)
+                self.assertTrue(supplies.authorized(self.db,text.split('#access=')[1]))
+                self.assertTrue(line_delivery.deliver(self.db,1,'test-admin',url,'2026-10-24')['already_sent'])
+                self.assertEqual(api.call_count,3)
+        c=supplies.connect(self.db)
+        self.assertEqual(c.execute('SELECT COUNT(*) FROM concierge_outbox').fetchone()[0],0)
+        self.assertEqual(c.execute('SELECT COUNT(*) FROM supply_access').fetchone()[0],1)
+        concierge.put(c,'owner','')
+        c.commit();c.close()
+        self.assertEqual(supplies.briefing_request(self.db,'2026-10-24',url),'')
+
+    def test_saturday_briefing_respects_pause(self):
+        c=supplies.connect(self.db)
+        with c:c.execute("INSERT INTO supply_state VALUES('enabled','0')")
+        c.close()
+        self.assertEqual(supplies.briefing_request(self.db,'2026-10-24','https://example.invalid'),'')
 
     def test_command_restricts_destinations_and_deduplicates(self):
         c=supplies.connect(self.db)

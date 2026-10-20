@@ -146,7 +146,7 @@ def view(db):
             FROM supply_notices n JOIN concierge_outbox o ON n.outbox_id=o.id ORDER BY n.created DESC LIMIT 8''')]
         return {'items': rows, 'week': week_start(), 'summary': {b: counts([r for r in rows if r['branch'] == b]) for b in BRANCHES},
                 'enabled': enabled(c), 'owner_linked': owner, 'group_linked': group,
-                'schedule': '毎週月曜 12:00 確認依頼／17:00 集計（日本時間）', 'notices': notices,
+                'schedule': '毎週土曜 朝の経理LINE（9:00）で確認依頼／日曜23:00 朝倉へ集計（日本時間）', 'notices': notices,
                 'source': SOURCE, 'version': 1}
     finally:
         c.close()
@@ -311,6 +311,23 @@ def ingest(c, events, base_url):
     return claimed
 
 
+def briefing_request(db, day, base_url):
+    """Append Saturday's request to the existing daily text; do not send here."""
+    if datetime.strptime(day, '%Y-%m-%d').weekday() != 5:
+        return ''
+    c = connect(db)
+    try:
+        with c:
+            _, owner_ready, group_ready = recipient_status(c)
+            if not enabled(c) or not owner_ready or not group_ready:
+                return ''
+            link = new_link(c, base_url)
+            return ('【今週の備品チェック】\n経理LINEの皆様、明日（日曜）23時までに本店・別邸の在庫をご確認ください。\n'
+                    '在庫数・確認者を入力し、要発注を選んで朝倉へ報告してください。\n\n' + link)
+    finally:
+        c.close()
+
+
 def tick(db, base_url, at=None):
     at = at or now()
     c = connect(db)
@@ -323,19 +340,15 @@ def tick(db, base_url, at=None):
             # One initial link lets staff start immediately after deployment.
             if not c.execute("SELECT 1 FROM supply_notices WHERE key='intro:group'").fetchone():
                 link = new_link(c, base_url)
-                text = ('【つきや・備品管理を開始します】\n経理LINEの皆様で、毎週月曜17時までに本店・別邸の備品をご確認ください。\n'
-                        '月曜12時に確認依頼、17時に朝倉へ集計します。確認完了時は画面からすぐに報告できます。\n'
+                text = ('【つきや・備品管理を開始します】\n経理LINEの皆様で、毎週日曜23時までに本店・別邸の備品をご確認ください。\n'
+                        '土曜の朝の連絡で確認依頼、日曜23時に朝倉へ集計します。確認完了時は画面からすぐに報告できます。\n'
                         '初回は在庫数と発注基準を設定してください。基準が未設定でも「要発注」を選んで報告できます。\n\n' + link +
                         '\n\nLINEで「備品」と送ると新しいリンクが届きます。リンクは8日間有効・経理LINE内でご利用ください。\n元のNumbers表とは自動同期しません。今後の入力はこちらに統一してください。')
                 queue(c, 'intro:group', line_delivery.TARGET, split_messages(text))
-                queue(c, 'intro:owner', owner, split_messages('【つきや・備品管理】\niPhone用の管理画面を経理LINEへご案内しました。\n毎週月曜12時に確認依頼、17時に未確認分を含めて集計します。\n' + link))
+                queue(c, 'intro:owner', owner, split_messages('【つきや・備品管理】\niPhone用の管理画面を経理LINEへご案内しました。\n毎週土曜の朝の連絡で確認依頼、日曜23時に未確認分を含めて集計します。\n' + link))
             week = week_start(at)
-            if at.weekday() == 0 and at.hour >= 12:
-                key = 'weekly:request:' + week
-                if not c.execute('SELECT 1 FROM supply_notices WHERE key=?', (key,)).fetchone():
-                    link = new_link(c, base_url)
-                    queue(c, key, line_delivery.TARGET, split_messages('【今週の備品チェック】\n経理LINEの皆様、本日17時までに本店・別邸の在庫をご確認ください。\n在庫数・確認者を入力し、要発注を選んで朝倉へ報告してください。\n\n' + link))
-            if at.weekday() == 0 and at.hour >= 17:
+            # The group request is part of Saturday's durable daily briefing.
+            if at.weekday() == 6 and at.hour >= 23:
                 key = 'weekly:report:' + week
                 if not c.execute('SELECT 1 FROM supply_notices WHERE key=?', (key,)).fetchone():
                     link = new_link(c, base_url)
