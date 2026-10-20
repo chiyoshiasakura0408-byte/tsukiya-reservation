@@ -42,7 +42,7 @@ class DeliveryTests(unittest.TestCase):
             self.assertIsNone(d.image_path(self.db,'../secret',exp,sig))
     def test_briefing_format_and_current_time(self):
         c=d.connect(self.db)
-        c.execute("CREATE TABLE reservations(id INTEGER PRIMARY KEY,guest_name TEXT,visit_at TEXT,party_size INTEGER,seating_area TEXT,status TEXT,source TEXT,payment_confirmed_at TEXT,celebration_items TEXT,plate_message TEXT,guest_note TEXT)")
+        c.execute("CREATE TABLE reservations(id INTEGER PRIMARY KEY,guest_name TEXT,visit_at TEXT,party_size INTEGER,seating_area TEXT,status TEXT,source TEXT,payment_confirmed_at TEXT,celebration_items TEXT,plate_message TEXT,guest_note TEXT,created_at TEXT,course_name TEXT)")
         rows = [
             ('すがの', '17:30', 4, '10/18朝倉様のカレンダー画像に基づく。10/19 17:30、4名、個室。事前決済なし・当日精算。連絡先未確認。顧客候補は本人同定できないため紐付けなし。', ''),
             ('もりせ あつこ', '18:00', 2, '10/18に朝倉様からいただいたカレンダー画像に基づく予約。10月19日18:00、2名、個室、事前決済なし・当日精算。', ''),
@@ -56,6 +56,8 @@ class DeliveryTests(unittest.TestCase):
 本日のご予約状況をお伝え致します。
 
 合計4組・10名
+
+新規ご予約はありません。
 ＊花束とケーキのリクエストあり。
 
 ・17:30 すがの様　4名、個室
