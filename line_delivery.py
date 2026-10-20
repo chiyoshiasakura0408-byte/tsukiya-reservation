@@ -313,7 +313,7 @@ def message(db, day, base_url=None):
         text = '\n'.join(lines)
         if len(text.encode('utf-16-le')) // 2 > 4900:
             raise RuntimeError('リクエストが多いため予約表を確認してください')
-        return {'type':'text','text':text}
+        return line_bot.inventory_mention(c, text)
     finally:
         c.close()
 

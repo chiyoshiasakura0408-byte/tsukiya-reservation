@@ -79,7 +79,8 @@ def receive(db, raw, signature):
                     active = int(event['type'] not in ('leave', 'unfollow'))
                     c.execute('INSERT INTO line_sources VALUES (?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET last_seen=excluded.last_seen, active=excluded.active',
                               (source_id, kind, now, active))
-            claimed = line_reservations.ingest(c, raw, signature, payload)
+            claimed = register_inventory_mention(c, events)
+            claimed |= line_reservations.ingest(c, raw, signature, payload)
             claimed |= supplies.ingest(c, events, os.getenv('APP_BASE_URL', '').strip().rstrip('/'))
             finance_payload = {**payload, "events": [e for e in events if e["webhookEventId"] not in claimed]}
             finance_raw = json.dumps(finance_payload, ensure_ascii=False).encode() if claimed else raw
@@ -107,3 +108,52 @@ def status(db):
                 'sources': sources, 'delivery_enabled': False, 'receipt_import_enabled': False}
     finally:
         c.close()
+
+def register_inventory_mention(c, events):
+    """Bind an explicitly mentioned member only on the owner's signed command."""
+    import re
+    claimed = set()
+    owner = concierge.setting(c, 'owner')
+    for event in events:
+        src, msg = event.get('source', {}), event.get('message', {})
+        text = msg.get('text', '').strip()
+        if not (src.get('type') == 'group' and src.get('groupId') == __import__('line_delivery').TARGET
+                and src.get('userId') == owner and owner
+                and msg.get('type') == 'text'
+                and text.startswith('メンション登録 やまもとさん')):
+            continue
+        eid = event['webhookEventId']
+        claimed.add(eid)
+        if not c.execute('INSERT OR IGNORE INTO supply_commands VALUES(?,?)',
+                         (eid, __import__('time').time())).rowcount:
+            continue
+        people = [m.get('userId') for m in msg.get('mention', {}).get('mentionees', [])
+                  if m.get('type') == 'user' and not m.get('isSelf')]
+        valid = len(people) == 1 and re.fullmatch(r'U[0-9a-fA-F]{32}', people[0] or '')
+        if valid:
+            try:
+                __import__('line_delivery').api('group/' + src['groupId'] + '/member/' + people[0])
+            except RuntimeError:
+                valid = False
+        if valid:
+            concierge.put(c, 'inventory_mention_yamamoto', people[0])
+            concierge.put(c, 'inventory_mention_group', src['groupId'])
+            answer = 'やまもとさんのメンションを登録しました。今後の担当依頼に実際の@メンションを付けます。'
+        else:
+            answer = '登録できませんでした。「メンション登録 やまもとさん」に続けて、真瑚さん1名をLINEの候補から@メンションしてください。@Allや名前の文字入力だけでは登録できません。'
+        supplies.queue(c, 'mention-bind:' + eid, src['groupId'], [{'type': 'text', 'text': answer}])
+    return claimed
+
+
+def inventory_mention(c, text):
+    """Use only an owner-verified group-bound identity; otherwise retain wording."""
+    import re
+    uid = concierge.setting(c, 'inventory_mention_yamamoto')
+    group = concierge.setting(c, 'inventory_mention_group')
+    if ('やまもとさん、備品在庫表' not in text or
+            group != __import__('line_delivery').TARGET or
+            not re.fullmatch(r'U[0-9a-fA-F]{32}', uid)):
+        return {'type': 'text', 'text': text}
+    escaped = text.replace('{', '{{').replace('}', '}}')
+    return {'type': 'textV2', 'text': escaped.replace('やまもとさん、備品在庫表', '{yamamoto}、備品在庫表', 1),
+            'substitution': {'yamamoto': {'type': 'mention', 'mentionee': {'type': 'user', 'userId': uid}}}}
