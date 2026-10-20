@@ -299,8 +299,8 @@ def message(db, day, base_url=None):
                                        (253402300799, hashlib.sha256(token.encode()).hexdigest()))
             finally:
                 access.close()
-            lines.extend(['', '【メンション登録のご案内】',
-                '担当者への連絡を見逃さないようにするため、本日後ほど朝倉が、なかがわさん → やまもとさん → いまむらさん → さやさんの順に@メンションし、通知先の紐付けを行います。',
+            lines.extend(['', '【やまもとさんへのお願い】',
+                'シフトLINE連携を完了させてください。前回の連携画面は有効期限が切れているため、本日出勤の際に、新しく発行したQRコードを読み取り、登録を完了してください。',
                 '', '【酒類・飲料の容量確認のお願い】',
                 '本店・別邸の各商品について、容器容量と1杯あたりの提供量を教えてください。',
                 '商品名／容器容量（ml）／1杯の提供量（ml）の順で、この経理LINEへご返信ください。瓶・缶をそのまま提供する商品は「1本・1缶」、店舗で量が異なる場合は店舗名も記載してください。容量はラベル写真でも構いません。',
@@ -315,6 +315,8 @@ def message(db, day, base_url=None):
         text = '\n'.join(lines)
         if len(text.encode('utf-16-le')) // 2 > 4900:
             raise RuntimeError('リクエストが多いため予約表を確認してください')
+        if day == '2026-10-21':
+            return {'type': 'text', 'text': text}
         return line_bot.inventory_mention(c, text)
     finally:
         c.close()
