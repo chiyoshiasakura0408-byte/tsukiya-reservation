@@ -369,6 +369,26 @@ def resend_briefing(db, day=None, charts=None, printable=None):
             c.close()
 
 
+
+def briefing_text_messages(db, day, base_url):
+    result = message(db, day, base_url)
+    marker = '\n\n【やまもとさんへの依頼事項①'
+    if day == '2026-10-21' and result.get('type') == 'text' and marker in result['text']:
+        first, second = result['text'].split(marker, 1)
+        return [{'type': 'text', 'text': first.rstrip()},
+                {'type': 'text', 'text': '【やまもとさんへの依頼事項①' + second}]
+    return [result]
+
+
+def push_briefing_payload(payload, retry_key):
+    # LINE accepts up to five message objects per push. Stable keys prevent
+    # replaying an accepted batch if a later batch fails.
+    messages = payload['messages']
+    for offset in range(0, len(messages), 5):
+        key = retry_key if offset == 0 else str(uuid.uuid5(uuid.UUID(retry_key), 'batch:' + str(offset)))
+        api('message/push', {**payload, 'messages': messages[offset:offset+5]}, key)
+
+
 def deliver(db, port, admin, base_url, day=None):
     day = day or datetime.now(JST).date().isoformat()
     if not base_url.startswith('https://') or not admin:
@@ -391,10 +411,10 @@ def deliver(db, port, admin, base_url, day=None):
                     payload = json.loads(row['payload'])
                 else:
                     api('info')  # Validate token before generating the screenshot.
-                    payload = {'to':TARGET,'messages':[message(db,day,base_url)] + [capture(db,day,port,admin,base_url,session) for session in ('18:00','20:30')] + [printable_message(db,day,base_url)] + bank_transfer.accounting_digest(db,base_url)}
+                    payload = {'to':TARGET,'messages':briefing_text_messages(db,day,base_url) + [capture(db,day,port,admin,base_url,session) for session in ('18:00','20:30')] + [printable_message(db,day,base_url)] + bank_transfer.accounting_digest(db,base_url)}
                     c.execute("UPDATE line_deliveries SET payload=?,state='READY',updated=? WHERE day=?", (json.dumps(payload),time.time(),day))
                     c.commit()
-                api('message/push',payload,row['retry_key'])
+                push_briefing_payload(payload,row['retry_key'])
                 c.execute("UPDATE line_deliveries SET state='SENT',error=NULL WHERE day=?", (day,))
                 c.commit()
                 return {'ok':True}
