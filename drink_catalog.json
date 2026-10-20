@@ -1,6 +1,193 @@
 {
-  "verified": false,
-  "note_ja": "銘柄・価格帯・オールイン対象飲料と別料金飲料の詳細は未確認。推測せず朝倉へ確認する。",
-  "note_en": "Representative brands, price ranges and the detailed included/extra-charge beverage lists await confirmation by the restaurant. Please ask our concierge for assistance.",
-  "items": []
+  "verified": true,
+  "updated_on": "2026-10-21",
+  "note_ja": "朝倉確認済み。対象外は山崎・白州・クエルボ1800・ヘネシーの4品。十四代本丸は2名で一合まで無料。希少酒・入手困難のため提供できない場合あり。在庫の確約不可。奇数人数、追加量の料金、例外は推測せず問い合わせ窓口へ。従来の冬季オールイン適用条件は維持。",
+  "note_en": "Approved by Asakura. Yamazaki, Hakushu, Cuervo 1800 and Hennessy are excluded from beverage inclusion. Juyondai Honmaru is included only up to one go shared by two guests. It is rare and difficult to obtain and may be unavailable. Do not guarantee stock or invent allowances for odd party sizes, extra-serving prices or exceptions. Existing winter inclusion eligibility remains unchanged.",
+  "items": [
+    {
+      "id": 1,
+      "name_ja": "水",
+      "name_en": "Water",
+      "category_ja": "",
+      "included": true
+    },
+    {
+      "id": 2,
+      "name_ja": "ウーロン",
+      "name_en": "Oolong tea",
+      "category_ja": "",
+      "included": true
+    },
+    {
+      "id": 3,
+      "name_ja": "緑茶",
+      "name_en": "Green tea",
+      "category_ja": "",
+      "included": true
+    },
+    {
+      "id": 4,
+      "name_ja": "炭酸",
+      "name_en": "Sparkling water",
+      "category_ja": "",
+      "included": true
+    },
+    {
+      "id": 5,
+      "name_ja": "エビス",
+      "name_en": "Yebisu (beer)",
+      "category_ja": "ビール",
+      "included": true
+    },
+    {
+      "id": 6,
+      "name_ja": "オールフリー",
+      "name_en": "All-Free (non-alcoholic beer)",
+      "category_ja": "ノンアルコールビール",
+      "included": true
+    },
+    {
+      "id": 7,
+      "name_ja": "シーバスミズナラ",
+      "name_en": "Chivas Regal Mizunara (whisky)",
+      "category_ja": "ウイスキー",
+      "included": true
+    },
+    {
+      "id": 8,
+      "name_ja": "角　瓶",
+      "name_en": "Kaku (whisky)",
+      "category_ja": "ウイスキー",
+      "included": true
+    },
+    {
+      "id": 9,
+      "name_ja": "山崎",
+      "name_en": "Yamazaki",
+      "category_ja": "",
+      "included": false
+    },
+    {
+      "id": 10,
+      "name_ja": "白州",
+      "name_en": "Hakushu",
+      "category_ja": "",
+      "included": false
+    },
+    {
+      "id": 11,
+      "name_ja": "クエルボ1800",
+      "name_en": "Cuervo 1800",
+      "category_ja": "",
+      "included": false
+    },
+    {
+      "id": 12,
+      "name_ja": "オレンジ",
+      "name_en": "Orange juice",
+      "category_ja": "",
+      "included": true
+    },
+    {
+      "id": 13,
+      "name_ja": "ジンジャーエール",
+      "name_en": "Ginger ale",
+      "category_ja": "",
+      "included": true
+    },
+    {
+      "id": 14,
+      "name_ja": "コーラ",
+      "name_en": "Cola",
+      "category_ja": "",
+      "included": true
+    },
+    {
+      "id": 15,
+      "name_ja": "呉春",
+      "name_en": "Goshun (sake served warm)",
+      "category_ja": "日本酒・熱燗用",
+      "included": true
+    },
+    {
+      "id": 16,
+      "name_ja": "ヘネシー",
+      "name_en": "Hennessy",
+      "category_ja": "",
+      "included": false
+    },
+    {
+      "id": 17,
+      "name_ja": "十四代本丸",
+      "name_en": "Juyondai Honmaru (sake served chilled)",
+      "category_ja": "日本酒・冷酒",
+      "included": true,
+      "limit_ja": "2名で一合まで無料",
+      "limit_en": "Up to one go shared by two guests is included.",
+      "availability_ja": "希少酒につき入荷状況により提供できない場合あり"
+    },
+    {
+      "id": 18,
+      "name_ja": "洗心",
+      "name_en": "Senshin (sake served chilled)",
+      "category_ja": "日本酒・冷酒",
+      "included": true
+    },
+    {
+      "id": 19,
+      "name_ja": "山形政宗",
+      "name_en": "Yamagata Masamune (sake served chilled)",
+      "category_ja": "日本酒・冷酒",
+      "included": true
+    },
+    {
+      "id": 20,
+      "name_ja": "空",
+      "name_en": "Kuu (sake served chilled)",
+      "category_ja": "日本酒・冷酒",
+      "included": true
+    },
+    {
+      "id": 21,
+      "name_ja": "白ワイン",
+      "name_en": "White wine",
+      "category_ja": "",
+      "included": true
+    },
+    {
+      "id": 22,
+      "name_ja": "赤ワイン",
+      "name_en": "Red wine",
+      "category_ja": "",
+      "included": true
+    },
+    {
+      "id": 23,
+      "name_ja": "シャンパン",
+      "name_en": "Champagne",
+      "category_ja": "",
+      "included": true
+    },
+    {
+      "id": 24,
+      "name_ja": "森伊蔵",
+      "name_en": "Mori Izo (sweet potato shochu)",
+      "category_ja": "芋焼酎",
+      "included": true
+    },
+    {
+      "id": 25,
+      "name_ja": "兼八",
+      "name_en": "兼八 (barley shochu)",
+      "category_ja": "麦焼酎",
+      "included": true
+    },
+    {
+      "id": 26,
+      "name_ja": "吉四六",
+      "name_en": "吉四六 (barley shochu)",
+      "category_ja": "麦焼酎",
+      "included": true
+    }
+  ]
 }
