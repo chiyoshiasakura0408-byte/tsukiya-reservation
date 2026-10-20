@@ -8,6 +8,7 @@ import sqlite3
 import line_receipts
 import line_reservations
 import concierge
+import supplies
 from datetime import datetime, timezone
 
 MAX_BODY = 1024 * 1024
@@ -51,6 +52,9 @@ def receive(db, raw, signature):
     except (ValueError, TypeError, UnicodeDecodeError):
         return 400, {'error': 'invalid payload'}
     now = datetime.now(timezone.utc).isoformat()
+    # Initialize the inventory/outbox tables before the webhook transaction.
+    inventory = supplies.connect(db)
+    inventory.close()
     c = connect(db)
     received = 0
     try:
@@ -76,6 +80,7 @@ def receive(db, raw, signature):
                     c.execute('INSERT INTO line_sources VALUES (?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET last_seen=excluded.last_seen, active=excluded.active',
                               (source_id, kind, now, active))
             claimed = line_reservations.ingest(c, raw, signature, payload)
+            claimed |= supplies.ingest(c, events, os.getenv('APP_BASE_URL', '').strip().rstrip('/'))
             finance_payload = {**payload, "events": [e for e in events if e["webhookEventId"] not in claimed]}
             finance_raw = json.dumps(finance_payload, ensure_ascii=False).encode() if claimed else raw
             line_receipts.enqueue(c, finance_raw, signature, finance_payload)

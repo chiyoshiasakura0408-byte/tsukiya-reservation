@@ -16,6 +16,7 @@ import vip_slots
 import instagram_concierge
 import guest_service
 import line_delivery
+import supplies
 import finance_links
 import line_receipts
 import line_reservations
@@ -1998,6 +1999,13 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        if p == "/supplies":
+            return self.send_html((BASE / "public" / "supplies.html").read_text(), loader=False)
+        if p == "/api/supplies":
+            if not self.auth() and not supplies.authorized(DB, self.headers.get("X-Supplies-Token", "")):
+                return self.send_json({"error": "経理LINEから新しいリンクを開いてください"}, 401)
+            return self.send_json(supplies.view(DB))
+
         if calendar_auth.handle_get(self, p, parse_qs(u.query), DB, APP_BASE_URL):
             return
 
@@ -2598,6 +2606,22 @@ class Handler(
 
         if calendar_auth.handle_post(self, p, APP_BASE_URL):
             return
+
+        if p in ("/api/supplies/save", "/api/supplies/report"):
+            if not self.auth() and not supplies.authorized(DB, self.headers.get("X-Supplies-Token", "")):
+                return self.send_json({"error": "経理LINEから新しいリンクを開いてください"}, 401)
+            if self.headers.get("Origin") != APP_BASE_URL.rstrip('/') or self.headers.get("X-Tsukiya-Action") != "supplies":
+                return self.send_json({"error": "画面を開き直してください"}, 403)
+            if not lengths or int(lengths[0]) > 60000:
+                return self.send_json({"error": "入力が長すぎます"}, 413)
+            try:
+                x = self.read_json()
+                result = supplies.save(DB, x) if p.endswith('/save') else supplies.submit(DB, x, APP_BASE_URL)
+                return self.send_json(result)
+            except supplies.Conflict as exc:
+                return self.send_json({"error": str(exc)}, 409)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
 
         if p in ("/api/line/reservations/recover", "/api/line/reservations/note"):
             if not self.auth():return self.send_json({"error":"unauthorized"},401)
@@ -3858,6 +3882,7 @@ if __name__ == "__main__":
     threading.Thread(target=marketing.archive_loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=line_receipts.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=line_delivery.loop, args=(DB, PORT, ADMIN_TOKEN, APP_BASE_URL), daemon=True).start()
+    threading.Thread(target=supplies.loop, args=(DB, APP_BASE_URL), daemon=True).start()
 
     print(
         f"Tsukiya reservation server starting on :{PORT}"

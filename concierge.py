@@ -557,6 +557,9 @@ def deliver(db):
                         c.execute('UPDATE concierge_requests SET status=? WHERE delivery_id=?', ('回答LINE受付済み' if accepted else '回答送信失敗', row['id']))
                     c.execute('UPDATE concierge_outbox SET state=?,error=?,attempts=attempts+1,next_try=? WHERE id=?',
                               ('accepted' if accepted else 'pending' if retryable else 'failed', None if accepted else error, time.time()+min(3600, 30*2**min(row['attempts'], 7)), row['id']))
+                    if row['kind'] == 'supplies':
+                        print('Supplies LINE delivery:', 'accounting' if row['user_id'].startswith('C') else 'owner',
+                              'accepted' if accepted else 'pending' if retryable else 'failed', flush=True)
         finally:
             c.close()
 
