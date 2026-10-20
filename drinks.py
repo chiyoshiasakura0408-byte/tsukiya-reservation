@@ -8,10 +8,14 @@ import supplies
 
 ITEMS = [
     '水', 'ウーロン', '緑茶', '炭酸', 'エビス', 'オールフリー',
-    'シーバスミズナラ', '角　瓶', '山崎', '白州', 'クエルボ1800',
+    'シーバスミズナラ', '角', '山崎', '白州', 'クエルボ1800',
     'オレンジ', 'ジンジャーエール', 'コーラ', '呉春', 'ヘネシー',
     '十四代本丸', '洗心', '山形政宗', '空', '白ワイン', '赤ワイン', 'シャンパン', '森伊蔵', '兼八', '吉四六',
 ]
+# Persistent item IDs stay fixed so stock and prices remain attached to each drink.
+DISPLAY_ORDER = (1, 2, 3, 4, 12, 13, 14, 5, 6, 7, 8, 9, 10,
+                 24, 25, 26, 15, 11, 16, 17, 18, 19, 20, 21, 22, 23)
+DISPLAY_RANK = {item_id: rank for rank, item_id in enumerate(DISPLAY_ORDER)}
 COMMANDS = {'酒類', '酒類在庫', '酒類在庫表', '酒類チェック', '飲料在庫'}
 COUNTING = '未開封は本・缶・パックの整数。開封残は本換算（半分＝0.5、複数本は残量の合計）。在庫なしは両方0。'
 # User supplied selling prices in yen per serving; missing is never treated as zero.
@@ -40,6 +44,7 @@ def schema(c):
         for item_id, name in enumerate(ITEMS, 1):
             c.execute('INSERT OR IGNORE INTO drink_stock(branch,item_id,name) VALUES(?,?,?)',
                       (branch, item_id, name))
+    c.execute("UPDATE drink_stock SET name='角' WHERE item_id=8 AND name='角　瓶'")
 
 
 def rows_for(c, branch=None, at=None):
@@ -56,6 +61,8 @@ def rows_for(c, branch=None, at=None):
         r['current'] = r['current'] and r['split_complete']
         r['status'] = '入力済み' if r['current'] else ('内訳要入力' if r['qty'] is not None else '未入力')
         rows.append(r)
+    rows.sort(key=lambda r: (list(supplies.BRANCHES).index(r['branch']),
+                             DISPLAY_RANK.get(r['item_id'], len(DISPLAY_ORDER))))
     return rows
 
 
