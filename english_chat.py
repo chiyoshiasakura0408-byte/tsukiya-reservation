@@ -105,7 +105,9 @@ def handle(db, data, peer, base):
         except Exception:
             result = {'answer':concierge_ai.HANDOFF,'needs_owner':True,'summary_ja':'AIの応答を利用できないため、英語問い合わせを朝倉へ引き継ぎ。','reason_ja':'AI応答エラー・未設定'}
         request_id = None
-        if result['needs_owner']:
+        if result['needs_owner'] and data.get('mode') != 'staff':
+            result['answer'] = concierge_ai.HANDOFF
+        if result['needs_owner'] and data.get('mode') == 'staff':
             # This secret is derived from the guest's private session and message ID,
             # never returned, stored as plaintext, or placed in an analytics event.
             subtoken = hashlib.sha256((token+':'+mid).encode()).hexdigest()

@@ -38,25 +38,24 @@ class EnglishChatTests(unittest.TestCase):
         self.assertNotIn(self.data['token'],str([tuple(r) for r in c.execute('SELECT * FROM english_chat_messages')]))
         c.close()
 
-    def test_ai_failure_escalates_and_staff_reply_returns_to_chat(self):
+    def test_ai_failure_directs_to_form_without_submitting(self):
         with patch.object(concierge_ai,'reply',side_effect=TimeoutError):
             code,data=self.call()
         message=data['messages'][0]
-        self.assertEqual(code,200);self.assertTrue(message['request_id'].startswith('web-'))
-        concierge.configure(self.db,{'action':'answer','id':message['request_id'],'body':'Our team will assist you.'})
-        self.assertEqual(self.call(action='chat-status')[1]['messages'][0]['owner_answer'],'Our team will assist you.')
+        self.assertEqual(code,200)
+        self.assertIsNone(message['request_id'])
+        self.assertEqual(message['answer'],concierge_ai.HANDOFF)
         c=concierge.connect(self.db)
-        self.assertEqual(c.execute('SELECT count(*) FROM concierge_outbox').fetchone()[0],1)
+        self.assertEqual(c.execute('SELECT count(*) FROM concierge_outbox').fetchone()[0],0)
+        self.assertEqual(c.execute('SELECT count(*) FROM concierge_requests').fetchone()[0],0)
         c.close()
 
-    def test_uncertain_delivery_does_not_claim_owner_notified(self):
-        c=concierge.connect(self.db)
-        with c:concierge.put(c,'owner','')
-        c.close()
-        with patch.object(concierge_ai,'reply',side_effect=TimeoutError):
+    def test_owner_judgment_uses_form_and_does_not_claim_notification(self):
+        with patch.object(concierge_ai,'reply',return_value={'answer':'I will notify the owner.','needs_owner':True}):
             _,data=self.call()
         self.assertIsNone(data['messages'][0]['request_id'])
-        self.assertIn('temporarily unavailable',data['messages'][0]['answer'])
+        self.assertEqual(data['messages'][0]['answer'],concierge_ai.HANDOFF)
+        self.assertNotIn('notify',data['messages'][0]['answer'])
 
     def test_english_cannot_offer_extended_booking(self):
         with patch.object(concierge_ai,'request') as api:

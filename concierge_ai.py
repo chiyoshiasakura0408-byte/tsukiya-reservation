@@ -8,7 +8,7 @@ from pathlib import Path
 
 LIMIT = threading.BoundedSemaphore(2)
 OFFICIAL_URL = 'https://nishitenma-tsukiya-home.chiyoshi-a-0408.chatgpt.site/'
-HANDOFF = 'Thank you. I will ask Mr Asakura to review your request. Please check the reply here. No reservation or special arrangement has been confirmed.'
+HANDOFF = 'This enquiry requires Mr Asakura’s review. Please contact us using the enquiry form below. Our team will reply there in English.'
 
 
 def configured():
