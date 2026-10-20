@@ -36,6 +36,7 @@ def connect(db):
     CREATE TABLE IF NOT EXISTS english_message_links(message_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,request_id TEXT NOT NULL,destination TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS reservation_notice_links(outbox_id TEXT PRIMARY KEY,reservation_id INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS reservation_message_links(message_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,reservation_id INTEGER NOT NULL,destination TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS owner_booking_notices(reservation_id INTEGER PRIMARY KEY,outbox_id TEXT NOT NULL UNIQUE);
     ''')
     columns = {r['name'] for r in c.execute('PRAGMA table_info(concierge_customers)')}
     if 'customer_id' not in columns:
@@ -483,6 +484,7 @@ def deliver(db):
         c = connect(db)
         try:
             with c:
+                queue_new_web_reservations(c)
                 queue_arrivals(c)
             rows = c.execute("SELECT * FROM concierge_outbox WHERE state='pending' AND next_try<=? ORDER BY created LIMIT 10", (time.time(),)).fetchall()
             for row in rows:
@@ -550,6 +552,55 @@ def deliver(db):
             c.close()
 
 
+def queue_new_web_reservations(c):
+    """Notify the paired owner once per real online booking, from the agreed JST date.
+
+    The durable marker and outbox insert share a transaction. Existing outbox
+    retry keys handle ambiguous network responses without duplicating pushes.
+    Never alter reservations, invoices, or customer-facing delivery.
+    """
+    owner = setting(c, 'owner')
+    if not re.fullmatch(r'U[0-9a-fA-F]{32}', owner) or not os.getenv('LINE_CHANNEL_ACCESS_TOKEN'):
+        return
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reservations'").fetchone():
+        return
+    if setting(c, 'owner_booking_notifications_enabled', '1') != '1':
+        return
+    started = setting(c, 'owner_booking_notifications_started')
+    if not started:
+        started = datetime.now(JST).isoformat()
+        put(c, 'owner_booking_notifications_started', started)
+    rows = c.execute("""SELECT r.* FROM reservations r
+        LEFT JOIN owner_booking_notices n ON n.reservation_id=r.id
+        WHERE n.reservation_id IS NULL AND r.source='WEB'
+          AND julianday(r.created_at)>=julianday('2026-10-20T00:00:00+09:00')
+          AND r.status IN ('PENDING','INVOICED','CONFIRMED')
+          AND (r.status!='PENDING' OR r.payment_method='BANK')
+          AND r.amount>1 AND COALESCE(r.course_name,'') NOT LIKE '%テスト%'
+        ORDER BY r.id LIMIT 50""").fetchall()
+    for record in rows:
+        r = dict(record)
+        # Card bookings are only actionable after the invoice was created.
+        if r['status'] == 'PENDING' and r.get('payment_method') != 'BANK':
+            continue
+        seat = {'COUNTER': 'カウンター', 'PRIVATE1': '個室1', 'PRIVATE2': '個室2', 'PRIVATE3': '個室3'}.get(r.get('seating_area'), r.get('seating_area') or '未設定')
+        state = {'PENDING': '銀行振込待ち・未確定', 'INVOICED': '請求済み・未決済（未確定）', 'CONFIRMED': '予約確定'}[r['status']]
+        body = ('【公式予約・新規受付】\n予約番号 #' + str(r['id']) + '\n'
+                + r['guest_name'] + '様\n来店：' + r['visit_at'].replace('T', ' ')
+                + '\n人数：' + str(r['party_size']) + '名 ／ ' + seat
+                + '\nコース：' + (r.get('course_name') or '未設定')
+                + '\n金額：¥' + format(r['amount'], ',')
+                + '\n状態：' + state + '\n受付日時：' + r['created_at']
+                + '\n予約管理：' + os.getenv('APP_BASE_URL', 'https://tsukiya-reservation.onrender.com').rstrip('/') + '/reservations')
+        created = datetime.fromisoformat(r['created_at'].replace('Z', '+00:00'))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=JST)
+        if created < datetime.fromisoformat(started):
+            body += '\n※通知開始時の既存予約です。初回テスト通知を兼ねています。予約・決済は変更していません。'
+        outbox_id = enqueue(c, owner, [text_message(body, False)], channel='owner', kind='owner-new-booking', reservation_id=r['id'])
+        c.execute('INSERT INTO owner_booking_notices VALUES (?,?)', (r['id'], outbox_id))
+
+
 def status(db):
     import english_concierge
     import concierge_ai
@@ -559,6 +610,7 @@ def status(db):
             return {'ai_configured': concierge_ai.configured(), 'ai_model': os.getenv('ENGLISH_CONCIERGE_MODEL','gpt-4.1-mini'), 'booking_paused': False, 'enabled': setting(c, 'enabled') == '1', 'instagram_enabled': setting(c, 'instagram_enabled')=='1', 'instagram_verified':setting(c,'instagram_verified'), 'instagram_configured': all(os.getenv(k) for k in ('INSTAGRAM_APP_SECRET','INSTAGRAM_VERIFY_TOKEN','INSTAGRAM_ACCESS_TOKEN','INSTAGRAM_ACCOUNT_ID','INSTAGRAM_GRAPH_VERSION')), 'verified_at': setting(c, 'verified'), 'owner_linked': bool(setting(c, 'owner')), 'owner_customer_id': profile(c, setting(c, 'owner')).get('id'),
                     'secret_configured': bool(os.getenv('CONCIERGE_LINE_CHANNEL_SECRET')), 'token_configured': bool(os.getenv('CONCIERGE_LINE_CHANNEL_ACCESS_TOKEN')),
                     'owner_token_configured': bool(os.getenv('LINE_CHANNEL_ACCESS_TOKEN')), 'catalog': catalog(c),
+                    'owner_booking_notifications': {'since': '2026-10-20', 'enabled': setting(c, 'owner_booking_notifications_enabled', '1') == '1', 'notices': [dict(r) for r in c.execute("SELECT n.reservation_id,r.guest_name,r.created_at,o.state,o.error FROM owner_booking_notices n JOIN concierge_outbox o ON o.id=n.outbox_id JOIN reservations r ON r.id=n.reservation_id ORDER BY n.reservation_id DESC LIMIT 20")]},
                     'subscribers': c.execute("SELECT count(*) FROM concierge_customers WHERE active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'").fetchone()[0], 'arrivals_pending': c.execute("SELECT count(*) FROM concierge_arrivals WHERE state='pending'").fetchone()[0],
                     'requests': english_concierge.grouped_requests(c, [{**dict(r), 'customer_name': profile(c, r['user_id']).get('name', '')} for r in c.execute('SELECT id,user_id,body,created,status FROM concierge_requests ORDER BY created DESC LIMIT 100')]),
                     'delivery': [dict(r) for r in c.execute('SELECT kind,state,count(*) AS count FROM concierge_outbox GROUP BY kind,state')]}
@@ -634,3 +686,4 @@ def queue_arrivals(c):
     # No unsolicited VIP broadcasts. Retire queued events so they cannot replay later.
     c.execute("UPDATE concierge_arrivals SET state='cancelled' WHERE state='pending'")
     c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE channel='customer' AND kind IN ('announcement','guest-service') AND state='pending'")
+
