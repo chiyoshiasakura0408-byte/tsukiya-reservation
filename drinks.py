@@ -10,10 +10,15 @@ ITEMS = [
     '水', 'ウーロン', '緑茶', '炭酸', 'エビス', 'オールフリー',
     'シーバスミズナラ', '角　瓶', '山崎', '白州', 'クエルボ1800',
     'オレンジ', 'ジンジャーエール', 'コーラ', '呉春', 'ヘネシー',
-    '十四代本丸', '洗心', '山形政宗', '空', '白ワイン', '赤ワイン', 'シャンパン',
+    '十四代本丸', '洗心', '山形政宗', '空', '白ワイン', '赤ワイン', 'シャンパン', '森伊蔵', '兼八', '吉四六',
 ]
 COMMANDS = {'酒類', '酒類在庫', '酒類在庫表', '酒類チェック', '飲料在庫'}
-COUNTING = '1本・1缶・1パックを1として入力。箱は中の数量、開封済みは残量で換算（半分＝0.5）。'
+COUNTING = '未開封は本・缶・パックの整数。開封残は本換算（半分＝0.5、複数本は残量の合計）。在庫なしは両方0。'
+# User supplied selling prices in yen per serving; missing is never treated as zero.
+SALE_PRICES = {2:500,3:500,4:500,5:1000,6:500,7:1000,8:1000,
+               12:500,13:500,14:500,15:1000,17:5000,18:3000,19:1000,
+               20:2000,21:2000,22:2000,24:1000,25:1000}
+
 
 
 def schema(c):
@@ -27,6 +32,10 @@ def schema(c):
     c.execute('''CREATE TABLE IF NOT EXISTS drink_reports (
         id TEXT PRIMARY KEY, day TEXT NOT NULL, branch TEXT NOT NULL,
         at TEXT NOT NULL, actor TEXT NOT NULL, snapshot TEXT NOT NULL)''')
+    columns = {r[1] for r in c.execute('PRAGMA table_info(drink_stock)')}
+    for column in ('unopened', 'opened'):
+        if column not in columns:
+            c.execute(f'ALTER TABLE drink_stock ADD COLUMN {column} REAL')
     for branch in supplies.BRANCHES:
         for item_id, name in enumerate(ITEMS, 1):
             c.execute('INSERT OR IGNORE INTO drink_stock(branch,item_id,name) VALUES(?,?,?)',
@@ -41,7 +50,11 @@ def rows_for(c, branch=None, at=None):
             continue
         r = dict(row)
         r['current'] = bool(r['qty'] is not None and r['checked_at'] and r['checked_at'] <= at.isoformat())
-        r['status'] = '入力済み' if r['current'] else '未入力'
+        r['split_complete'] = r['unopened'] is not None and r['opened'] is not None
+        r['all_in'] = r['item_id'] not in (9,10)
+        r['sale_price'] = SALE_PRICES.get(r['item_id'])
+        r['current'] = r['current'] and r['split_complete']
+        r['status'] = '入力済み' if r['current'] else ('内訳要入力' if r['qty'] is not None else '未入力')
         rows.append(r)
     return rows
 
@@ -65,6 +78,10 @@ def report_text(rows, actor=''):
         lines.extend(['', '■ ' + name])
         for r in items:
             quantity = '未入力' if r['qty'] is None else f'{r["qty"]:g}'
+            if r['split_complete']:
+                quantity += f'本換算（未開封 {r["unopened"]:g}／開封残 {r["opened"]:g}）'
+            elif r['qty'] is not None:
+                quantity += '本換算・旧記録／内訳要入力'
             if r['qty'] is not None and r['checked_at']:
                 quantity += '（確認 ' + r['checked_at'][:16].replace('T', ' ') + '）'
             lines.append('・' + r['name'] + '：' + quantity)
@@ -102,7 +119,7 @@ def save(db, data):
             c.execute('BEGIN IMMEDIATE')
             seen = set()
             for patch in items:
-                if (not isinstance(patch, dict) or set(patch) != {'item_id', 'version', 'qty'}
+                if (not isinstance(patch, dict) or set(patch) not in ({'item_id', 'version', 'qty'}, {'item_id', 'version', 'unopened', 'opened'})
                         or type(patch['item_id']) is not int or patch['item_id'] in seen):
                     raise ValueError('酒類は在庫数のみ入力できます')
                 seen.add(patch['item_id'])
@@ -110,12 +127,22 @@ def save(db, data):
                                 (data['branch'], patch['item_id'])).fetchone()
                 if not row or type(patch['version']) is not int or patch['version'] != row['version']:
                     raise supplies.Conflict('他の担当者が更新しました。再読み込みして確認してください')
-                quantity = supplies.number(patch['qty'])
+                unopened = opened = None
+                if 'qty' in patch:
+                    quantity = supplies.number(patch['qty'])
+                else:
+                    unopened = supplies.number(patch['unopened'])
+                    opened = supplies.number(patch['opened'])
+                    if unopened is not None and unopened != int(unopened):
+                        raise ValueError('未開封本数は整数で入力してください')
+                    if (unopened is None) != (opened is None):
+                        raise ValueError('未開封本数と開封残を両方入力してください。在庫なしは0です')
+                    quantity = supplies.number(round(unopened + opened, 3)) if unopened is not None else None
                 at = supplies.now().isoformat()
-                result = {**dict(row), 'qty': quantity, 'checked_at': at if quantity is not None else None,
+                result = {**dict(row), 'qty': quantity, 'unopened': unopened, 'opened': opened, 'checked_at': at if quantity is not None else None,
                           'checked_by': actor if quantity is not None else '', 'version': row['version']+1}
-                c.execute('''UPDATE drink_stock SET qty=?,checked_at=?,checked_by=?,version=?
-                    WHERE branch=? AND item_id=?''', (result['qty'], result['checked_at'], result['checked_by'],
+                c.execute('''UPDATE drink_stock SET qty=?,unopened=?,opened=?,checked_at=?,checked_by=?,version=?
+                    WHERE branch=? AND item_id=?''', (result['qty'], unopened, opened, result['checked_at'], result['checked_by'],
                     result['version'], data['branch'], patch['item_id']))
                 c.execute('INSERT INTO drink_audit(branch,item_id,at,actor,before_json,after_json) VALUES(?,?,?,?,?,?)',
                           (data['branch'], patch['item_id'], at, actor, json.dumps(dict(row), ensure_ascii=False),

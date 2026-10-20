@@ -1,3 +1,4 @@
+import math
 import http.client
 import json
 import os
@@ -35,18 +36,18 @@ class DrinksTests(unittest.TestCase):
 
     def save(self, qty, item_id=1, branch='main'):
         return drinks.save(self.db, {'branch':branch,'actor':'担当','items':[
-            {'item_id':item_id,'version':self.stock(item_id,branch)['version'],'qty':qty}]})
+            {'item_id':item_id,'version':self.stock(item_id,branch)['version'],'unopened':None if qty is None else (math.floor(qty) if type(qty) in (int,float) and math.isfinite(qty) else qty),'opened':None if qty is None else (qty-math.floor(qty) if type(qty) in (int,float) and math.isfinite(qty) else 0)}]})
 
-    def test_23_products_both_branches_and_idempotent_seed(self):
-        self.assertEqual(len(drinks.ITEMS),23)
-        self.assertEqual(drinks.ITEMS[-1],'シャンパン')
-        self.assertEqual(len(drinks.view(self.db)['items']),46)
+    def test_26_products_both_branches_and_idempotent_seed(self):
+        self.assertEqual(len(drinks.ITEMS),26)
+        self.assertEqual(drinks.ITEMS[22],'シャンパン')
+        self.assertEqual(len(drinks.view(self.db)['items']),52)
         self.save(2.5,item_id=23)
         self.assertEqual(self.stock(23)['qty'],2.5)
         self.assertIsNone(self.stock(23,'annex')['qty'])
         for _ in range(2):supplies.connect(self.db).close()
         self.assertEqual(self.stock(23)['qty'],2.5)
-        self.assertEqual(drinks.view(self.db)['summary']['main'],{'total':23,'checked':1,'missing':22})
+        self.assertEqual(drinks.view(self.db)['summary']['main'],{'total':26,'checked':1,'missing':25})
         self.assertIsNone(supplies.view(self.db)['items'][0]['qty'])
 
     def test_zero_blank_and_no_weekly_reset(self):
@@ -55,7 +56,7 @@ class DrinksTests(unittest.TestCase):
         with patch.object(supplies,'now',return_value=at+timedelta(days=16)):
             self.assertTrue(self.stock()['current'])
             text=drinks.view(self.db)['preview']['main']
-            self.assertIn('水：0（確認 2026-10-24 10:00）',text)
+            self.assertIn('水：0本換算（未開封 0／開封残 0）（確認 2026-10-24 10:00）',text)
         self.save(None)
         self.assertFalse(self.stock()['current'])
         self.assertIsNone(self.stock()['checked_at'])
@@ -86,7 +87,7 @@ class DrinksTests(unittest.TestCase):
         self.assertEqual(rows[0]['user_id'],'U'+'1'*32)
         text=json.loads(rows[0]['payload'])[0]['text']
         for name in drinks.ITEMS:self.assertIn('・'+name+'：',text)
-        self.assertIn('未入力 21品目',text)
+        self.assertIn('未入力 24品目',text)
         self.assertIn('シャンパン：1.5',text)
         self.assertIn('発注は朝倉が判断します',text)
         self.assertNotIn('推奨',text)
@@ -95,6 +96,31 @@ class DrinksTests(unittest.TestCase):
         self.assertIn('/drinks#access=',text)
         self.assertEqual(c.execute('SELECT COUNT(*) FROM drink_reports').fetchone()[0],1)
         c.close()
+
+    def test_split_migration_prices_and_all_in(self):
+        drinks.save(self.db,{'branch':'main','actor':'旧画面','items':[{'item_id':1,'version':0,'qty':2.5}]})
+        row=self.stock()
+        self.assertEqual(row['qty'],2.5)
+        self.assertIsNone(row['unopened'])
+        self.assertFalse(row['current'])
+        self.assertEqual(row['status'],'内訳要入力')
+        self.save(2.5)
+        row=self.stock()
+        self.assertEqual((row['unopened'],row['opened'],row['qty']),(2,0.5,2.5))
+        self.assertTrue(row['current'])
+        rows=[r for r in drinks.view(self.db)['items'] if r['branch']=='main']
+        self.assertEqual(sum(r['all_in'] for r in rows),24)
+        self.assertFalse(self.stock(9)['all_in'])
+        self.assertFalse(self.stock(10)['all_in'])
+        self.assertEqual(self.stock(17)['sale_price'],5000)
+        self.assertEqual(self.stock(18)['sale_price'],3000)
+        self.assertEqual(self.stock(20)['sale_price'],2000)
+        self.assertEqual(self.stock(24)['sale_price'],1000)
+        self.assertEqual(self.stock(2)['sale_price'],500)
+        self.assertIsNone(self.stock(26)['sale_price'])
+        for unopened,opened in [(1.5,0),(2,None),(None,0),(True,0)]:
+            with self.assertRaises(ValueError):
+                drinks.save(self.db,{'branch':'main','actor':'担当','items':[{'item_id':2,'version':0,'unopened':unopened,'opened':opened}]})
 
     def test_no_scheduled_drinks_or_onboarding(self):
         for at in [datetime(2026,10,21,9,tzinfo=supplies.JST),datetime(2026,10,24,9,tzinfo=supplies.JST),datetime(2026,10,25,23,tzinfo=supplies.JST)]:
