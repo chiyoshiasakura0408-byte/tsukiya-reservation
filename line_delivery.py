@@ -236,6 +236,24 @@ def briefing_requests(row):
     return requested, notes
 
 
+
+def new_booking_summary(c, day):
+    """Count registrations since the previous daily briefing snapshot (JST)."""
+    end = datetime.now(JST)
+    previous = c.execute(
+        "SELECT updated FROM line_deliveries WHERE state='SENT' AND length(day)=10 AND day<? ORDER BY day DESC LIMIT 1",
+        (day,)).fetchone()
+    start = (datetime.fromtimestamp(previous['updated'], JST) if previous else
+             datetime.strptime(day, '%Y-%m-%d').replace(tzinfo=JST, hour=9) - timedelta(days=1))
+    count = c.execute("""SELECT COUNT(*) FROM reservations
+        WHERE julianday(created_at)>julianday(?) AND julianday(created_at)<=julianday(?)
+        AND status!='CANCELLED'
+        AND COALESCE(course_name,'') NOT LIKE '%テスト%'
+        AND COALESCE(guest_name,'') NOT LIKE '%テスト%'""",
+        (start.isoformat(), end.isoformat())).fetchone()[0]
+    return (f'新規予約{count}件ございます、ご確認お願いします' if count else
+            '新規ご予約はありません。')
+
 def message(db, day):
     c = connect(db)
     try:
@@ -244,6 +262,7 @@ def message(db, day):
         date_label = f'{date.year}年{date.month}月{date.day}日（{"月火水木金土日"[date.weekday()]}）'
         lines = ['おはようございます。', date_label, '本日のご予約状況をお伝え致します。', '',
                  f'合計{len(rows)}組・{sum(r["party_size"] for r in rows)}名']
+        lines.extend(['', new_booking_summary(c, day)])
         details = [briefing_requests(r) for r in rows]
         items = [item for item in ('花束', 'ケーキ') if any(item in requested for requested, _ in details)]
         if items:
