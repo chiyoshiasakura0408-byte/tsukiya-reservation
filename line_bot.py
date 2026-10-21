@@ -86,9 +86,14 @@ def receive(db, raw, signature):
             claimed = register_inventory_mention(c, events)
             # Question requests are exclusively handled by the internal reply API,
             # never interpreted as receipts, reservations, or inventory commands.
-            staff_questions = staff_faq.question_events(new_events, __import__('line_delivery').TARGET)
+            staff_ids = {concierge.setting(c, 'owner')}
+            staff_ids.update(concierge.setting(c, 'inventory_mention_' + key)
+                             for key in ('nakagawa', 'yamamoto', 'imamura', 'saya'))
+            staff_ids.discard(None)
+            staff_ids.discard('')
+            staff_questions = staff_faq.question_events(new_events, staff_ids)
             claimed.update(e['webhookEventId'] for e in new_events
-                           if staff_faq.question_events([e], __import__('line_delivery').TARGET))
+                           if staff_faq.question_events([e], staff_ids))
             claimed |= line_reservations.ingest(c, raw, signature, payload)
             claimed |= supplies.ingest(c, events, os.getenv('APP_BASE_URL', '').strip().rstrip('/'))
             finance_payload = {**payload, "events": [e for e in events if e["webhookEventId"] not in claimed]}
@@ -100,7 +105,7 @@ def receive(db, raw, signature):
     import guest_service
     if staff_questions:
         threading.Thread(target=staff_faq.respond,
-                         args=(new_events, __import__('line_delivery').TARGET),
+                         args=(new_events, staff_ids),
                          daemon=True).start()
     guest_service.receive_stock(db, events)
     concierge.pair_owner(db, events)
