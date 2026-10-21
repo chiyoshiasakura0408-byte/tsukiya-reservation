@@ -2485,7 +2485,7 @@ class Handler(
                     raise ValueError()
             except ValueError:
                 return self.send_json({"error": "来店日・人数が不正です"}, 400)
-            course = bookable_course(day) if public_slot_allowed(day, "18:00") or public_slot_allowed(day, "20:30") else None
+            course = bookable_course(day) if staff_slot_allowed(day, "18:00") or staff_slot_allowed(day, "20:30") else None
             return self.send_json({"available": bool(course),
                                    "course_name": course[0] if course else None,
                                    "amount": course[1] * party if course else None})
