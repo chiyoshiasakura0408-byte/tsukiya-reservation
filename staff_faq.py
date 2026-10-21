@@ -1,4 +1,4 @@
-"""Staff questions in the existing internal LINE group only.
+"""Staff questions via individual LINE chats only.
 
 Requires a verified LINE webhook; answers via reply API, not broadcast/push.
 This module never changes bookings, accounting data, or bot configuration.
@@ -76,7 +76,7 @@ def question_events(events, group):
     for event in events:
         source = event.get("source", {})
         msg = event.get("message", {})
-        if event.get("type") != "message" or source.get("type") != "group" or source.get("groupId") != group:
+        if event.get("type") != "message" or source.get("type") != "user" or source.get("userId") not in group:
             continue
         if msg.get("type") != "text" or not isinstance(msg.get("text"), str):
             continue
