@@ -105,7 +105,7 @@ def receive(db, raw, signature):
     import guest_service
     if staff_questions:
         threading.Thread(target=staff_faq.respond,
-                         args=(new_events, staff_ids, __import__('line_delivery').TARGET),
+                         args=(new_events, staff_ids, __import__('line_delivery').TARGET, db),
                          daemon=True).start()
     guest_service.receive_stock(db, events)
     concierge.pair_owner(db, events)
