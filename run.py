@@ -2226,7 +2226,9 @@ class Handler(
         if p == "/api/line/status":
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
-            return self.send_json({**line_bot.status(DB), **line_delivery.status(DB), **line_receipts.status(DB)}, headers={"Cache-Control": "no-store"})
+            import staff_faq
+            return self.send_json({**line_bot.status(DB), **line_delivery.status(DB), **line_receipts.status(DB),
+                                   "staff_faq": staff_faq.status(DB)}, headers={"Cache-Control": "no-store"})
 
         if p == "/webhooks/line":
             return self.send_json({"service": "tsukiya-line-webhook", "version": 1,
