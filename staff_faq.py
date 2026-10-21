@@ -6,7 +6,9 @@ This module never changes bookings, accounting data, or bot configuration.
 import json
 import os
 import re
+import sqlite3
 import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta
 
 JST = timezone(timedelta(hours=9))
@@ -46,6 +48,43 @@ POLICY = """西天満つきや：承認済み業務規定（2026年10月21日時
 個別予約の空席、決済状態、返金判断、特別対応はこのAIから確認・変更できない。予約管理または朝倉に確認する。
 """
 
+def diagnostic(db, stage, outcome):
+    """Save only enum outcomes; no LINE IDs, reply tokens, questions or response text."""
+    if stage not in ("openai", "line_reply", "authorization") or outcome not in (
+        "success", "not_configured", "http_error", "timeout", "network_error",
+        "invalid_response", "fallback", "denied", "not_sent"
+    ):
+        return
+    try:
+        with sqlite3.connect(db, timeout=5) as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS staff_faq_diagnostics (
+                stage TEXT PRIMARY KEY, outcome TEXT NOT NULL, checked_at TEXT NOT NULL,
+                total INTEGER NOT NULL DEFAULT 0)""")
+            conn.execute("""INSERT INTO staff_faq_diagnostics(stage,outcome,checked_at,total)
+                VALUES(?,?,datetime('now'),1)
+                ON CONFLICT(stage) DO UPDATE SET outcome=excluded.outcome,
+                checked_at=excluded.checked_at,total=total+1""", (stage, outcome))
+    except sqlite3.Error:
+        print("staff_faq_diagnostics_db_error", flush=True)
+
+
+def status(db):
+    result = {"model": os.getenv("STAFF_FAQ_MODEL", "gpt-4.1-mini"),
+              "openai_key_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+              "line_reply_token_configured": bool(os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()),
+              "latest": {}}
+    try:
+        with sqlite3.connect(db, timeout=5) as conn:
+            present = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='staff_faq_diagnostics'").fetchone()
+            if present:
+                result["latest"] = {stage: {"outcome": outcome, "checked_at_utc": at, "total": num}
+                    for stage, outcome, at, num in conn.execute(
+                        "SELECT stage,outcome,checked_at,total FROM staff_faq_diagnostics")}
+    except sqlite3.Error:
+        result["diagnostic_error"] = "unavailable"
+    return result
+
+
 def fallback(question):
     q = question.lower()
     if any(t in q for t in ("フリードリンク", "飲み放題", "オールイン", "無料", "お酒", "ドリンク", "酒", "ウイスキー", "日本酒", "シャンパン", "山崎", "白州", "十四代")):
@@ -62,9 +101,10 @@ def fallback(question):
         return "オンライン予約は来店2日前の23:59まで。前日・当日は電話のみです。通常は料理代全額前受け・決済完了で確定。前日の電話予約は来店当日8:00が期限、当日は前受けなしです。"
     return "登録済みの業務規定から確実に回答できません。予約管理画面または朝倉に確認してください。"
 
-def model_answer(question):
+def model_answer(question, db):
     key = os.getenv("OPENAI_API_KEY", "").strip()
     if not key:
+        diagnostic(db, 'openai', 'not_configured')
         return fallback(question)
     request = {
         "model": os.getenv("STAFF_FAQ_MODEL", "gpt-4.1-mini"),
@@ -80,12 +120,17 @@ def model_answer(question):
         with urllib.request.urlopen(req, timeout=7) as res:
             obj = json.loads(res.read(32000))
         if obj.get("status") != "completed":
+            diagnostic(db, 'openai', 'invalid_response')
             return fallback(question)
         answer = "".join(part.get("text", "") for item in obj.get("output", [])
                if item.get("type") == "message" for part in item.get("content", [])
                if part.get("type") == "output_text").strip()
+        diagnostic(db, 'openai', 'success' if answer else 'invalid_response')
         return answer[:MAX_REPLY] if answer else fallback(question)
-    except Exception:
+    except Exception as exc:
+        outcome = ('http_error' if isinstance(exc, urllib.error.HTTPError) else
+                   'timeout' if isinstance(exc, TimeoutError) else 'network_error')
+        diagnostic(db, 'openai', outcome)
         return fallback(question)
 
 def question_events(events):
@@ -127,25 +172,31 @@ def member_of_work_group(user_id, trusted_users, work_group):
         print("staff_faq_group_verification_failed", type(exc).__name__, flush=True)
         return False
 
-def reply(question, reply_token):
+def reply(question, reply_token, db):
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
     if not token or not reply_token:
+        diagnostic(db, 'line_reply', 'not_configured')
         return False
-    answer = model_answer(question) if question else "「質問 予約の締切」のように入力してください。"
+    answer = model_answer(question, db) if question else "「質問 予約の締切」のように入力してください。"
     body = json.dumps({"replyToken": reply_token, "messages": [{"type": "text", "text": answer[:MAX_REPLY]}]}, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request("https://api.line.me/v2/bot/message/reply", data=body,
           headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=6) as response:
-            return 200 <= response.status < 300
+            success = 200 <= response.status < 300
+        diagnostic(db, 'line_reply', 'success' if success else 'http_error')
+        return success
     except Exception as exc:
-        print("staff_faq_reply_failed", type(exc).__name__)
+        diagnostic(db, 'line_reply', 'http_error' if isinstance(exc, urllib.error.HTTPError) else 'network_error')
+        print("staff_faq_reply_failed", type(exc).__name__, flush=True)
         return False
 
-def respond(events, trusted_users, work_group):
+def respond(events, trusted_users, work_group, db):
     """Verify group membership before any individual response; never reply in a group."""
     for token, question, user_id in question_events(events):
         if member_of_work_group(user_id, trusted_users, work_group):
-            reply(question, token)
+            diagnostic(db, 'authorization', 'success')
+            reply(question, token, db)
         else:
+            diagnostic(db, 'authorization', 'denied')
             print("staff_faq_private_question_not_authorised", flush=True)
