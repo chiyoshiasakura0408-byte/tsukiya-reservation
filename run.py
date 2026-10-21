@@ -606,7 +606,16 @@ def send_invoice_sms(reservation):
                 c.execute("UPDATE reservations SET invoice_sms_status='SENDING',invoice_sms_error=NULL WHERE id=?", (rid,))
                 c.commit()
                 try:
-                    result = send_sms(row["phone"], row["square_invoice_url"])
+                    arrival_day = date.fromisoformat(row["visit_at"][:10])
+                    received_day = parse_dt(row["created_at"]).astimezone(timezone(timedelta(hours=9))).date()
+                    if row["source"] == "PHONE" and received_day == arrival_day - timedelta(days=1):
+                        sms_text = (f"西天満つきやです。\\n前日電話予約のお料理代金を下記よりお支払いください。\\n"
+                                    f"お支払い期限：{arrival_day:%Y年%m月%d日} 08:00（日本時間）\\n"
+                                    "期限までに決済を確認できない場合、ご予約は取り消しとなります。\\n"
+                                    f"{row['square_invoice_url']}")
+                        result = send_sms(row["phone"], body=sms_text)
+                    else:
+                        result = send_sms(row["phone"], row["square_invoice_url"])
                     if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
                         raise RuntimeError("SMS送信を受け付けられませんでした")
                     c.execute("UPDATE reservations SET invoice_sms_status='QUEUED',invoice_sms_sid=?,"
@@ -750,9 +759,11 @@ def make_invoice(r):
     now_jp = datetime.now(timezone(timedelta(hours=9)))
     phone_day = date.fromisoformat(str(r["visit_at"])[:10]) if r["source"] == "PHONE" else None
     immediate_phone = phone_day is not None and phone_day == now_jp.date() + timedelta(days=1)
-    due = (now_jp.date() if immediate_phone else
+    due = (phone_day if immediate_phone else
            (datetime.now(timezone.utc) + timedelta(days=3)).date()).isoformat()
 
+    phone_deadline_ja = (f"前日電話予約のお支払期限：{phone_day:%Y年%m月%d日} 08:00（日本時間）。未決済の場合、予約は取り消しとなります。\n\n" if immediate_phone else "")
+    phone_deadline_en = (f"Phone booking payment deadline: {phone_day:%Y-%m-%d} at 08:00 JST. Unpaid reservations will be canceled.\n\n" if immediate_phone else "")
     delivery_method = "EMAIL" if r["email"] else "SHARE_MANUALLY"
 
     invoice = square(
@@ -780,7 +791,7 @@ def make_invoice(r):
                     "Nishitenma Tsukiya | Crab Omakase" if english else "西天満 つきや お料理代",
 
                 "description": (
-                    "Full prepayment for your crab omakase reservation. "
+                    phone_deadline_en + "Full prepayment for your crab omakase reservation. "
                     "Your reservation is confirmed after full payment. "
                     + booking_policy.details(r)["beverage_policy_en"] + "\n\n"
                     "For bank transfers:\nSumitomo Mitsui Banking Corporation\n"
@@ -788,7 +799,7 @@ def make_invoice(r):
                     "Account name: ASAKURA CHIYOSHI"
                     + ("\n\n" + annex_message(r, True) if annex_message(r, True) else "")
                 ) if english else (
-                    booking_policy.details(r)["beverage_policy"] + "\n\n" + "お振込みの際は下記口座までお願い致します。\n\n"
+                    phone_deadline_ja + booking_policy.details(r)["beverage_policy"] + "\n\n" + "お振込みの際は下記口座までお願い致します。\n\n"
                     "三井住友銀行\n"
                     "堂島支店\n"
                     "(普)0655295\n"
