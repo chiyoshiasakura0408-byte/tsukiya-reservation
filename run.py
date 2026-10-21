@@ -127,6 +127,7 @@ ROOMS = (
 PUBLIC_COURSE_PRICE = 66000  # 税込・1名あたり
 PUBLIC_PAYMENT_HOURS = 48
 PUBLIC_COURSES = {
+    "zuwaigani-oct": ("ずわい蟹おまかせコース", 44000),
     "matsuba-seko": ("松葉蟹おまかせコース", PUBLIC_COURSE_PRICE),
     "matsuba-fukahire": ("松葉蟹おまかせコース", PUBLIC_COURSE_PRICE),
 }
@@ -174,6 +175,8 @@ def public_slot_allowed(day, time_text, course=None):
 
 
 def bookable_course_key(day):
+    if date(2026, 10, 22) <= day <= date(2026, 10, 31):
+        return "zuwaigani-oct"
     if date(2026, 10, 15) <= day <= date(2026, 11, 9):
         return 'tarabagani'
     if day.month == 11 and day.day >= 10 or day.month == 12:
