@@ -91,9 +91,9 @@ def receive(db, raw, signature):
                              for key in ('nakagawa', 'yamamoto', 'imamura', 'saya'))
             staff_ids.discard(None)
             staff_ids.discard('')
-            staff_questions = staff_faq.question_events(new_events, staff_ids)
+            staff_questions = staff_faq.question_events(new_events)
             claimed.update(e['webhookEventId'] for e in new_events
-                           if staff_faq.question_events([e], staff_ids))
+                           if staff_faq.question_events([e]))
             claimed |= line_reservations.ingest(c, raw, signature, payload)
             claimed |= supplies.ingest(c, events, os.getenv('APP_BASE_URL', '').strip().rstrip('/'))
             finance_payload = {**payload, "events": [e for e in events if e["webhookEventId"] not in claimed]}
@@ -105,7 +105,7 @@ def receive(db, raw, signature):
     import guest_service
     if staff_questions:
         threading.Thread(target=staff_faq.respond,
-                         args=(new_events, staff_ids),
+                         args=(new_events, staff_ids, __import__('line_delivery').TARGET),
                          daemon=True).start()
     guest_service.receive_stock(db, events)
     concierge.pair_owner(db, events)
