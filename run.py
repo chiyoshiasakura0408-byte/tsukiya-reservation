@@ -10,6 +10,7 @@ import line_bot
 import concierge
 import english_concierge
 import booking_policy
+import availability_display
 import concierge_booking
 import vip_access
 import vip_slots
@@ -2319,6 +2320,7 @@ class Handler(
                             slots[area][time_text] = available
                     priced = bookable_course(day)
                     days.append({"date": day.isoformat(), "slots": slots,
+                                 "marks": availability_display.marks(sys.modules[__name__], c, day, slots),
                                  "course_name": priced[0] if priced else None,
                                  "price_per_person": priced[1] if priced else None})
             finally:
