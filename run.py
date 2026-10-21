@@ -978,20 +978,49 @@ def send_payment_reminder(reservation, invoice_status):
 def expire_public_reservations():
     """Release expired public holds only after Square confirms an invoice is unpaid."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=PUBLIC_PAYMENT_HOURS)).isoformat()
+    now_jp = datetime.now(timezone(timedelta(hours=9)))
     c = con()
     expired = 0
     try:
         c.execute("BEGIN IMMEDIATE")
         rows = c.execute(
-            "SELECT id,square_invoice_id FROM reservations WHERE "
+            "SELECT id,square_invoice_id,source,visit_at,created_at,invoice_issued_at,reminder_status,payment_method "
+            "FROM reservations WHERE "
             "((source='WEB' AND payment_method!='BANK' AND square_invoice_id IS NULL AND created_at<=?) "
             "OR (source IN ('WEB','PHONE') AND square_invoice_id IS NOT NULL "
             "AND COALESCE(invoice_issued_at,created_at)<=? "
-            "AND reminder_status IN ('SENT','SKIPPED_LEGACY'))) "
+            "AND reminder_status IN ('SENT','SKIPPED_LEGACY')) "
+            "OR (source='PHONE' AND square_invoice_id IS NOT NULL "
+            "AND substr(visit_at,1,10)<=?)) "
             "AND status IN ('PENDING','INVOICED','ERROR') "
-            "ORDER BY id LIMIT 50", (cutoff, cutoff)
+            "ORDER BY id LIMIT 50", (cutoff, cutoff, now_jp.date().isoformat())
         ).fetchall()
         for row in rows:
+            # Only PHONE reservations taken the calendar day before service have the
+            # special 08:00 JST deadline. Older bookings keep the existing 48h rules.
+            visit_day = date.fromisoformat(row["visit_at"][:10])
+            created_day = parse_dt(row["created_at"]).astimezone(
+                timezone(timedelta(hours=9))).date()
+            phone_8am = (
+                row["source"] == "PHONE"
+                and created_day == visit_day - timedelta(days=1)
+                and now_jp >= datetime.combine(
+                    visit_day, datetime.min.time(), tzinfo=timezone(timedelta(hours=9))
+                ) + timedelta(hours=8)
+            )
+            normal_expired = (
+                row["source"] == "WEB"
+                and row["payment_method"] != "BANK"
+                and not row["square_invoice_id"]
+                and row["created_at"] <= cutoff
+            ) or (
+                row["source"] in ("WEB", "PHONE")
+                and row["square_invoice_id"]
+                and (row["invoice_issued_at"] or row["created_at"]) <= cutoff
+                and row["reminder_status"] in ("SENT", "SKIPPED_LEGACY")
+            )
+            if not phone_8am and not normal_expired:
+                continue
             iid = row["square_invoice_id"]
             if iid:
                 try:
