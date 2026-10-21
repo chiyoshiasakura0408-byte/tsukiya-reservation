@@ -171,7 +171,16 @@ def public_slot_allowed(day, time_text, course=None):
         return False
     if time_text not in ("18:00", "20:30"):
         return False
-    return visit > datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
+    now_jp = datetime.now(timezone(timedelta(hours=9)))
+    return day >= now_jp.date() + timedelta(days=2) and visit > now_jp.replace(tzinfo=None)
+
+
+def staff_slot_allowed(day, time_text):
+    """Staff may accept prior-day and same-day bookings before service begins."""
+    if bookable_course(day) is None or time_text not in ("18:00", "20:30"):
+        return False
+    now_jp = datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
+    return datetime.fromisoformat(f"{day.isoformat()}T{time_text}") > now_jp
 
 
 def bookable_course_key(day):
@@ -738,10 +747,11 @@ def make_invoice(r):
         }
     )["order"]
 
-    due = (
-        datetime.now(timezone.utc)
-        + timedelta(days=3)
-    ).date().isoformat()
+    now_jp = datetime.now(timezone(timedelta(hours=9)))
+    phone_day = date.fromisoformat(str(r["visit_at"])[:10]) if r["source"] == "PHONE" else None
+    immediate_phone = phone_day is not None and phone_day == now_jp.date() + timedelta(days=1)
+    due = (now_jp.date() if immediate_phone else
+           (datetime.now(timezone.utc) + timedelta(days=3)).date()).isoformat()
 
     delivery_method = "EMAIL" if r["email"] else "SHARE_MANUALLY"
 
@@ -3560,7 +3570,10 @@ class Handler(
             time_specified = x.get("time_specified") is True
             through = False
             approved_exception = approved_staff_time_exception(x, direct)
-            course = bookable_course(day) if time_specified or public_slot_allowed(day, time_text) else None
+            course = bookable_course(day) if time_specified or staff_slot_allowed(day, time_text) else None
+            today_jp = datetime.now(timezone(timedelta(hours=9))).date()
+            same_day_phone = not direct and day == today_jp
+            same_day_direct = direct or same_day_phone
             if not course or not 1 <= party <= 20:
                 return self.send_json({"error": "この来店日に予約可能なコース・人数がありません"}, 400)
             amount = course[1] * party
@@ -3644,7 +3657,7 @@ class Handler(
                 )
                 """,
                 (
-                    "DIRECT" if direct else "PHONE",
+                    "DIRECT" if same_day_direct else "PHONE",
                     x["guest_name"],
                     x.get("phone"),
                     x.get("email"),
@@ -3655,7 +3668,7 @@ class Handler(
                     area,
                     rnd,
                     dur,
-                    "CONFIRMED" if direct else "PENDING",
+                    "CONFIRMED" if same_day_direct else "PENDING",
                     ts,
                     ts,
                     guest_note,
@@ -3691,9 +3704,9 @@ class Handler(
 
             c.close()
 
-            if direct and row.get("email"):
+            if same_day_direct and row.get("email"):
                 row = deliver_confirmation(row)
-            elif not direct:
+            elif not same_day_direct:
                 # The reservation is already saved: return its ID even if invoicing fails,
                 # so staff retry the invoice rather than registering another reservation.
                 c = con()
