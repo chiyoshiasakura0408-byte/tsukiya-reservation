@@ -71,12 +71,13 @@ def model_answer(question):
     except Exception:
         return fallback(question)
 
-def question_events(events, group):
+def question_events(events):
+    """Only a one-to-one question command. Group messages must never receive FAQ answers."""
     result = []
     for event in events:
         source = event.get("source", {})
         msg = event.get("message", {})
-        if event.get("type") != "message" or source.get("type") != "user" or source.get("userId") not in group:
+        if event.get("type") != "message" or source.get("type") != "user":
             continue
         if msg.get("type") != "text" or not isinstance(msg.get("text"), str):
             continue
@@ -84,8 +85,30 @@ def question_events(events, group):
         reply_token = event.get("replyToken")
         if not match or not isinstance(reply_token, str) or not reply_token:
             continue
-        result.append((reply_token, match.group(1).strip()[:MAX_QUESTION]))
+        result.append((reply_token, match.group(1).strip()[:MAX_QUESTION],
+                       source.get("userId", "")))
     return result
+
+
+def member_of_work_group(user_id, trusted_users, work_group):
+    """Authorise existing verified users or current members of the internal work group."""
+    if user_id in trusted_users:
+        return True
+    if not re.fullmatch(r"U[0-9a-fA-F]{32}", user_id or ""):
+        return False
+    if not re.fullmatch(r"C[0-9a-fA-F]{32}", work_group or ""):
+        return False
+    token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+    if not token:
+        return False
+    url = "https://api.line.me/v2/bot/group/" + work_group + "/member/" + user_id
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(req, timeout=4) as response:
+            return response.status == 200
+    except Exception as exc:
+        print("staff_faq_group_verification_failed", type(exc).__name__, flush=True)
+        return False
 
 def reply(question, reply_token):
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
@@ -102,7 +125,10 @@ def reply(question, reply_token):
         print("staff_faq_reply_failed", type(exc).__name__)
         return False
 
-def respond(events, group):
-    """Run outside the receipt transaction; reply is free of monthly push allotments."""
-    for token, question in question_events(events, group):
-        reply(question, token)
+def respond(events, trusted_users, work_group):
+    """Verify group membership before any individual response; never reply in a group."""
+    for token, question, user_id in question_events(events):
+        if member_of_work_group(user_id, trusted_users, work_group):
+            reply(question, token)
+        else:
+            print("staff_faq_private_question_not_authorised", flush=True)
