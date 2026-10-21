@@ -3476,6 +3476,8 @@ class Handler(
                 if linked_customer is not None and (type(linked_customer) is not int or linked_customer < 1):
                     raise ValueError("顧客を選び直してください")
                 request_id = str(x.get("request_id") or "")
+                if request_id and not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", request_id):
+                    raise ValueError("画面を開き直して登録してください")
                 if direct:
                     if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", request_id):
                         raise ValueError("画面を開き直して登録してください")
@@ -3564,6 +3566,12 @@ class Handler(
 
             try:
                 c.execute("BEGIN IMMEDIATE")
+                if not direct and request_id:
+                    existing = c.execute("SELECT * FROM reservations WHERE public_request_id=?", ("phone:" + request_id,)).fetchone()
+                    if existing:
+                        c.rollback()
+                        c.close()
+                        return self.send_json(dict(existing))
                 if direct:
                     existing = c.execute("SELECT * FROM reservations WHERE public_request_id=?", ("direct:" + request_id,)).fetchone()
                     if existing:
@@ -3655,6 +3663,8 @@ class Handler(
 
             c.execute("UPDATE reservations SET vip_through=?,vip_booking=?,customer_id=? WHERE id=?",(int(through),int(booking_policy.approved_customer(c,linked_customer)),linked_customer,cur.lastrowid))
 
+            if not direct and request_id:
+                c.execute("UPDATE reservations SET public_request_id=? WHERE id=?", ("phone:" + request_id, cur.lastrowid))
             if direct:
                 if linked_customer is None:
                     key = customer_match_key({"id": cur.lastrowid, "guest_name": x["guest_name"], "phone": x.get("phone"), "email": x.get("email")})
@@ -3680,6 +3690,28 @@ class Handler(
 
             if direct and row.get("email"):
                 row = deliver_confirmation(row)
+            elif not direct:
+                # The reservation is already saved: return its ID even if invoicing fails,
+                # so staff retry the invoice rather than registering another reservation.
+                c = con()
+                try:
+                    try:
+                        cid, oid, iid, url = make_invoice(row)
+                    except Exception as exc:
+                        c.execute("UPDATE reservations SET status='ERROR',last_error=?,updated_at=? WHERE id=?",
+                                  (str(exc), now_iso(), row["id"]))
+                    else:
+                        ts = now_iso()
+                        c.execute("UPDATE reservations SET square_customer_id=?,square_order_id=?,"
+                                  "square_invoice_id=?,square_invoice_url=?,status='INVOICED',"
+                                  "invoice_issued_at=?,last_error=NULL,updated_at=? WHERE id=?",
+                                  (cid, oid, iid, url, ts, ts, row["id"]))
+                    c.commit()
+                    row = dict(c.execute("SELECT * FROM reservations WHERE id=?", (row["id"],)).fetchone())
+                finally:
+                    c.close()
+                if row["status"] == "INVOICED":
+                    row = send_invoice_sms(row)
             return self.send_json(row)
 
         if (
