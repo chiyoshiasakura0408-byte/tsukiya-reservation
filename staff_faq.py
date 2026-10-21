@@ -10,7 +10,24 @@ import urllib.request
 from datetime import datetime, timezone, timedelta
 
 JST = timezone(timedelta(hours=9))
-PREFIX = re.compile(r"^質問[ 　:：]+(.+)$", re.S)
+PREFIX = re.compile(r"^質問[ 　:：]*(.+)$", re.S)
+# Individual chats accept natural short questions about documented staff policies.
+TOPICS = ("予約", "締切", "受付", "前受", "決済", "キャンセル", "料金", "コース",
+          "フリードリンク", "無料ドリンク", "ドリンク", "十四代", "シャンパン",
+          "松葉", "ずわい", "タラバ", "個室", "席")
+QUESTION_ENDINGS = ("?", "？", "ですか", "ますか", "教えて", "について", "とは", "どれ", "何", "いつ", "どう")
+def parse_question(message):
+    text = message.strip()
+    if not text or len(text) > MAX_QUESTION + 20:
+        return None
+    prefixed = PREFIX.fullmatch(text)
+    if prefixed:
+        return prefixed.group(1).strip() or None
+    # Only clearly interrogative policy-related messages; do not seize arbitrary
+    # private messages that may belong to existing shift/receipt handlers.
+    if any(topic in text for topic in TOPICS) and any(end in text for end in QUESTION_ENDINGS):
+        return text
+    return None
 MAX_QUESTION = 400
 MAX_REPLY = 1100
 
@@ -81,11 +98,11 @@ def question_events(events):
             continue
         if msg.get("type") != "text" or not isinstance(msg.get("text"), str):
             continue
-        match = PREFIX.match(msg["text"].strip())
+        question = parse_question(msg["text"])
         reply_token = event.get("replyToken")
-        if not match or not isinstance(reply_token, str) or not reply_token:
+        if not question or not isinstance(reply_token, str) or not reply_token:
             continue
-        result.append((reply_token, match.group(1).strip()[:MAX_QUESTION],
+        result.append((reply_token, question[:MAX_QUESTION],
                        source.get("userId", "")))
     return result
 
