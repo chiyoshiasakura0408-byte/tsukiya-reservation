@@ -12,24 +12,37 @@ import urllib.error
 from datetime import datetime, timezone, timedelta
 
 JST = timezone(timedelta(hours=9))
-PREFIX = re.compile(r"^質問[ 　:：]*(.+)$", re.S)
-# Individual chats accept natural short questions about documented staff policies.
-TOPICS = ("予約", "締切", "受付", "前受", "決済", "キャンセル", "料金", "コース",
-          "フリードリンク", "無料ドリンク", "ドリンク", "十四代", "シャンパン",
-          "松葉", "ずわい", "タラバ", "個室", "席")
-QUESTION_ENDINGS = ("?", "？", "ですか", "ますか", "教えて", "について", "とは", "どれ", "何", "いつ", "どう")
+PREFIX = re.compile(r"^質問[ 　:：]*(.*)$", re.S)
+# Protect structured business operations: AI never handles these as ordinary chat.
+WORKFLOW = re.compile(
+    r"^(?:つきやシフト連携|希望シフト|シフト希望|シフト入力|入力|シフト|"
+    r"予約追記|予約追加|予約変更|人数変更|予約取消|予約キャンセル|"
+    r"予約補足|予約再試行|予約(?:[ 　:：]|$)|"
+    r"メンション登録|備品|備品在庫|備品チェック|酒類|酒類在庫|"
+    r"酒類在庫表|酒類チェック|飲料在庫)(?:[ 　:：]|$)"
+)
+EXACT_COMMANDS = frozenset(("入力", "シフト", "シフト入力", "予約", "追加",
+                            "備品", "酒類", "酒類在庫", "備品在庫", "酒類在庫表", "飲料在庫"))
 def parse_question(message):
+    """In a private LINE chat, ordinary text is a question unless a workflow owns it."""
+    if not isinstance(message, str):
+        return None
     text = message.strip()
     if not text or len(text) > MAX_QUESTION + 20:
         return None
     prefixed = PREFIX.fullmatch(text)
     if prefixed:
-        return prefixed.group(1).strip() or None
-    # Only clearly interrogative policy-related messages; do not seize arbitrary
-    # private messages that may belong to existing shift/receipt handlers.
-    if any(topic in text for topic in TOPICS) and any(end in text for end in QUESTION_ENDINGS):
-        return text
-    return None
+        return prefixed.group(1).strip() or "業務についてご質問を入力してください。"
+    if text in EXACT_COMMANDS or WORKFLOW.match(text):
+        return None
+    # Avoid catching form data, shift submissions, URLs and one-word acknowledgements.
+    if (re.match(r"^[0-9０-９]", text) or
+            text.startswith(("http://", "https://")) or
+            text in ("はい", "いいえ", "了解", "承知しました", "OK", "ok", "ありがとう", "ありがとうございます") or
+            "\\n" in text and len(text.splitlines()) > 5):
+        return None
+    return text
+
 MAX_QUESTION = 400
 MAX_REPLY = 1100
 
