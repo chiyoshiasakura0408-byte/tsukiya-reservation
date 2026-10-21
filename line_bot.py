@@ -91,11 +91,29 @@ def receive(db, raw, signature):
                              for key in ('nakagawa', 'yamamoto', 'imamura', 'saya'))
             staff_ids.discard(None)
             staff_ids.discard('')
-            staff_questions = staff_faq.question_events(new_events)
-            claimed.update(e['webhookEventId'] for e in new_events
-                           if staff_faq.question_events([e]))
+            # Existing booking, inventory and shift workflows always take priority.
             claimed |= line_reservations.ingest(c, raw, signature, payload)
             claimed |= supplies.ingest(c, events, os.getenv('APP_BASE_URL', '').strip().rstrip('/'))
+            faq_events = []
+            for e in new_events:
+                if e['webhookEventId'] in claimed:
+                    continue
+                source = e.get('source', {})
+                if source.get('type') != 'user':
+                    continue
+                # Do not seize messages from an active booking-note workflow.
+                if source.get('userId') == concierge.setting(c, 'owner'):
+                    active_note = c.execute(
+                        "SELECT 1 FROM line_note_sessions WHERE actor=? AND destination=? "
+                        "AND expires > ? LIMIT 1",
+                        (source['userId'], source['userId'], __import__('time').time())
+                    ).fetchone()
+                    if active_note:
+                        continue
+                if staff_faq.question_events([e]):
+                    faq_events.append(e)
+                    claimed.add(e['webhookEventId'])
+            staff_questions = staff_faq.question_events(faq_events)
             finance_payload = {**payload, "events": [e for e in events if e["webhookEventId"] not in claimed]}
             finance_raw = json.dumps(finance_payload, ensure_ascii=False).encode() if claimed else raw
             line_receipts.enqueue(c, finance_raw, signature, finance_payload)
@@ -105,7 +123,7 @@ def receive(db, raw, signature):
     import guest_service
     if staff_questions:
         threading.Thread(target=staff_faq.respond,
-                         args=(new_events, staff_ids, __import__('line_delivery').TARGET, db),
+                         args=(faq_events, staff_ids, __import__('line_delivery').TARGET, db),
                          daemon=True).start()
     guest_service.receive_stock(db, events)
     concierge.pair_owner(db, events)
