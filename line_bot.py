@@ -9,6 +9,8 @@ import line_receipts
 import line_reservations
 import concierge
 import supplies
+import staff_faq
+import threading
 from datetime import datetime, timezone
 
 MAX_BODY = 1024 * 1024
@@ -57,6 +59,7 @@ def receive(db, raw, signature):
     inventory.close()
     c = connect(db)
     received = 0
+    new_events = []
     try:
         with c:
             # Keep deduplication metadata only; never store chat text, images or reply tokens.
@@ -75,11 +78,17 @@ def receive(db, raw, signature):
                 if not row.rowcount:
                     continue
                 received += 1
+                new_events.append(event)
                 if source_id and kind in ('group', 'room', 'user'):
                     active = int(event['type'] not in ('leave', 'unfollow'))
                     c.execute('INSERT INTO line_sources VALUES (?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET last_seen=excluded.last_seen, active=excluded.active',
                               (source_id, kind, now, active))
             claimed = register_inventory_mention(c, events)
+            # Question requests are exclusively handled by the internal reply API,
+            # never interpreted as receipts, reservations, or inventory commands.
+            staff_questions = staff_faq.question_events(new_events, __import__('line_delivery').TARGET)
+            claimed.update(e['webhookEventId'] for e in new_events
+                           if staff_faq.question_events([e], __import__('line_delivery').TARGET))
             claimed |= line_reservations.ingest(c, raw, signature, payload)
             claimed |= supplies.ingest(c, events, os.getenv('APP_BASE_URL', '').strip().rstrip('/'))
             finance_payload = {**payload, "events": [e for e in events if e["webhookEventId"] not in claimed]}
@@ -89,6 +98,10 @@ def receive(db, raw, signature):
     finally:
         c.close()
     import guest_service
+    if staff_questions:
+        threading.Thread(target=staff_faq.respond,
+                         args=(new_events, __import__('line_delivery').TARGET),
+                         daemon=True).start()
     guest_service.receive_stock(db, events)
     concierge.pair_owner(db, events)
     import vip_access
