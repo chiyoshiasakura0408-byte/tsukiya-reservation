@@ -2,6 +2,18 @@
 from datetime import date, datetime
 
 
+def main_restaurant_closure_reason(day, seating_area):
+    """Owner-approved booking closures; inclusive dates, all counter sittings."""
+    if seating_area != 'COUNTER':
+        return ''
+    day = date.fromisoformat(str(day)[:10])
+    if date(2026, 10, 22) <= day <= date(2026, 11, 30):
+        return '2026年11月30日まで、本店は全時間帯でご予約受付を停止しております。'
+    if main_restaurant_sunday_closed(day, seating_area):
+        return '2027年3月20日まで、本店は日曜日の全時間帯でご予約受付を停止しております。'
+    return ''
+
+
 def main_restaurant_sunday_closed(day, seating_area):
     """Owner instruction: no main-restaurant Sunday bookings through 2027-03-20."""
     if seating_area != 'COUNTER':

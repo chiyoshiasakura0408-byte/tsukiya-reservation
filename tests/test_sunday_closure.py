@@ -33,12 +33,12 @@ class MainRestaurantSundayClosureTest(unittest.TestCase):
                     for clock, rnd in (('18:00', 1), ('20:30', 2), ('19:00', 2)):
                         ok, message = run.availability_check(c, 'COUNTER', day + 'T' + clock, 2, rnd)
                         self.assertFalse(ok)
-                        self.assertIn('日曜日の全時間帯', message)
+                        self.assertIn('全時間帯', message)
                     self.assertIsNone(vip_slots.choose(run, c, day, 'COUNTER', 2))
                     for area, party in (('PRIVATE1', 2), ('PRIVATE2', 2), ('PRIVATE3', 4)):
                         for clock in ('18:00', '20:30'):
                             self.assertTrue(run.availability_check(c, area, day + 'T' + clock, party)[0])
-                for day in ('2026-11-14', '2026-11-16', '2027-03-20', '2027-03-21'):
+                for day in ('2026-12-05', '2026-12-07', '2027-03-20', '2027-03-21'):
                     for clock, rnd in (('18:00', 1), ('20:30', 2)):
                         self.assertTrue(run.availability_check(c, 'COUNTER', day + 'T' + clock, 2, rnd)[0])
                     self.assertEqual(vip_slots.choose(run, c, day, 'COUNTER', 2), [1, 2])
