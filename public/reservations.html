@@ -148,7 +148,7 @@ if(!snapshotMode)setInterval(pollOnlineReservations,30000);
 const root=document.getElementById('phoneForm');if(!root)return;
 const grid=root.querySelector('.formgrid');if(!grid)return;
 const ids=['visitDate','visitTime','party','area','name','phone'];
-const lines={visitDate:'「お日にちはお決まりでしょうか？」',visitTime:'「お時間が二部制でして、一部は18時、二部は20時半からの一斉スタートとなります。」',party:'「何名様でのご予定でしょうか？」',area:'「お席のご希望はございますか？\\n本店はカウンター・禁煙、別邸は個室・喫煙でございます。\\nお席を確認いたしますので、少々お待ちくださいませ。」',name:'「お名前を頂戴できますでしょうか？」',phone:'「ご連絡先のお電話番号を頂戴できますでしょうか？」'};
+const lines={visitDate:'「お日にちはお決まりでしょうか？」',visitTime:'「お時間が二部制でして、一部は18時、二部は20時半からの一斉スタートとなります。」',party:'「何名様でのご予定でしょうか？」',area:'「お席のご希望はございますか？」,name:'「お名前を頂戴できますでしょうか？」',phone:'「ご連絡先のお電話番号を頂戴できますでしょうか？」'};
 const stages=ids.map(id=>{const input=document.getElementById(id);const stage=input.closest('.formgrid > div');stage.classList.add('script-stage');stage.dataset.scriptStep=id;const guide=document.createElement('div');guide.className='script-guide';guide.textContent='📞 '+lines[id].replace(/\\\\n/g,'\n');stage.insertBefore(guide,input);return stage;});
 const payment=document.createElement('section');payment.className='script-final';payment.hidden=true;payment.innerHTML='<strong>⑥ 事前決済のご案内</strong><div class="script-guide">📞 「ご予約ですが、お料理代金を事前決済で頂戴しておりまして、ご連絡先の電話番号宛てに決済のご案内をお送りさせていただきます。決済のお手続きが完了した時点で、ご予約確定となります。」<small>一部のお飲み物を除いて飲み物代込み。決済期限は48時間で、未決済の場合は予約取消しとなります。</small></div><label><input id="phoneScriptAcknowledged" type="checkbox"> 事前決済・期限をお客様にご案内済み</label><div id="phoneScriptSummary" hidden></div>';
 grid.after(payment);
