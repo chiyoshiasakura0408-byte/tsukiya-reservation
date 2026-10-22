@@ -18,6 +18,40 @@ class Tests(unittest.TestCase):
   with patch.dict(os.environ,{'LINE_CHANNEL_SECRET':'test'}):return line_bot.receive(run.DB,raw,sig)
  def event(self,ident='ev',text='予約追加 テスト',actor=OWNER,image=False):
   return {'webhookEventId':ident,'type':'message','source':{'type':'group','groupId':lb.GROUP,'userId':actor},'message':{'id':'123456','type':'image' if image else 'text','text':text}}
+ def test_phone_sentinels_register_direct_without_billing(self):
+  for i,phone in enumerate(('', 'なし', 'vip', 'VIP', ' ＶＩＰ ')):
+   with self.subTest(phone=phone):
+    c=run.con()
+    with c:r,_,_=lb.perform(run,c,item(phone=phone,visit_at=f'2099-11-{10+i:02}T18:00'))
+    c.close()
+    self.assertEqual((r['source'],r['status'],r['phone']),('DIRECT','CONFIRMED',''))
+  with patch.object(run,'make_invoice') as invoice:lb.invoice_pending(run);invoice.assert_not_called()
+ def test_line_phone_invoice_once_after_commit(self):
+  self.signed([self.event()])
+  def invoice(row):
+   c=run.con();self.assertIsNotNone(c.execute('SELECT id FROM reservations WHERE id=?',(row['id'],)).fetchone());c.close()
+   self.assertEqual(row['phone'],'09000000000')
+   return 'c','o','i','https://example.com/invoice'
+  with patch.object(lb,'extract',return_value={'is_reservation':True,'items':[item(phone='09000000000')]}),patch.object(run,'make_invoice',side_effect=invoice) as make,patch.object(run,'send_invoice_sms',side_effect=lambda r:{**r,'invoice_sms_status':'QUEUED'}) as sms:
+   lb.drain(run);lb.drain(run)
+   self.assertEqual(make.call_count,1);self.assertEqual(sms.call_count,1)
+  c=run.con();r=dict(c.execute('SELECT * FROM reservations').fetchone());c.close()
+  self.assertEqual((r['source'],r['status'],r['square_invoice_id']),('PHONE','INVOICED','i'))
+ def test_line_phone_failure_preserves_booking_without_automatic_retry(self):
+  self.signed([self.event()])
+  with patch.object(lb,'extract',return_value={'is_reservation':True,'items':[item(phone='09000000000')]}),patch.object(run,'make_invoice',side_effect=RuntimeError('timeout')) as make,patch.object(run,'send_invoice_sms') as sms:
+   lb.drain(run);lb.drain(run)
+   self.assertEqual(make.call_count,1);sms.assert_not_called()
+  c=run.con();rows=c.execute('SELECT source,status FROM reservations').fetchall();c.close()
+  self.assertEqual([tuple(r) for r in rows],[('PHONE','ERROR')])
+ def test_phone_invalid_and_supplement_template(self):
+  c=run.con()
+  with self.assertRaises(ValueError):lb.perform(run,c,item(phone='不明'))
+  c.close();self.signed([self.event()])
+  with patch.object(lb,'extract',return_value={'is_reservation':True,'items':[item(seating_area='')]}),patch.object(lb,'notify') as notice:
+   lb.drain(run)
+   self.assertIn('電話番号',notice.call_args.kwargs['command'])
+   self.assertIn('なし・VIP・無記載は直接予約',notice.call_args.kwargs['command'])
  def test_ingress_owner_group_signature_and_retry(self):
   self.signed([self.event(actor='U'+'b'*32)]);self.signed([self.event('other',image=True,actor='U'+'b'*32)])
   c=sqlite3.connect(run.DB);self.assertEqual(c.execute('SELECT COUNT(*) FROM line_booking_jobs').fetchone()[0],0);c.close()
@@ -78,7 +112,7 @@ class Tests(unittest.TestCase):
   with c:
    r,_,_=lb.perform(run,c,item())
    blank=item(action='party',reservation_id=r['id'],visit_at='',guest_name='',seating_area='',party_size=3)
-   changed,before,action=lb.perform(run,c,blank);self.assertEqual(changed['party_size'],3);self.assertEqual(changed['amount'],180000)
+   changed,before,action=lb.perform(run,c,blank);self.assertEqual(changed['party_size'],3);self.assertEqual(changed['amount'],r['amount']//r['party_size']*3)
    with self.assertRaises(ValueError):lb.perform(run,c,{**blank,'guest_name':'別人'})
    c.execute('UPDATE reservations SET vip_booking=1 WHERE id=?',(r['id'],))
    with self.assertRaises(ValueError):lb.perform(run,c,blank)
