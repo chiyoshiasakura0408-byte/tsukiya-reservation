@@ -185,7 +185,7 @@ def staff_slot_allowed(day, time_text):
 
 
 def bookable_course_key(day):
-    if date(2026, 10, 22) <= day <= date(2026, 10, 31):
+    if date(2026, 10, 22) <= day <= date(2026, 11, 9):
         return "zuwaigani-oct"
     if date(2026, 10, 15) <= day <= date(2026, 11, 9):
         return 'tarabagani'
