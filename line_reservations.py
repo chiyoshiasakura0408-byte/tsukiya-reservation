@@ -37,6 +37,12 @@ def owner(c):
         return ''
 
 def notify(c,text,destination=GROUP,command=None,reservation_id=None):
+    # Completion notices always go to the paired Asakura account, including
+    # reservations submitted in the accounting group.
+    if text.startswith(('【予約登録成功】','【Googleカレンダー同期成功】')):
+        destination=owner(c)
+        if not destination:
+            raise RuntimeError('朝倉様のLINE送信先が未設定です')
     messages=[{'type':'text','text':text[:4900]}]
     if command:messages.append({'type':'text','text':command})
     return concierge.enqueue(c,destination,messages,channel='owner',kind='line-booking',reservation_id=reservation_id)

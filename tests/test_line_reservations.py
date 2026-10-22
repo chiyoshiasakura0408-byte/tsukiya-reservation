@@ -48,6 +48,31 @@ class Tests(unittest.TestCase):
    with self.assertRaises(ValueError):lb.perform(run,c,item(guest_name='不明',uncertain=['年不明']))
    with self.assertRaises(ValueError):lb.perform(run,c,item(guest_name='不明',visit_at='2099-11-11T19:00',seating_area='COUNTER'))
   c.close()
+ def test_group_registration_and_calendar_notices_go_to_owner_once(self):
+  self.signed([self.event()])
+  with patch.object(lb,'extract',return_value={'is_reservation':True,'items':[item()]}),patch.object(lb,'sync_state',return_value=('同期待ち',False)):
+   lb.drain(run);lb.drain(run)
+  with patch.object(lb,'sync_state',return_value=('同期済み',True)):
+   lb.drain(run);lb.drain(run)
+  c=concierge.connect(run.DB)
+  rows=c.execute("SELECT user_id,payload FROM concierge_outbox WHERE kind='line-booking' ORDER BY created").fetchall()
+  self.assertEqual(len(rows),2)
+  self.assertEqual([r['user_id'] for r in rows],[OWNER,OWNER])
+  self.assertTrue(json.loads(rows[0]['payload'])[0]['text'].startswith('【予約登録成功】'))
+  self.assertTrue(json.loads(rows[1]['payload'])[0]['text'].startswith('【Googleカレンダー同期成功】'))
+  c.close()
+ def test_completion_notices_require_owner_other_replies_keep_destination(self):
+  c=concierge.connect(run.DB)
+  with c:
+   concierge.put(c,'owner','')
+   for title in ('予約登録成功','Googleカレンダー同期成功'):
+    with self.assertRaises(RuntimeError):lb.notify(c,'【'+title+'】\n試験',lb.GROUP)
+   self.assertEqual(c.execute('SELECT COUNT(*) FROM concierge_outbox').fetchone()[0],0)
+   lb.notify(c,'【予約未処理】\n試験',lb.GROUP,command='予約補足')
+  row=c.execute('SELECT user_id,payload FROM concierge_outbox').fetchone()
+  self.assertEqual(row['user_id'],lb.GROUP)
+  self.assertEqual(json.loads(row['payload'])[1]['text'],'予約補足')
+  c.close()
  def test_change_cancel_and_paid_vip_protection(self):
   c=run.con()
   with c:
