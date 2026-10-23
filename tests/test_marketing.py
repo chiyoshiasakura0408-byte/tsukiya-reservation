@@ -48,6 +48,21 @@ class MarketingTest(unittest.TestCase):
   self.assertEqual(c.execute('SELECT acquisition_source FROM reservations WHERE id=?',(new,)).fetchone()[0],'instagram')
   self.assertEqual(c.execute('SELECT acquisition_source FROM reservations WHERE id=?',(unknown,)).fetchone()[0],'unknown')
   c.close()
+ def test_ai_sources_report_and_archive(self):
+  c=run.con();now='2026-10-08T10:00:00+00:00'
+  for i,source in enumerate(('chatgpt','gemini','perplexity','claude','copilot')):
+   sid=f'12345678-1234-1234-1234-{i:012x}'
+   marketing.record(c,dict(session_id=sid,source=source,event='visit'),now)
+   rid=self.booking(c);marketing.bind(c,rid,dict(session_id=sid,source=source),now)
+   self.assertEqual(c.execute('SELECT acquisition_source FROM reservations WHERE id=?',(rid,)).fetchone()[0],source)
+  report=marketing.report(c,{'start':['2026-10-08'],'end':['2026-10-08']})
+  for source in ('chatgpt','gemini','perplexity','claude','copilot'):
+   row=next(r for r in report['rows'] if r['source']==source)
+   self.assertEqual((row['visit'],row['requests'],row['paid']),(1,1,1))
+  marketing.archive_snapshot(c,'daily:2026-10-08','daily','2026-10-08','2026-10-08',now)
+  saved=marketing.archives(c,{'key':['daily:2026-10-08']})['record']
+  self.assertEqual(sum(r['visit'] for r in saved['rows']),5)
+  c.close()
  def test_japan_dates_and_come_not_inferred(self):
   c=run.con();rid=self.booking(c)
   c.execute("UPDATE reservations SET created_at='2026-10-07T16:00:00+00:00' WHERE id=?",(rid,))

@@ -6,7 +6,9 @@ from collections import deque
 from datetime import datetime, date, timedelta, timezone
 
 SOURCES = {'google_maps':'Googleマップ','google_search':'Google検索','google_ads':'Google広告',
-           'instagram':'Instagram','line':'LINE','other':'その他の外部サイト','unknown':'直接・不明'}
+           'instagram':'Instagram','line':'LINE',
+           'chatgpt':'ChatGPT','gemini':'Gemini','perplexity':'Perplexity',
+           'claude':'Claude','copilot':'Microsoft Copilot','other':'その他の外部サイト','unknown':'直接・不明'}
 EVENTS = {'visit','booking_click','booking_start'}
 LOCK = threading.Lock()
 RECENT = deque()

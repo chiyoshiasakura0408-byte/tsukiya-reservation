@@ -3,19 +3,30 @@
 const endpoint='https://tsukiya-reservation.onrender.com/api/public/marketing-event';
 const home='nishitenma-tsukiya-home.chiyoshi-a-0408.chatgpt.site';
 const booking='tsukiya-reservation.onrender.com';
-const sources=new Set(['google_maps','google_search','google_ads','instagram','line','other','unknown']);
+const sources=new Set(['google_maps','google_search','google_ads','instagram','line','chatgpt','gemini','perplexity','claude','copilot','other','unknown']);
 const uuid=/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 if(location.pathname==='/book-test'||navigator.webdriver||navigator.doNotTrack==='1')return;
 let ref;try{ref=new URL(document.referrer)}catch{}
 const q=new URLSearchParams(location.search),utm=(q.get('utm_source')||'').toLowerCase(),medium=(q.get('utm_medium')||'').toLowerCase();
+// Keep only a fixed provider category; never send raw referrer or query values.
+const aiUtm={chatgpt:'chatgpt','chatgpt.com':'chatgpt','chat.openai.com':'chatgpt',gemini:'gemini','gemini.google.com':'gemini',perplexity:'perplexity','perplexity.ai':'perplexity',claude:'claude','claude.ai':'claude',copilot:'copilot','copilot.microsoft.com':'copilot'};
+function aiHost(host){
+ for(const [domain,provider] of [['chatgpt.com','chatgpt'],['chat.openai.com','chatgpt'],['gemini.google.com','gemini'],['perplexity.ai','perplexity'],['claude.ai','claude'],['copilot.microsoft.com','copilot']]){
+  if(host===domain||host.endsWith('.'+domain))return provider;
+ }
+ return null;
+}
+const aiSource=Object.hasOwn(aiUtm,utm)?aiUtm[utm]:null;
 let source='unknown';
-if(['google_maps','google_business','gbp'].includes(utm)||utm==='google'&&['maps','gbp','local'].includes(medium))source='google_maps';
+if(aiSource)source=aiSource;
+else if(['google_maps','google_business','gbp'].includes(utm)||utm==='google'&&['maps','gbp','local'].includes(medium))source='google_maps';
 else if(utm==='google'&&['cpc','ppc','paid'].includes(medium)||q.has('gclid'))source='google_ads';
 else if(utm==='google')source='google_search';
 else if(['instagram','ig'].includes(utm))source='instagram';
 else if(['line','line_official'].includes(utm))source='line';
 else if(ref && ![home,booking,location.hostname].includes(ref.hostname)){
- if(/(^|\.)google\.(com|co\.jp)$/.test(ref.hostname))source='google_search';
+ if(aiHost(ref.hostname))source=aiHost(ref.hostname);
+ else if(/(^|\.)google\.(com|co\.jp)$/.test(ref.hostname))source='google_search';
  else if(/(^|\.)instagram\.com$/.test(ref.hostname))source='instagram';
  else if(/(^|\.)line\.me$/.test(ref.hostname))source='line';
  else source='other';
