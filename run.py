@@ -1,4 +1,5 @@
 import bank_transfer
+import booking_blocks
 from email.utils import formataddr, parseaddr
 import calendar_sync
 import calendar_auth
@@ -371,6 +372,7 @@ def con():
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )""")
+    booking_blocks.schema(c)
     business_cards.init(c)
     tablecheck_import.schema(c)
     customer_cols = {row["name"] for row in c.execute("PRAGMA table_info(customers)")}
@@ -1655,6 +1657,14 @@ def import_booking(event):
         )
     ).fetchone()
 
+    if not existing:
+        try:
+            booking_blocks.ensure_allowed(c, phone, email)
+        except booking_blocks.BookingBlocked:
+            print("Square booking import refused by customer booking restriction:", booking_id)
+            c.close()
+            return
+
     ts = now_iso()
 
     if existing:
@@ -2399,6 +2409,7 @@ class Handler(
                         MAX(CASE WHEN r.status='CONFIRMED' AND r.visit_at < ? THEN r.visit_at END) AS last_visit
                         FROM customers c LEFT JOIN reservations r ON r.customer_id=c.id
                         GROUP BY c.id ORDER BY c.id DESC""", (datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"),)*2)]
+                    booking_blocks.annotate(c, rows)
                     tablecheck_import.visit_summaries(c, rows, datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"))
                     return self.send_json(rows)
                 customer_id = int(p.rsplit("/", 1)[1])
@@ -2412,6 +2423,8 @@ class Handler(
                 for visit in visits:
                     visit["receipts"] = finance_links.for_reservation(c,visit["id"])
                 customer = tablecheck_import.visit_summaries(c, [dict(row)], datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M"))[0]
+                customer["booking_block"] = booking_blocks.state(c, customer_id)
+                booking_blocks.annotate(c, [customer])
                 return self.send_json({"customer": customer, "visits": visits, "business_cards": business_cards.list_for(c, customer_id), "tablecheck_imports": tablecheck_import.detail(c, customer_id)})
             finally:
                 c.close()
@@ -3043,6 +3056,26 @@ class Handler(
             finally:
                 c.close()
 
+        block_path = re.fullmatch(r"/api/customers/(\d+)/booking-block", p)
+        if block_path:
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if (self.headers.get("X-Tsukiya-Action") != "booking-block"
+                    or (APP_BASE_URL and self.headers.get("Origin") != APP_BASE_URL.rstrip('/'))):
+                return self.send_json({"error": "顧客管理画面を開き直してください"}, 403)
+            c = con()
+            try:
+                data = self.read_json()
+                c.execute("BEGIN IMMEDIATE")
+                result = booking_blocks.set_state(c, int(block_path[1]), data)
+                c.commit()
+                return self.send_json({"ok": True, "booking_block": result})
+            except (ValueError, TypeError) as exc:
+                c.rollback()
+                return self.send_json({"error": str(exc)}, 400)
+            finally:
+                c.close()
+
         customer_path = re.fullmatch(r"/api/customers/(\d+)(?:/visits/(\d+))?", p)
         if customer_path:
             if not self.auth():
@@ -3083,6 +3116,8 @@ class Handler(
                     table = "customers"
                 if not target:
                     return self.send_json({"error": "対象が見つかりません"}, 404)
+                if not visit_id:
+                    booking_blocks.retain_contacts(c, target)
                 if not visit_id and any(k in values for k in ("name", "phone", "email")):
                     merged = {"guest_name": values.get("name", target["name"]),
                               "phone": values.get("phone", target["phone"]),
@@ -3237,6 +3272,11 @@ class Handler(
                             "payment_url": existing["square_invoice_url"]
                         })
                     return self.send_json({"error": "申し込みを処理中です"}, 409)
+                try:
+                    booking_blocks.ensure_allowed(c, phone, email)
+                except booking_blocks.BookingBlocked as exc:
+                    c.rollback()
+                    return self.send_json({"error": str(exc)}, 403)
                 recent = c.execute(
                     "SELECT COUNT(*) n FROM reservations WHERE source='WEB' "
                     "AND email=? AND created_at>=?",
@@ -3641,6 +3681,7 @@ class Handler(
                         return self.send_json(dict(existing))
                     if linked_customer is not None and not c.execute("SELECT id FROM customers WHERE id=?", (linked_customer,)).fetchone():
                         raise ValueError("顧客が見つかりません")
+                booking_blocks.ensure_allowed(c, x.get("phone"), x.get("email"), linked_customer, staff=True)
                 if time_specified and not october_private_time(x["visit_at"], area) and not approved_exception:
                     if time_text != "20:30" and not booking_policy.approved_customer(c, linked_customer):
                         raise ValueError("時間指定・通し予約は承認済みVIP顧客の選択が必要です。直接予約から顧客を選択してください。")
@@ -3998,6 +4039,7 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
+
 
 
 

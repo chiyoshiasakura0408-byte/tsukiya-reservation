@@ -1,4 +1,5 @@
 """Owner-authenticated LINE bookings. AI extracts data; deterministic code owns writes."""
+import booking_blocks
 import base64
 import hashlib
 import json
@@ -200,6 +201,7 @@ def perform(app,c,x):
         c.execute('UPDATE reservations SET visit_at=?,party_size=?,amount=?,course_name=?,seating_area=?,counter_round=?,phone=?,guest_note=?,updated_at=?,staff_seen_at=NULL WHERE id=?',(visit,party,amount,course[0],area,rnd,base.get('phone',''),base.get('note') or before['guest_note'],ts,before['id']))
         rid=before['id']
     else:
+        booking_blocks.ensure_allowed(c, x['phone'], '', staff=True)
         phone_booking=bool(x['phone']) and when.date()!=datetime.now(JST).date()
         cur=c.execute("INSERT INTO reservations(source,guest_name,phone,email,visit_at,party_size,course_name,amount,seating_area,counter_round,duration_minutes,status,created_at,updated_at,guest_note,celebration_items,plate_message) VALUES(?,?,?,'',?,?,?,?,?,?,150,?,?,?,?,'','')",('PHONE' if phone_booking else 'DIRECT',x['guest_name'],x['phone'],visit,party,course[0],amount,area,rnd,'PENDING' if phone_booking else 'CONFIRMED',ts,ts,x['note']))
         rid=cur.lastrowid
@@ -542,3 +544,4 @@ def recover(app,mids):
                 event='recovery:'+mid;ident=hashlib.sha256(event.encode()).hexdigest()[:16]
                 c.execute('INSERT OR IGNORE INTO line_booking_jobs(id,event_id,actor,origin,group_id,text,message_id,created) VALUES(?,?,?,?,?,?,?,?)',(ident,event,actor,'admin-recovery',GROUP,'予約追加。画像に明記された情報だけを読む。',mid,time.time()))
     finally:c.close()
+

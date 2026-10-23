@@ -8,6 +8,7 @@ import concierge
 import vip_access
 import vip_slots
 import booking_policy
+import booking_blocks
 
 
 def verify(app, token, browser):
@@ -93,6 +94,7 @@ def booking(app, token, data=None, browser=None):
             c.execute('INSERT OR IGNORE INTO customers(match_key,name,phone,email,created_at,updated_at) VALUES(?,?,?,?,?,?)', ('concierge:'+proposal['user_id'],fields['guest_name'],fields['phone'],fields['email'],now,now))
             customer_id = c.execute('SELECT id FROM customers WHERE match_key=?',('concierge:'+proposal['user_id'],)).fetchone()[0]
             c.execute('UPDATE concierge_customers SET customer_id=? WHERE user_id=?',(customer_id,proposal['user_id']))
+        booking_blocks.ensure_allowed(c, fields['phone'], fields['email'], customer_id)
         cursor = c.execute('''INSERT INTO reservations(source,guest_name,phone,email,visit_at,party_size,course_name,amount,seating_area,counter_round,duration_minutes,status,created_at,updated_at,guest_note,customer_id,public_request_id,cancellation_policy_accepted_at)
             VALUES('CONCIERGE_LINE',?,?,?,?,?,?,?,?,?,150,'CONFIRMED',?,?,?,?,?,?)''',
             (fields['guest_name'],fields['phone'],fields['email'],visit_at,party,course[0],result['amount'],room,round_number if room=='COUNTER' else None,now,now,fields['guest_note'],customer_id,'concierge:'+hashed,now))
@@ -109,3 +111,4 @@ def booking(app, token, data=None, browser=None):
     guest_service.sync_requests(app)
     app.deliver_confirmation(row)
     return {'reservation_id':rid,'status':'CONFIRMED','confirmed':True}
+
