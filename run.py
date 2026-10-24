@@ -1322,6 +1322,26 @@ def availability_check(
     )
 
 
+def change_direct_room(c, rid, data):
+    """Atomically move a confirmed direct booking without recreating it."""
+    r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+    if not r or r["source"] != "DIRECT" or r["status"] != "CONFIRMED" or r["vip_through"] or r["square_invoice_id"]:
+        raise ValueError("この予約は個室変更の対象外です")
+    if (data.get("expected_seating_area") != r["seating_area"]
+            or data.get("expected_visit_at") != r["visit_at"]
+            or data.get("expected_party_size") != r["party_size"]):
+        raise ValueError("予約が更新されています。再読み込みしてください")
+    room = data.get("seating_area")
+    if r["seating_area"] not in ROOMS or room not in ROOMS or not public_party_allowed(room, r["party_size"]):
+        raise ValueError("人数に対応する個室を選択してください")
+    ok, message = availability_check(c, room, r["visit_at"], r["party_size"], None,
+                                     int(r["duration_minutes"] or 150), rid)
+    if not ok:
+        raise ValueError(message)
+    c.execute("UPDATE reservations SET seating_area=?,updated_at=? WHERE id=?", (room, now_iso(), rid))
+    return {"ok": True, "id": rid, "seating_area": room}
+
+
 def change_direct_time(c, rid, data):
     """Change only the clock of an unpaid direct reservation, retaining its identity."""
     r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
@@ -3083,7 +3103,7 @@ class Handler(
             except Exception:
                 return self.send_json({"error": "名刺の処理を完了できませんでした"}, 503)
 
-        time_change = re.fullmatch(r"/api/reservations/(\d+)/(time|party)", p)
+        time_change = re.fullmatch(r"/api/reservations/(\d+)/(time|party|room)", p)
         if time_change:
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
@@ -3095,7 +3115,7 @@ class Handler(
                 if not isinstance(data, dict):
                     raise ValueError("入力内容を確認してください")
                 c.execute("BEGIN IMMEDIATE")
-                result = (change_direct_time if time_change[2] == "time" else change_direct_party)(c, int(time_change[1]), data)
+                result = {"time": change_direct_time, "party": change_direct_party, "room": change_direct_room}[time_change[2]](c, int(time_change[1]), data)
                 c.commit()
                 return self.send_json(result)
             except (ValueError, TypeError) as exc:
