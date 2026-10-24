@@ -145,30 +145,29 @@ class WorkflowTest(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close()
 
-    def test_unpaid_reminder_once_and_phone_expiry_after_48_hours(self):
-        rid = self.reservation(email="")
-        issued = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
-        c = run.con()
-        c.execute("UPDATE reservations SET square_invoice_url=?,invoice_issued_at=? WHERE id=?",
-                  ("https://squareup.com/pay-test", issued, rid))
-        c.commit(); c.close()
-        with patch.multiple(run, TWILIO_ACCOUNT_SID="account", TWILIO_AUTH_TOKEN="token",
-                            TWILIO_FROM_NUMBER="+8112345678"), \
-             patch.object(run, "send_sms", return_value={"sid": "SM-reminder", "status": "queued"}) as sms:
-            self.assertFalse(run.send_payment_reminder(self.get(rid), "PAID"))
-            self.assertTrue(run.send_payment_reminder(self.get(rid), "UNPAID"))
-            self.assertFalse(run.send_payment_reminder(self.get(rid), "UNPAID"))
-            self.assertEqual(sms.call_count, 1)
-            self.assertIn("取り消し", sms.call_args.kwargs["body"])
+    def test_square_deadline_reminder_email_once(self):
+        rid = self.reservation()
+        fixed = datetime(2026, 10, 24, 4, 0, tzinfo=timezone.utc)
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
+        invoice = {"id": "inv-test", "status": "UNPAID", "timezone": "Asia/Tokyo",
+                   "primary_recipient": {"email_address": "guest@example.com"},
+                   "payment_requests": [{"request_type": "BALANCE", "due_date": "2026-10-24"}]}
+        with patch.object(run, "datetime", Clock), patch.multiple(
+                run, SMTP_HOST="smtp.test", SMTP_USER="user", SMTP_PASS="password", MAIL_FROM="shop@example.com"), \
+                patch.object(run, "square", return_value={"invoice": invoice}), \
+                patch.object(run.smtplib, "SMTP") as smtp, patch.object(run, "send_sms") as sms:
+            self.assertFalse(run.send_payment_reminder(self.get(rid), dict(invoice, status="PAID")))
+            self.assertTrue(run.send_payment_reminder(self.get(rid), invoice))
+            self.assertFalse(run.send_payment_reminder(self.get(rid), invoice))
+            smtp.return_value.__enter__.return_value.send_message.assert_called_once()
+            message = smtp.return_value.__enter__.return_value.send_message.call_args.args[0]
+            self.assertEqual(message["Subject"], "【西天満つきや】ご予約の事前決済について")
+            self.assertIn("お取り消し", message.get_content())
+            sms.assert_not_called()
         self.assertEqual(self.get(rid)["reminder_status"], "SENT")
-        c = run.con()
-        c.execute("UPDATE reservations SET invoice_issued_at=? WHERE id=?",
-                  ((datetime.now(timezone.utc) - timedelta(hours=49)).isoformat(), rid))
-        c.commit(); c.close()
-        with patch.object(run, "square", side_effect=[{"invoice": {"status": "UNPAID", "version": 1}},
-                                                      {"invoice": {"status": "CANCELED"}}]):
-            self.assertEqual(run.expire_public_reservations(), 1)
-        self.assertEqual(self.get(rid)["status"], "CANCELLED")
 
     def test_staff_new_booking_acknowledgement_is_persistent_and_scoped(self):
         first, second = self.reservation(), self.reservation()
@@ -564,7 +563,8 @@ class WorkflowTest(unittest.TestCase):
                 self.assertEqual(body, {"version": 3})
                 return {"invoice": {"status": "CANCELED"}}
             return {"invoice": {"status": "PAID" if path.endswith("/paid") else "UNPAID",
-                                "version": 3}}
+                                "version": 3, "timezone": "Asia/Tokyo",
+                                "payment_requests": [{"request_type": "BALANCE", "due_date": "2026-01-01"}]}}
 
         with patch.object(run, "square", side_effect=square_mock):
             self.assertEqual(run.expire_public_reservations(), 2)
@@ -774,7 +774,8 @@ class WorkflowTest(unittest.TestCase):
         def square(path, body=None):
             calls.append((path, body))
             if body is None:
-                return {"invoice": {"status": "UNPAID", "version": 3}}
+                return {"invoice": {"status": "UNPAID", "version": 3, "timezone": "Asia/Tokyo",
+                                "payment_requests": [{"request_type": "BALANCE", "due_date": "2026-01-01"}]}}
             return {"invoice": {"status": "CANCELED"}}
 
         with patch.object(run, "square", side_effect=square):

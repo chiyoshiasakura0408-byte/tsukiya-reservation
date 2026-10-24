@@ -44,6 +44,7 @@ from urllib.parse import urlparse, parse_qs, urlencode
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
+from zoneinfo import ZoneInfo
 
 
 BASE = Path(__file__).parent
@@ -327,6 +328,7 @@ def con():
         "reminder_status": "TEXT",
         "reminder_sent_at": "TEXT",
         "reminder_error": "TEXT",
+        "square_reminder_policy": "TEXT",
         "guest_note": "TEXT",
         "celebration_items": "TEXT",
         "plate_message": "TEXT",
@@ -337,6 +339,7 @@ def con():
 
     migrate_seen = "staff_seen_at" not in cols
     migrate_reminder = "reminder_status" not in cols
+    migrate_square_policy = "square_reminder_policy" not in cols
 
     for name, typ in wanted.items():
         if name not in cols:
@@ -351,6 +354,12 @@ def con():
         c.execute("UPDATE reservations SET staff_seen_at=created_at WHERE staff_seen_at IS NULL")
     if migrate_reminder:
         c.execute("UPDATE reservations SET reminder_status='SKIPPED_LEGACY' WHERE square_invoice_id IS NOT NULL")
+
+    if migrate_square_policy:
+        # Existing live unpaid invoices were handled before this policy rollout.
+        # Preserve their receipts and avoid replaying external/manual reminders.
+        c.execute("UPDATE reservations SET reminder_status='SKIPPED_LEGACY' "
+                  "WHERE square_invoice_id IS NOT NULL AND reminder_status IS NULL")
 
     c.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS public_request_id_unique "
@@ -914,69 +923,102 @@ def parse_dt(s):
     )
 
 
-def send_payment_reminder(reservation, invoice_status):
-    """Send one 24-hour warning only for a confirmed unpaid Square invoice."""
-    issued = reservation.get("invoice_issued_at")
-    if (reservation.get("status") != "INVOICED" or invoice_status != "UNPAID"
-            or not issued or not reservation.get("square_invoice_url")
-            or parse_dt(issued) > datetime.now(timezone.utc) - timedelta(hours=24)):
+def square_payment_deadline(invoice, reservation=None):
+    """Square due_date expires at the end of that date in invoice.timezone.
+
+    Official Invoice.timezone example: due March 9 -> March 10 00:00 local.
+    Preserve the explicit 08:00 JST term on day-before PHONE invoices.
+    Missing/ambiguous schedules never fall back to reservation creation time.
+    """
+    if not isinstance(invoice, dict) or not invoice.get("timezone"):
+        return None
+    requests = invoice.get("payment_requests") or []
+    if len(requests) != 1 or requests[0].get("request_type") != "BALANCE":
+        return None
+    try:
+        day = date.fromisoformat(requests[0]["due_date"])
+        deadline = datetime.combine(day + timedelta(days=1), datetime.min.time(),
+                                    tzinfo=ZoneInfo(invoice["timezone"]))
+        r = reservation or {}
+        if r.get("source") == "PHONE" and r.get("visit_at") and r.get("created_at"):
+            visit_day = date.fromisoformat(r["visit_at"][:10])
+            created_day = parse_dt(r["created_at"]).astimezone(ZoneInfo("Asia/Tokyo")).date()
+            description = invoice.get("description", "")
+            if (day == visit_day and created_day == visit_day - timedelta(days=1)
+                    and ("08:00（日本時間）" in description or "08:00 JST" in description)):
+                deadline = datetime.combine(day, datetime.min.time(),
+                                            tzinfo=ZoneInfo("Asia/Tokyo")) + timedelta(hours=8)
+        return deadline
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def send_payment_reminder(reservation, invoice):
+    """Send the approved email once in the final 12 hours of the Square term."""
+    deadline = square_payment_deadline(invoice, reservation)
+    now = datetime.now(timezone.utc)
+    if (reservation.get("status") != "INVOICED" or not isinstance(invoice, dict)
+            or invoice.get("status") != "UNPAID"
+            or invoice.get("id") != reservation.get("square_invoice_id")
+            or deadline is None or not deadline - timedelta(hours=12) <= now < deadline
+            or not (reservation.get("email") and SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_FROM)):
         return False
-    if not (reservation.get("email") and SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_FROM
-            or reservation.get("phone") and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER):
+    recipient = (invoice.get("primary_recipient") or {}).get("email_address", "")
+    if recipient.strip().lower() != reservation["email"].strip().lower():
         return False
     with REMINDER_LOCK:
         c = con()
         try:
             claimed = c.execute(
                 "UPDATE reservations SET reminder_status='SENDING',reminder_error=NULL "
-                "WHERE id=? AND status='INVOICED' AND reminder_status IS NULL",
-                (reservation["id"],)
+                "WHERE id=? AND status='INVOICED' AND square_invoice_id=? AND reminder_status IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM reservations other WHERE other.square_invoice_id=? "
+                "AND other.id!=? AND other.reminder_status IS NOT NULL)",
+                (reservation["id"], invoice["id"], invoice["id"], reservation["id"])
             ).rowcount
             c.commit()
             if not claimed:
                 return False
         finally:
             c.close()
-        deadline = (parse_dt(issued) + timedelta(hours=48)).astimezone(timezone(timedelta(hours=9)))
-        english = reservation.get("booking_language") == "en"
-        if english:
-            text_body = (
-                f"Dear {reservation['guest_name']},\n\n"
-                "We have not yet confirmed full payment for your reservation at Tsukiya at Nishi-Tenma. "
-                "Please find your invoice again below:\n"
-                f"{reservation['square_invoice_url']}\n\n"
-                f"If full payment is not confirmed by {deadline:%Y-%m-%d %H:%M} JST, "
-                "your reservation will be canceled. If you have already paid by bank transfer, "
-                "please contact us so we can verify your payment.\n\nTsukiya at Nishi-Tenma"
-            )
-        else:
-            text_body = (
-                f"{reservation['guest_name']} 様\n\n西天満つきやでございます。"
-                "ご予約のお料理代のお支払いが、現時点では確認できておりません。\n"
-                "請求書を再度ご案内いたします。\n"
-                f"{reservation['square_invoice_url']}\n\n"
-                f"{deadline:%Y年%m月%d日 %H:%M}までにお支払いが確認できない場合、"
-                "ご予約は取り消しとなります。\n"
-                "すでにお振り込み済みの場合は、行き違いのご案内となりますので店舗へご連絡ください。\n\n"
-                "西天満 つきや"
-            )
+        visit = parse_dt(reservation["visit_at"])
+        text_body = (
+            f"{reservation['guest_name']}様\n\n"
+            "この度は西天満つきやをご予約いただき、誠にありがとうございます。\n\n"
+            f"{visit.month}月{visit.day}日{visit:%H:%M}・{reservation['party_size']}名様のご予約につきまして、"
+            f"現在、事前決済{reservation['amount']:,}円のお支払いが確認できておりません。\n\n"
+            "当店では、事前決済の完了をもってご予約確定となります。恐れ入りますが、先にお送りしたSquareの請求案内をご確認のうえ、お手続きをお願いいたします。\n\n"
+            "お支払期限までに決済が完了しない場合、ご予約はお取り消しとなりますので、あらかじめご了承ください。\n\n"
+            "請求案内が見当たらない場合や、お支払いができない場合は、このメールへご返信ください。行き違いでお手続き済みの場合はご容赦ください。\n\n"
+            "西天満つきや"
+        )
         try:
-            if reservation.get("email") and SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_FROM:
-                message = EmailMessage()
-                message["Subject"] = "Tsukiya | Payment reminder" if english else "【西天満つきや】お支払いの再案内"
-                message["From"] = mail_sender()
-                message["To"] = reservation["email"]
-                message.set_content(text_body)
-                with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
-                    server.starttls()
-                    server.login(SMTP_USER, SMTP_PASS)
-                    server.send_message(message)
-            else:
-                result = send_sms(reservation["phone"], body=text_body)
-                if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
-                    raise RuntimeError("SMS送信を確認できませんでした")
+            # Re-read both authorities immediately before the external send.
+            c = con()
+            current = c.execute("SELECT status,square_invoice_id,email,amount,visit_at,party_size FROM reservations WHERE id=?",
+                                (reservation["id"],)).fetchone()
+            c.close()
+            fresh = square(f"/v2/invoices/{invoice['id']}")["invoice"]
+            fresh_deadline = square_payment_deadline(fresh, reservation)
+            if (not current or current["status"] != "INVOICED"
+                    or current["square_invoice_id"] != invoice["id"]
+                    or any(current[key] != reservation.get(key) for key in ("email", "amount", "visit_at", "party_size"))
+                    or fresh.get("id") != invoice["id"] or fresh.get("status") != "UNPAID"
+                    or fresh_deadline != deadline
+                    or not deadline - timedelta(hours=12) <= datetime.now(timezone.utc) < deadline
+                    or (fresh.get("primary_recipient") or {}).get("email_address", "").strip().lower() != recipient.strip().lower()):
+                raise ValueError("予約・Square請求の状態が変更されました")
+            message = EmailMessage()
+            message["Subject"] = "【西天満つきや】ご予約の事前決済について"
+            message["From"] = mail_sender()
+            message["To"] = recipient
+            message.set_content(text_body)
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+                server.starttls()
+                server.login(SMTP_USER, SMTP_PASS)
+                server.send_message(message)
         except Exception as exc:
-            # An ambiguous SMTP/Twilio failure must not automatically send a duplicate.
+            # Ambiguous send failures remain claimed to prevent duplicate delivery.
             c = con()
             c.execute("UPDATE reservations SET reminder_status='ERROR',reminder_error=? WHERE id=?",
                       (type(exc).__name__, reservation["id"]))
@@ -1041,6 +1083,9 @@ def expire_public_reservations():
                     invoice = square(f"/v2/invoices/{iid}")["invoice"]
                     status = invoice["status"]
                     if status == "UNPAID":
+                        deadline = square_payment_deadline(invoice, dict(row))
+                        if deadline is None or now_jp < deadline:
+                            continue
                         square(f"/v2/invoices/{iid}/cancel",
                                body={"version": invoice["version"]})
                     elif status not in ("CANCELED", "CANCELLED"):
@@ -1805,7 +1850,7 @@ def reconcile_reservations():
                         process_square_event(event, json.dumps(event).encode())
                     else:
                         send_invoice_sms(row)
-                        send_payment_reminder(row, invoice.get("status"))
+                        send_payment_reminder(row, invoice)
                 elif row["status"] == "CONFIRMED":
                     deliver_confirmation(row)
             except Exception as exc:
@@ -2554,7 +2599,7 @@ class Handler(
             c = con()
             try:
                 rows = [dict(x) for x in c.execute(
-                    "SELECT id,guest_name,visit_at,amount,square_invoice_id,payment_method,bank_payer,bank_planned_date,bank_due_at,bank_email_status "
+                    "SELECT id,guest_name,visit_at,amount,square_invoice_id,payment_method,bank_payer,bank_planned_date,bank_due_at,bank_email_status,source,created_at,reminder_status,reminder_sent_at "
                     "FROM reservations WHERE (status='INVOICED' AND square_invoice_id IS NOT NULL) OR (payment_method='BANK' AND status='PENDING') "
                     "ORDER BY visit_at,id"
                 )]
@@ -2569,6 +2614,9 @@ class Handler(
                 try:
                     invoice = square(f"/v2/invoices/{row['square_invoice_id']}")["invoice"]
                     row["square_status"] = invoice["status"]
+                    deadline = square_payment_deadline(invoice, row)
+                    row["square_due_at"] = deadline.isoformat() if deadline else None
+                    row["square_invoice_number"] = invoice.get("invoice_number")
                 except Exception:
                     row["square_status"] = "UNKNOWN"
                 result.append(row)
