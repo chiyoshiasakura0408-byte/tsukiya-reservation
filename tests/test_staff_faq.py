@@ -10,6 +10,14 @@ import staff_faq
 
 
 class StaffFaqTests(unittest.TestCase):
+    def test_booking_commands_with_newlines_are_not_questions(self):
+        for text in ('予約\n10/24\n18時\nかわぐち\n2名\n別邸\nずわい',
+                     '予約 10/24 18時 かわぐち 2名 別邸',
+                     '予約：10/24 18時', '予約補足\n受付情報',
+                     '予約変更\n10/24 かわぐち'):
+            with self.subTest(text=text):
+                self.assertIsNone(staff_faq.parse_question(text))
+        self.assertEqual(staff_faq.parse_question('予約は何日前まで？'), '予約は何日前まで？')
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -118,3 +126,4 @@ class StaffFaqTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

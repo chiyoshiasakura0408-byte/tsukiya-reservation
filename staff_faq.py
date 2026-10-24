@@ -18,9 +18,9 @@ PREFIX = re.compile(r"^質問[ 　:：]*(.*)$", re.S)
 WORKFLOW = re.compile(
     r"^(?:つきやシフト連携|希望シフト|シフト希望|シフト入力|入力|シフト|"
     r"予約追記|予約追加|予約変更|人数変更|予約取消|予約キャンセル|"
-    r"予約補足|予約再試行|予約(?:[ 　:：]|$)|"
+    r"予約補足|予約再試行|予約|"
     r"メンション登録|備品|備品在庫|備品チェック|酒類|酒類在庫|"
-    r"酒類在庫表|酒類チェック|飲料在庫)(?:[ 　:：]|$)"
+    r"酒類在庫表|酒類チェック|飲料在庫)(?:[\s　:：]|$)"
 )
 EXACT_COMMANDS = frozenset(("入力", "シフト", "シフト入力", "予約", "追加",
                             "備品", "酒類", "酒類在庫", "備品在庫", "酒類在庫表", "飲料在庫"))
@@ -297,3 +297,4 @@ def respond(events, trusted_users, work_group, db):
         else:
             diagnostic(db, 'authorization', 'denied')
             print("staff_faq_private_question_not_authorised", flush=True)
+

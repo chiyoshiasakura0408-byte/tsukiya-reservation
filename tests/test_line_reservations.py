@@ -26,6 +26,22 @@ class Tests(unittest.TestCase):
     c.close()
     self.assertEqual((r['source'],r['status'],r['phone']),('DIRECT','CONFIRMED',''))
   with patch.object(run,'make_invoice') as invoice:lb.invoice_pending(run);invoice.assert_not_called()
+ def test_multiline_owner_booking_exclusively_routes_and_registers_once(self):
+  text='予約\n11/10\n18時\nかわぐち\n2名\n別邸\nずわい'
+  e=self.event('short-dm',text);e['source']={'type':'user','userId':OWNER}
+  with patch.object(line_bot.staff_faq,'respond') as faq:
+   self.signed([e]);self.signed([e]);faq.assert_not_called()
+  with patch.object(lb,'extract',return_value={'is_reservation':True,'items':[item(guest_name='かわぐち')]}),patch.object(run,'make_invoice') as invoice:
+   lb.drain(run);lb.drain(run)
+   again=self.event('short-dm-resend',text);again['source']=e['source']
+   self.signed([again]);lb.drain(run);invoice.assert_not_called()
+  c=concierge.connect(run.DB)
+  self.assertEqual(c.execute('SELECT COUNT(*) FROM reservations').fetchone()[0],1)
+  row=c.execute('SELECT source,status,phone FROM reservations').fetchone()
+  self.assertEqual(tuple(row),('DIRECT','CONFIRMED',''))
+  payloads=[json.loads(r[0])[0]['text'] for r in c.execute("SELECT payload FROM concierge_outbox WHERE kind='line-booking'")]
+  self.assertTrue(any('予約登録成功' in p for p in payloads))
+  self.assertTrue(any('重複登録なし' in p for p in payloads));c.close()
  def test_line_phone_invoice_once_after_commit(self):
   self.signed([self.event()])
   def invoice(row):
@@ -242,3 +258,4 @@ class Tests(unittest.TestCase):
   self.signed([self.event('stop','中止')]);lb.drain(run)
   c=concierge.connect(run.DB);self.assertEqual(c.execute('SELECT COUNT(*) FROM line_note_sessions').fetchone()[0],0);c.close()
 if __name__=='__main__':unittest.main()
+
