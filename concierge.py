@@ -500,6 +500,11 @@ def deliver(db):
                 current = c.execute('SELECT state FROM concierge_outbox WHERE id=?', (row['id'],)).fetchone()
                 if not current or current['state'] != 'pending':
                     continue
+                if row['kind'] == 'accounting-booking-confirmed':
+                    import accounting_booking_notices
+                    if not accounting_booking_notices.ready(c, row['id']):
+                        with c:c.execute("UPDATE concierge_outbox SET state='cancelled',error='same-day confirmation no longer applicable' WHERE id=?", (row['id'],))
+                        continue
                 # Accounting bank requests now belong only in the morning digest.
                 if row['kind'] == 'bank-transfer' and row['user_id'].startswith('C'):
                     with c:c.execute("UPDATE concierge_outbox SET state='cancelled',error='moved to morning digest' WHERE id=?",(row['id'],))
@@ -655,4 +660,5 @@ def queue_arrivals(c):
     # No unsolicited VIP broadcasts. Retire queued events so they cannot replay later.
     c.execute("UPDATE concierge_arrivals SET state='cancelled' WHERE state='pending'")
     c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE channel='customer' AND kind IN ('announcement','guest-service') AND state='pending'")
+
 

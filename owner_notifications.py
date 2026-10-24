@@ -30,6 +30,8 @@ OWNER_ID = re.compile(r'U[0-9a-fA-F]{32}')
 
 def capture_schema(c):
     """Capture a tiny event in the booking transaction; never call a network API."""
+    import accounting_booking_notices
+    accounting_booking_notices.schema(c)
     c.execute('''CREATE TABLE IF NOT EXISTS owner_booking_events(
         reservation_id INTEGER PRIMARY KEY, registered REAL NOT NULL)''')
     if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reservations'").fetchone():
@@ -80,6 +82,8 @@ def schema(c):
 
 def queue(c):
     import concierge
+    import accounting_booking_notices
+    accounting_booking_notices.queue(c)
     if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reservations'").fetchone():
         return
     if concierge.setting(c, 'owner_booking_notifications_enabled', '1') != '1':
@@ -429,3 +433,4 @@ def quota():
     except (OSError, ValueError):
         result['error'] = 'LINE quota check failed'
     return result
+
