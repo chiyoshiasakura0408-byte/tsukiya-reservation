@@ -1,4 +1,5 @@
 import bank_transfer
+import cancellation_emails
 import booking_blocks
 from email.utils import formataddr, parseaddr
 import calendar_sync
@@ -390,6 +391,7 @@ def con():
             c.execute(f"ALTER TABLE customers ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
     c.execute("CREATE INDEX IF NOT EXISTS reservations_customer_idx ON reservations(customer_id)")
     concierge.owner_notifications.capture_schema(c)
+    cancellation_emails.schema(c)
 
     c.commit()
     return c
@@ -1111,6 +1113,10 @@ def expiry_loop():
             bank_transfer.overdue(sys.modules[__name__])
         except Exception as exc:
             print(f"Public reservation expiry failed: {exc}")
+        try:
+            cancellation_emails.process(sys.modules[__name__])
+        except Exception as exc:
+            print(f"Cancellation email worker failed: {type(exc).__name__}")
         time.sleep(300)
 
 
@@ -2581,8 +2587,10 @@ class Handler(
                 for x in c.execute(
                     """
                     SELECT r.*,c.allergies AS customer_allergies,c.disliked_foods AS customer_disliked_foods,
-                        c.preferred_seat AS customer_preferred_seat,c.preferred_drinks AS customer_preferred_drinks
+                        c.preferred_seat AS customer_preferred_seat,c.preferred_drinks AS customer_preferred_drinks,
+                        ce.state AS cancellation_email_status,ce.accepted_at AS cancellation_email_sent_at,ce.error AS cancellation_email_error
                     FROM reservations r LEFT JOIN customers c ON c.id=r.customer_id
+                    LEFT JOIN cancellation_emails ce ON ce.reservation_id=r.id
                     ORDER BY r.visit_at,r.id
                     """
                 )
