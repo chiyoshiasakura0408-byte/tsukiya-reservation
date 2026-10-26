@@ -1,0 +1,38 @@
+{
+  "date_jst": "2026-10-26",
+  "environment": "Square Sandbox",
+  "currency": "JPY",
+  "amount": 132000,
+  "actual_api": {
+    "location": "ACTIVE/JP/JPY",
+    "payment": "PAID",
+    "duplicate_submission": "same PAID session",
+    "declined_card": "FAILED; seat released",
+    "refund_submission": "PENDING; not yet verified complete"
+  },
+  "local_tests": {
+    "focused_passed": 84,
+    "new_passed": 23,
+    "legacy_comparison": 120,
+    "existing_failures_unchanged": 19,
+    "new_regression_failures": 0
+  },
+  "not_verified": [
+    "actual Web Payments SDK rendering/tokenization",
+    "3DS challenge",
+    "real signed webhook round-trip",
+    "mobile browser compatibility"
+  ],
+  "production_changed": false,
+  "official_site_guidance": {
+    "saved_version": 47,
+    "published": false
+  },
+  "sandbox_hosting": {
+    "service_id": "srv-dbfdsh2vcj2c73fp5mqg",
+    "plan": "free",
+    "auto_deploy": false,
+    "embedded_checkout_enabled": false
+  },
+  "blocker": "Authenticated Render browser account lacks access to target workspace; correct-account authentication required."
+}

@@ -36,7 +36,9 @@ Use `python3 scripts/test_offline.py test_web_checkout.py` for the new tests. Th
 
 ## Not yet verified / release blockers
 
-No Square Sandbox credentials or active Square browser session are available in this environment. No Sandbox API charge, real 3DS challenge, mobile/Safari/Chrome payment interaction, external Webhook round-trip, production configuration, migration, main merge or deployment has occurred. No real payment or customer notification was intentionally issued.
+Square Developer sign-in succeeded. Sandbox credentials were used transiently, without displaying token values. The actual Sandbox Locations API confirmed an ACTIVE JP/JPY location. Through this implementation and a separate empty SQLite database, the real Sandbox Payments API returned PAID for 132,000 JPY, a replay returned the same PAID session, and a Square declined-card test token produced FAILED and released the seat. A Sandbox refund request was also accepted with PENDING status (not reported as completed). These are simulated Sandbox funds only; no real customer payment or notification was sent.
+
+Actual SDK browser/3DS and signed external Webhook round-trip remain unverified. The local preview is HTTP and correctly fails Secure Context requirements; application security was not weakened to work around it. An isolated Render free service was created for HTTPS testing (tsukiya-square-sandbox-20261026, srv-dbfdsh2vcj2c73fp5mqg), using the feature branch, auto-deploy OFF and a separate ephemeral DB. It contains no production notification credentials, has no Square access token configured and embedded checkout remains OFF. Completing its environment setup is blocked because the browser's authenticated Render account does not have access to the intended workspace (tea-dadupjn40ujc73d2s28g). No production configuration, migration, main merge or production deployment has occurred.
 
 Before production:
 
