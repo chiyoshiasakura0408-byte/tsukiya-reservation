@@ -102,6 +102,7 @@
   window.TsukiyaCheckout={canSelect:()=>{if(session||completed){panel.hidden=false;panel.scrollIntoView({behavior:'smooth'});return false;}return true;}};
   try {
     configuration=await (await fetch('/api/public/checkout-config?language='+(english?'en':'ja'))).json();
+    if(configuration.environment==='sandbox'){const banner=document.createElement('p');banner.className='summary';banner.setAttribute('role','note');banner.textContent=t('Sandboxテスト環境です。実際の予約・課金は行われません。架空の情報とSquareテストカードのみでお試しください。','Sandbox test environment. No real booking or charge. Use fictitious details and Square test cards only.');document.querySelector('main').prepend(banner);}
     const saved=sessionStorage.getItem(key);
     if(saved){try{session=JSON.parse(saved);}catch(e){clear();}}
     if(session){

@@ -1994,6 +1994,8 @@ class Handler(
         self.connection.settimeout(30)
 
     def end_headers(self):
+        if SQUARE_ENV == "sandbox":
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
         self.send_header("Referrer-Policy", "no-referrer")
