@@ -54,6 +54,9 @@
     "existing_communicated_terms": "unchanged",
     "day_before_phone_limit": "visit day 08:00 JST",
     "focused_offline_tests": 50,
-    "official_site_saved_version": 48
+    "official_site_saved_version": 48,
+    "sandbox_live_commit": "fb1b1b7eee69c258a4de231562dd94b1af362c97",
+    "sandbox_deploy": "dep-dbfei78473hc73csnieg",
+    "bank_24h_guidance_visible": true
   }
 }
