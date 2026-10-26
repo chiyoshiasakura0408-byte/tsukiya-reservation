@@ -1199,7 +1199,8 @@ def availability_check(
     counter_round=None,
     duration_minutes=150,
     exclude_id=None,
-    allow_custom_start=False
+    allow_custom_start=False,
+    allow_room_exception=False
 ):
     if not seating_area:
         return (
@@ -1298,7 +1299,7 @@ def availability_check(
         )
 
     if seating_area in ROOMS:
-        if not public_party_allowed(seating_area, party_size):
+        if not public_party_allowed(seating_area, party_size) and not (allow_room_exception and seating_area == "PRIVATE3" and 2 <= party_size <= 3):
             return False, "この個室の利用人数の範囲外です"
         if c.execute("SELECT 1 FROM seat_blocks WHERE visit_date=? AND time_text=? AND seating_area=?", (visit.date().isoformat(), visit.strftime('%H:%M'), seating_area)).fetchone():
             return False, "この個室はブロックされています"
@@ -2889,6 +2890,14 @@ class Handler(
                 return self.send_json({"error": str(exc)}, 409)
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 return self.send_json({"error": str(exc)}, 400)
+
+        if p == "/api/line/reservations/room-exception":
+            if not self.auth():return self.send_json({"error":"unauthorized"},401)
+            if self.headers.get("X-Tsukiya-Action") != "line-booking" or self.headers.get("Origin") != APP_BASE_URL.rstrip('/'):
+                return self.send_json({"error":"invalid origin or action"},403)
+            try:
+                return self.send_json(line_reservations.approve_room_exception(sys.modules[__name__],self.read_json().get("item_id")))
+            except ValueError as e:return self.send_json({"error":str(e)},400)
 
         if p in ("/api/line/reservations/recover", "/api/line/reservations/note"):
             if not self.auth():return self.send_json({"error":"unauthorized"},401)

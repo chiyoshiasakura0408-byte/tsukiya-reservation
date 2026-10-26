@@ -19,9 +19,11 @@ import calendar_sync
 GROUP = line_receipts.GROUP
 JST = timezone(timedelta(hours=9))
 LOCK = threading.Lock()
+ROOM_EXCEPTION = re.compile(r'^(?:予約)?例外(?:として)?(?:\s+([a-f0-9]{16}-\d+))?\s*個室\s*[3③]\s*(?:で予約|で登録|に登録|で|に)?$')
 PREFIX = re.compile(r'^(予約追記|予約追加|予約変更|人数変更|予約取消|予約キャンセル|予約補足|予約再試行|予約)(?:\s|[：:]|$)')
 
 def schema(c):
+    c.execute('CREATE TABLE IF NOT EXISTS line_room_exceptions(item_id TEXT PRIMARY KEY,actor TEXT NOT NULL,created REAL NOT NULL)')
     c.execute('CREATE TABLE IF NOT EXISTS english_message_links(message_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,request_id TEXT NOT NULL,destination TEXT NOT NULL)')
     c.execute('''CREATE TABLE IF NOT EXISTS line_booking_jobs(id TEXT PRIMARY KEY,event_id TEXT UNIQUE,actor TEXT NOT NULL,origin TEXT NOT NULL,group_id TEXT NOT NULL,text TEXT NOT NULL DEFAULT '',message_id TEXT,created REAL NOT NULL,state TEXT NOT NULL DEFAULT 'pending',error TEXT,raw BLOB,signature TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS line_booking_items(id TEXT PRIMARY KEY,job_id TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',reservation_id INTEGER,result TEXT NOT NULL DEFAULT '',sync_notice INTEGER NOT NULL DEFAULT 0)''')
@@ -71,13 +73,14 @@ def ingest(c,raw,signature,payload):
             claimed.add(e['webhookEventId'])
             continue
         dialog=c.execute('SELECT 1 FROM line_note_sessions WHERE actor=? AND destination=?',(actor,destination)).fetchone() or c.execute("SELECT 1 FROM line_booking_jobs WHERE actor=? AND group_id=? AND state='pending' AND text IN ('予約追記','追加')",(actor,destination)).fetchone()
-        if not image and not (m.get('type')=='text' and (PREFIX.match(text) or quoted or text=='追加' or dialog)):continue
+        if not image and not (m.get('type')=='text' and (PREFIX.match(text) or ROOM_EXCEPTION.fullmatch(text) or quoted or text=='追加' or dialog)):continue
         ident=hashlib.sha256(e['webhookEventId'].encode()).hexdigest()[:16]
         c.execute('INSERT OR IGNORE INTO line_booking_jobs(id,event_id,actor,origin,group_id,text,message_id,created,raw,signature,quoted_message_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                   (ident,e['webhookEventId'],actor,'line',destination,text[:6000],mid if image else None,time.time(),raw if image else None,signature if image else None,quoted))
         # Booking text, like booking images, belongs exclusively to this queue.
         # Otherwise an owner DM can also receive a policy answer from staff FAQ.
         claimed.add(e['webhookEventId'])
+        if ROOM_EXCEPTION.fullmatch(text):claimed.add(e['webhookEventId'])
         if image:
             claimed.add(e['webhookEventId'])
             # Retain the authenticated media reference, without relaying a reservation image as revenue.
@@ -160,7 +163,7 @@ def validate(app,x):
     if x['action']!='add' and not x.get('reservation_id') and not(x.get('guest_name') and x.get('target_date')):errors.append('対象予約ID、または氏名と変更前の日付')
     if errors:raise ValueError('確認が必要：'+'、'.join(dict.fromkeys(errors)))
 
-def perform(app,c,x):
+def perform(app,c,x,allow_room_exception=False):
     x={**x,'phone':booking_phone(x.get('phone'))}
     validate(app,x)
     before=None
@@ -189,7 +192,8 @@ def perform(app,c,x):
         base={**before,**{k:v for k,v in x.items() if v not in ('',None,[])}}
         if action=='party' and x.get('party_size') is None:raise ValueError('変更後の人数が必要です')
     area=base['seating_area']; visit=base['visit_at']; party=base['party_size']
-    if not app.public_party_allowed('PRIVATE1' if area=='PRIVATE' and party<=4 else 'PRIVATE3' if area=='PRIVATE' else area,party):raise ValueError('席種と人数が既存ルールに合いません')
+    exception=allow_room_exception and area=='PRIVATE3' and 2<=party<=3
+    if not exception and not app.public_party_allowed('PRIVATE1' if area=='PRIVATE' and party<=4 else 'PRIVATE3' if area=='PRIVATE' else area,party):raise ValueError('席種と人数が既存ルールに合いません')
     when=datetime.fromisoformat(visit)
     if when<=datetime.now(JST).replace(tzinfo=None):raise ValueError('過去の予約は処理できません')
     course=app.bookable_course(when.date())
@@ -197,7 +201,7 @@ def perform(app,c,x):
     rnd=(1 if when.strftime('%H:%M')=='18:00' else 2) if area=='COUNTER' else None
     if area=='PRIVATE':
         area=next((r for r in app.ROOMS if app.public_party_allowed(r,party) and app.availability_check(c,r,visit,party,None,150,before['id'] if before else None)[0]),'PRIVATE')
-    ok,reason=app.availability_check(c,area,visit,party,rnd,150,before['id'] if before else None)
+    ok,reason=app.availability_check(c,area,visit,party,rnd,150,before['id'] if before else None,allow_room_exception=exception)
     if not ok:raise ValueError(reason)
     ts=app.now_iso(); amount=course[1]*party
     if before:
@@ -214,6 +218,38 @@ def perform(app,c,x):
         cid=c.execute('SELECT id FROM customers WHERE match_key=?',(key,)).fetchone()[0]
         c.execute('UPDATE reservations SET customer_id=?,public_request_id=? WHERE id=?',(cid,'line:'+str(uuid.uuid4()),rid))
     return dict(c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone()),before,action
+
+def approve_room_exception(app,ident,actor=None,destination=None):
+    """Only an authenticated admin or the paired LINE owner may approve this minimum-party exception."""
+    if not isinstance(ident,str) or not re.fullmatch(r'[a-f0-9]{16}-\d+',ident):
+        raise ValueError('未処理の受付番号を指定してください')
+    c=concierge.connect(app.DB)
+    try:
+        schema(c)
+        with c:
+            c.execute('BEGIN IMMEDIATE')
+            paired=owner(c)
+            if not paired or actor is not None and actor!=paired:raise ValueError('朝倉様のみ例外を指定できます')
+            row=c.execute('SELECT i.*,j.actor,j.origin,j.group_id,j.state AS job_state FROM line_booking_items i JOIN line_booking_jobs j ON j.id=i.job_id WHERE i.id=?',(ident,)).fetchone()
+            if not row or row['origin']!='line' or row['actor']!=paired or destination is not None and row['group_id']!=destination:
+                raise ValueError('朝倉様の予約受付を確認できません')
+            if row['state']=='done':return {'state':'done','reservation_id':row['reservation_id'],'result':row['result']}
+            if row['state']!='needs_info' or row['job_state']=='withdrawn':raise ValueError('例外指定できる未処理受付ではありません')
+            x=json.loads(row['payload'])
+            if x.get('action')!='add' or x.get('party_size') not in (2,3) or x.get('seating_area') not in ('PRIVATE','PRIVATE3'):
+                raise ValueError('個室③を2〜3名で利用する新規予約のみ例外指定できます')
+            before=dict(x);x['seating_area']='PRIVATE3'
+            validate(app,x)
+            c.execute('INSERT OR REPLACE INTO line_room_exceptions VALUES(?,?,?)',(ident,paired,time.time()))
+            c.execute("UPDATE line_booking_items SET payload=?,state='pending' WHERE id=?",(json.dumps(x,ensure_ascii=False),ident))
+            c.execute('INSERT INTO line_booking_audit(job_id,item_id,actor,action,before_json,after_json,created) VALUES(?,?,?,?,?,?,?)',(row['job_id'],ident,paired,'room-minimum-exception',json.dumps(before,ensure_ascii=False),json.dumps(x,ensure_ascii=False),time.time()))
+    finally:c.close()
+    apply_item(app,ident)
+    c=concierge.connect(app.DB)
+    try:
+        row=c.execute('SELECT state,reservation_id,result FROM line_booking_items WHERE id=?',(ident,)).fetchone()
+        return dict(row)
+    finally:c.close()
 
 def sync_state(c,row):
     if os.getenv('GOOGLE_CALENDAR_SYNC_ENABLED')!='1':return '未同期（同期設定を確認してください）',False
@@ -235,7 +271,8 @@ def apply_item(app,ident):
         if item['origin']=='line' and item['actor']!=owner(c):raise ValueError('朝倉様のLINE認証が変更されています')
         x=json.loads(item['payload'])
         try:
-            row,before,action=perform(app,c,x)
+            approved=c.execute('SELECT 1 FROM line_room_exceptions WHERE item_id=? AND actor=?',(ident,owner(c))).fetchone()
+            row,before,action=perform(app,c,x,allow_room_exception=bool(approved))
             sync,done=sync_state(c,row)
             title={'add':'予約登録成功','change':'予約変更成功','party':'人数変更成功','cancel':'予約取消成功','duplicate':'登録済み（重複登録なし）'}[action]
             text=f"【{title}】\n{row['guest_name']}様\n{row['visit_at'].replace('T',' ')} / {row['party_size']}名\n{'本店・' if row['seating_area']=='COUNTER' else '別邸・'}{app.seating_label(row)}\n予約ID：{row['id']}\n予約区分：{'電話予約・請求処理待ち' if row['source']=='PHONE' and row['status']=='PENDING' else '電話予約' if row['source']=='PHONE' else '直接予約'}\nGoogleカレンダー：{sync}"
@@ -394,6 +431,16 @@ def process_job(app,job):
     try:
         schema(c)
         if job['origin']=='line' and job['actor']!=owner(c):raise ValueError('LINE送信者の認証が変わりました')
+        exception=ROOM_EXCEPTION.fullmatch(unicodedata.normalize('NFKC',text).strip())
+        if exception:
+            ident=exception[1]
+            if not ident:
+                rows=c.execute("SELECT i.id FROM line_booking_items i JOIN line_booking_jobs j ON j.id=i.job_id WHERE i.state='needs_info' AND j.actor=? AND j.group_id=? AND j.created>? ORDER BY j.created DESC",(job['actor'],job['group_id'],time.time()-1800)).fetchall()
+                if len(rows)!=1:raise ValueError('例外指定する受付番号を添えて「予約例外 受付番号 個室③で予約」と送信してください')
+                ident=rows[0]['id']
+            approve_room_exception(app,ident,job['actor'],job['group_id'])
+            with c:c.execute("UPDATE line_booking_jobs SET state='done' WHERE id=?",(job['id'],))
+            return
         if note_dialog(app,c,job):return
         if process_note(app,c,job):return
         follow=re.match(r'^予約補足\s+([a-f0-9]{16}-\d+)\s+(.+)',text,re.S)

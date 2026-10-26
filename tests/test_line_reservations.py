@@ -18,6 +18,31 @@ class Tests(unittest.TestCase):
   with patch.dict(os.environ,{'LINE_CHANNEL_SECRET':'test'}):return line_bot.receive(run.DB,raw,sig)
  def event(self,ident='ev',text='予約追加 テスト',actor=OWNER,image=False):
   return {'webhookEventId':ident,'type':'message','source':{'type':'group','groupId':lb.GROUP,'userId':actor},'message':{'id':'123456','type':'image' if image else 'text','text':text}}
+ def pending_room(self, ident='pending-room', **kw):
+  self.signed([self.event(ident)])
+  with patch.object(lb,'extract',return_value={'is_reservation':True,'items':[item(seating_area='PRIVATE3',**kw)]}):lb.drain(run)
+  return hashlib.sha256(ident.encode()).hexdigest()[:16]+'-1'
+ def test_room_exception_owner_only_and_occupancy(self):
+  ident=self.pending_room()
+  with self.assertRaises(ValueError):lb.approve_room_exception(run,ident,'U'+'b'*32)
+  result=lb.approve_room_exception(run,ident)
+  self.assertEqual(result['state'],'done')
+  self.assertEqual(lb.approve_room_exception(run,ident)['reservation_id'],result['reservation_id'])
+  c=run.con();row=c.execute('SELECT * FROM reservations').fetchone()
+  self.assertEqual((row['seating_area'],row['party_size'],row['source']),('PRIVATE3',2,'DIRECT'))
+  self.assertFalse(run.public_party_allowed('PRIVATE3',2));self.assertFalse(run.availability_check(c,'PRIVATE3','2099-11-11T18:00',2)[0]);c.close()
+  second=self.pending_room('second-room',guest_name='他の予約')
+  self.assertEqual(lb.approve_room_exception(run,second)['state'],'needs_info')
+  c=run.con();self.assertEqual(c.execute('SELECT COUNT(*) FROM reservations').fetchone()[0],1);c.close()
+ def test_room_exception_natural_owner_command(self):
+  ident=self.pending_room()
+  self.signed([self.event('approve-room','例外として個室③で予約')])
+  with patch.object(lb,'extract') as extract:lb.drain(run);extract.assert_not_called()
+  c=run.con();self.assertEqual(c.execute('SELECT state FROM line_booking_items WHERE id=?',(ident,)).fetchone()[0],'done');c.close()
+ def test_room_exception_preserves_blocks(self):
+  ident=self.pending_room()
+  c=run.con();c.execute("INSERT INTO seat_blocks(visit_date,time_text,seating_area,seat_number,note,created_at) VALUES('2099-11-10','18:00','PRIVATE3',0,'test','now')");c.commit();c.close()
+  self.assertEqual(lb.approve_room_exception(run,ident)['state'],'needs_info')
  def test_phone_sentinels_register_direct_without_billing(self):
   for i,phone in enumerate(('', 'なし', 'vip', 'VIP', ' ＶＩＰ ')):
    with self.subTest(phone=phone):
