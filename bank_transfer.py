@@ -26,7 +26,7 @@ def parse(x):
     if planned:
         day = date.fromisoformat(planned)
         today = datetime.now(JST).date()
-        if not today <= day <= today + timedelta(days=2): raise ValueError('bank date outside payment window')
+        if not today <= day <= today + timedelta(days=1): raise ValueError('bank date outside payment window')
     return method, payer.strip(), planned
 
 def ready(db):
@@ -120,3 +120,4 @@ def accounting_digest(db, base_url):
         text+='\n確認後は決済管理から予約確定してください。\n'+base_url.rstrip('/')+'/'
         return [{'type':'text','text':text}]
     finally:c.close()
+

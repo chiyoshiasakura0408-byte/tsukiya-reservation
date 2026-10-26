@@ -57,7 +57,7 @@ def knowledge():
             'winter_beverages': 'Designated drinks included for ordinary, English and VIP ordinary sittings. Some drinks cost extra. VIP extended reservations exclude all beverage inclusion.',
             'english_staff': 'Our team may not be fluent in English, but we will do our best to assist you, with translation support when needed.',
             'cancellation': '100% of the course price from three days before the visit, including reductions in party size. Unannounced lateness over 15 minutes may result in cancellation.',
-            'payment': 'Ordinary reservations require full course prepayment through the official booking system. Direct guests to https://tsukiya-reservation.onrender.com/book?lang=en to check availability and reserve. A payment is not an AI-confirmed reservation.',
+            'payment': 'Ordinary Web reservations require full course prepayment by credit card through the official reservation page. The reservation is confirmed only after payment is completed. Follow the payment-screen instructions; do not instruct Web guests to wait for an invoice or apply the phone-invoice 24-hour deadline to embedded checkout. English Web reservations are card-only. Phone bookings retain Square invoices. Direct guests to https://tsukiya-reservation.onrender.com/book?lang=en to check availability and reserve. A payment is not an AI-confirmed reservation.',
             'private_rooms': 'Bettei annex, 3-8-7 Nishitenma, Kita-ku, Osaka; counter at 3-10-4 Nishitenma.'}
 
 
@@ -154,3 +154,4 @@ def vip_reply(message):
     result=request(instructions,message,{'answer':{'type':'string'},'needs_owner':{'type':'boolean'}})
     if not result['answer'].strip():result['needs_owner']=True
     return result
+

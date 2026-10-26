@@ -1,0 +1,62 @@
+{
+  "date": "2026-10-26",
+  "production_changed": false,
+  "tested_application_commit": "466777c0f5c6ca3447284e8c964eb42e630a20f4",
+  "sandbox_service": "srv-dbfdsh2vcj2c73fp5mqg",
+  "sandbox_url": "https://tsukiya-square-sandbox-20261026.onrender.com",
+  "new_automated_tests": 24,
+  "staff_faq_tests": 8,
+  "tests_external_network": "blocked",
+  "browser": "Chrome",
+  "browser_checks": {
+    "ja_3ds_challenge_and_confirmed": true,
+    "en_hold_reload_restore": true,
+    "en_foreign_card_zip_prompt": true,
+    "en_decline_releases_room": true,
+    "en_3ds_cancel_unpaid": true,
+    "en_no_challenge_payment_confirmed": true
+  },
+  "square_api": {
+    "location": "ACTIVE JP JPY",
+    "payment_jpy": 132000,
+    "duplicate_replay": "same PAID session",
+    "decline": "FAILED, seat released",
+    "refund_jpy": 132000,
+    "refund_final_status": "COMPLETED"
+  },
+  "actual_webhook_delivery": {
+    "payment.created": 200,
+    "payment.updated": 200,
+    "time_jst": "2026-10-26 14:22"
+  },
+  "legacy_regression_comparison": {
+    "baseline_tests": 120,
+    "baseline_existing_failures_errors": 19,
+    "same_legacy_failures_after_change": 19,
+    "new_legacy_failures": 0
+  },
+  "not_tested": [
+    "iPhone/Safari real device",
+    "browser network loss/process restart end-to-end",
+    "real mail/LINE/SMS delivery"
+  ],
+  "production_pending": [
+    "consistent SQLite backup",
+    "payment.created/payment.updated on existing subscription",
+    "public Application ID and new encryption key/flags",
+    "PR merge and Render deployment",
+    "matching official Site version 48 publish"
+  ],
+  "real_charge_or_customer_notification": false,
+  "payment_term_update": {
+    "new_phone_invoice_hours": 24,
+    "new_bank_transfer_hours": 24,
+    "existing_communicated_terms": "unchanged",
+    "day_before_phone_limit": "visit day 08:00 JST",
+    "focused_offline_tests": 50,
+    "official_site_saved_version": 48,
+    "sandbox_live_commit": "fb1b1b7eee69c258a4de231562dd94b1af362c97",
+    "sandbox_deploy": "dep-dbfei78473hc73csnieg",
+    "bank_24h_guidance_visible": true
+  }
+}

@@ -193,13 +193,15 @@ def payment_event(app,event):
     c=connect(app)
     try:
         with c:
-            if c.execute('SELECT 1 FROM guest_payments WHERE id=?',(pid,)).fetchone():return
+            existing=c.execute('SELECT reservation_id FROM guest_payments WHERE id=?',(pid,)).fetchone()
+            if existing and existing['reservation_id'] is not None:return
             order=current.get('order_id')
             rows=c.execute("SELECT * FROM reservations WHERE square_order_id=? AND status='CONFIRMED'",(order,)).fetchall() if order else []
             r=dict(rows[0]) if len(rows)==1 else None
             amount=(current.get('amount_money') or {}).get('amount',0)
             paid_at=parse_time(current.get('updated_at') or current.get('created_at'))
-            c.execute('INSERT INTO guest_payments(id,reservation_id,amount,state,created,paid_at) VALUES(?,?,?,?,?,?)',(pid,r['id'] if r else None,amount,'COMPLETED',time.time(),paid_at))
+            c.execute('INSERT OR IGNORE INTO guest_payments(id,reservation_id,amount,state,created,paid_at) VALUES(?,?,?,?,?,?)',(pid,r['id'] if r else None,amount,'COMPLETED',time.time(),paid_at))
+            if r:c.execute('UPDATE guest_payments SET reservation_id=? WHERE id=? AND reservation_id IS NULL',(r['id'],pid))
             if r and bot.setting(c,'care_enabled')=='1':enqueue_thanks(c,app,r,'reservation:'+str(r['id']),paid_at)
     finally:c.close()
 
@@ -414,3 +416,4 @@ def drain_stock(app):
                 bot.enqueue(c,line_delivery.TARGET,[bot.text_message(message,False)],channel='owner',kind='stock-draft')
                 c.execute('UPDATE sake_stock_inbox SET state=? WHERE id=?',(state,row['id']))
     finally:c.close()
+

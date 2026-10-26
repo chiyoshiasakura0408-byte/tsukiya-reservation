@@ -167,16 +167,28 @@ def process(app):
                 if job['status']=='QUEUED':
                     if not job['approved_at'] or job['approved_amount'] != job['amount']:
                         raise ValueError('返金承認を確認できません。返金を停止しました。')
-                    invoice=app.square('/v2/invoices/'+r['square_invoice_id'])['invoice']
-                    if invoice.get('status')!='PAID' or not invoice.get('order_id'):
-                        raise ValueError('請求書の全額決済を確認できません。Squareで確認してください。')
-                    order=app.square('/v2/orders/'+invoice['order_id'])['order']
-                    ids=[t.get('payment_id') or t.get('id') for t in order.get('tenders',[]) if t.get('type')=='CARD']
-                    if len(ids)!=1 or not ids[0]:
-                        raise ValueError('単一のカード決済を確認できません。分割・銀行入金は手動確認してください。')
-                    p=app.square('/v2/payments/'+ids[0])['payment']
+                    if r['source']=='WEB_CARD':
+                        c=app.con()
+                        try:
+                            checkout=c.execute("SELECT * FROM web_checkouts WHERE reservation_id=? AND state='PAID'",(rid,)).fetchone()
+                        finally:c.close()
+                        if not checkout or checkout['environment']!=app.SQUARE_ENV:
+                            raise ValueError('Web決済の記録・環境を確認してください。')
+                        p=app.square('/v2/payments/'+checkout['payment_id'])['payment']
+                        expected_order=checkout['order_id']; expected_location=checkout['location_id']
+                    else:
+                        invoice=app.square('/v2/invoices/'+r['square_invoice_id'])['invoice']
+                        if invoice.get('status')!='PAID' or not invoice.get('order_id'):
+                            raise ValueError('請求書の全額決済を確認できません。Squareで確認してください。')
+                        order=app.square('/v2/orders/'+invoice['order_id'])['order']
+                        ids=[t.get('payment_id') or t.get('id') for t in order.get('tenders',[]) if t.get('type')=='CARD']
+                        if len(ids)!=1 or not ids[0]:
+                            raise ValueError('単一のカード決済を確認できません。分割・銀行入金は手動確認してください。')
+                        p=app.square('/v2/payments/'+ids[0])['payment']
+                        expected_order=invoice['order_id']
+                        expected_location=(app.SQUARE_EN_LOCATION_ID if r.get('booking_language')=='en' and app.SQUARE_EN_LOCATION_ID else app.SQUARE_LOCATION_ID)
                     money=p.get('total_money',{})
-                    if p.get('status')!='COMPLETED' or p.get('order_id')!=invoice['order_id'] or p.get('location_id')!=app.SQUARE_LOCATION_ID or money!={'amount':r['amount'],'currency':'JPY'} or p.get('refunded_money',{}).get('amount',0) or p.get('refund_ids'):
+                    if p.get('status')!='COMPLETED' or p.get('order_id')!=expected_order or p.get('location_id')!=expected_location or money!={'amount':r['amount'],'currency':'JPY'} or p.get('refunded_money',{}).get('amount',0) or p.get('refund_ids'):
                         raise ValueError('決済額・店舗・既存返金を確認してください。自動返金を停止しました。')
                     payload={'idempotency_key':job['request_key'],'payment_id':p['id'],'amount_money':{'amount':job['amount'],'currency':'JPY'},'reason':'Reservation cancellation #'+str(rid)}
                     if p.get('version_token'): payload['payment_version_token']=p['version_token']
@@ -197,4 +209,5 @@ def process(app):
             c=app.con(); current=dict(c.execute('SELECT * FROM cancellation_refunds WHERE reservation_id=?',(rid,)).fetchone()); c.close()
             notify(app,current,r,current['status'])
     finally: LOCK.release()
+
 
