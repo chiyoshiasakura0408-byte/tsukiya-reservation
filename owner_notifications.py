@@ -99,7 +99,7 @@ def queue(c):
     rows = c.execute('''SELECT r.* FROM owner_booking_events e
         JOIN reservations r ON r.id=e.reservation_id
         LEFT JOIN owner_booking_notices n ON n.reservation_id=r.id
-        WHERE n.reservation_id IS NULL ORDER BY e.registered,r.id LIMIT 50''').fetchall()
+        WHERE n.reservation_id IS NULL AND (r.source!='WEB_CARD' OR r.status='CONFIRMED') ORDER BY e.registered,r.id LIMIT 50''').fetchall()
     for record in rows:
         r = dict(record)
         # A bank request or an owner-DM registration receipt already tells the
@@ -433,4 +433,5 @@ def quota():
     except (OSError, ValueError):
         result['error'] = 'LINE quota check failed'
     return result
+
 

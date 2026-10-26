@@ -1,3 +1,4 @@
+import web_checkout
 import bank_transfer
 import cancellation_emails
 import booking_blocks
@@ -292,6 +293,7 @@ def con():
     }
 
     bank_transfer.schema(c)
+    web_checkout.schema(c)
     wanted = {
         "payment_method": "TEXT NOT NULL DEFAULT 'CARD'",
         "bank_payer": "TEXT",
@@ -416,7 +418,7 @@ def sync_customers(c):
     try:
         c.execute("UPDATE reservations SET customer_id=NULL WHERE customer_id IS NOT NULL AND course_name LIKE '決済テスト%'")
         for row in c.execute("""SELECT id,guest_name,phone,email FROM reservations
-            WHERE customer_id IS NULL AND (course_name IS NULL OR course_name NOT LIKE '決済テスト%')
+            WHERE customer_id IS NULL AND (source!='WEB_CARD' OR status='CONFIRMED') AND (course_name IS NULL OR course_name NOT LIKE '決済テスト%')
             ORDER BY id""").fetchall():
             key = customer_match_key(row)
             now = now_iso()
@@ -684,6 +686,8 @@ def send_confirmation_sms(reservation):
 
 
 def make_invoice(r):
+    if r["source"] == web_checkout.SOURCE:
+        raise ValueError("Webカード決済のため請求書は発行しません")
     if dict(r).get("payment_method") == "BANK":
         raise ValueError("銀行振込希望のためカード請求は作成しません")
     if not r["email"] and not r["phone"]:
@@ -1035,6 +1039,7 @@ def send_payment_reminder(reservation, invoice):
 
 def expire_public_reservations():
     """Release expired public holds only after Square confirms an invoice is unpaid."""
+    web_checkout.expire(sys.modules[__name__])
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=PUBLIC_PAYMENT_HOURS)).isoformat()
     now_jp = datetime.now(timezone(timedelta(hours=9)))
     c = con()
@@ -1530,6 +1535,9 @@ def send_confirmation(r):
     direct = r["source"] in ("DIRECT", "CONCIERGE_LINE")
     confirmation_ja = "下記の内容にてご予約を確定いたしました。\nお料理代は当日店舗にてお支払いください。" if direct else "ご入金を確認し、\n下記の内容にてご予約を確定いたしました。"
     confirmation_en = "Your reservation is confirmed. Please pay for your course at the restaurant on the day of your visit." if direct else "We have received your full payment and confirmed your reservation."
+    if r["source"] == web_checkout.SOURCE:
+        confirmation_ja = "公式予約画面でのお料理代の全額カード決済を確認し、下記の内容にてご予約を確定いたしました。"
+        confirmation_en = "We have received your full card payment through our reservation page and confirmed your reservation."
     msg["Subject"] = ("Nishitenma Tsukiya | Reservation Confirmed" if english
                       else "【西天満 つきや】ご予約確定のご案内")
 
@@ -1860,6 +1868,7 @@ def reconcile_reservations():
     if not RECONCILE_LOCK.acquire(blocking=False):
         return
     try:
+        web_checkout.reconcile(sys.modules[__name__])
         c = con()
         rows = [dict(r) for r in c.execute("SELECT * FROM reservations WHERE status IN ('INVOICED','CONFIRMED') ORDER BY id")]
         c.close()
@@ -1893,6 +1902,9 @@ def process_square_event(event, raw):
     if event_type in ("booking.created", "booking.updated"):
         import_booking(event)
 
+    payment = ((event.get("data") or {}).get("object") or {}).get("payment") or {}
+    if event_type in ("payment.created", "payment.updated") and str(payment.get("reference_id", "")).startswith("wc:"):
+        web_checkout.finalize(sys.modules[__name__], payment)
     guest_service.payment_event(sys.modules[__name__], event)
     c = con()
     confirmed = None
@@ -2046,6 +2058,9 @@ class Handler(
             text = text.replace("</head>", "<script>" + (BASE / "public" / "crab-loader.js").read_text() + "</script></head>", 1)
         if 'aria-label="管理画面"' in text:
             text += "<script>" + (BASE / "public" / "refund-badge.js").read_text() + "</script>"
+        payment_page = urlparse(self.path).path in ("/book", "/book-en", "/book.html", "/book-en.html")
+        if payment_page:
+            text, payment_nonce = web_checkout.secure_page(text)
         b = text.encode("utf-8")
 
         self.send_response(status)
@@ -2056,6 +2071,8 @@ class Handler(
         )
 
         self.send_header("Cache-Control", "no-store")
+        if payment_page:
+            self.send_header("Content-Security-Policy", web_checkout.csp(payment_nonce, SQUARE_ENV == "sandbox"))
         self.send_header("Referrer-Policy", "no-referrer")
 
         self.send_header(
@@ -2139,6 +2156,10 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        if p == "/api/public/checkout-config":
+            lang = parse_qs(u.query).get("language", ["ja"])[0]
+            return self.send_json(web_checkout.config(sys.modules[__name__], lang))
+
         if p == "/drink-capacity":
             return self.send_html((BASE / "public" / "drink-capacity.html").read_text(), loader=False)
         if p in ("/supplies", "/drinks"):
@@ -2188,8 +2209,8 @@ class Handler(
             self.wfile.write(content)
             return
 
-        if p == "/attribution.js":
-            b = (BASE / "public" / "attribution.js").read_bytes()
+        if p in ("/attribution.js", "/web-checkout.js"):
+            b = (BASE / "public" / p[1:]).read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "application/javascript; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
@@ -2599,6 +2620,12 @@ class Handler(
             for row in rows:
                 # Acquisition data is internal reporting only, not staff UI data.
                 row.pop("acquisition_source", None)
+                if row["source"] == web_checkout.SOURCE:
+                    checkout = c.execute("SELECT state,expires,last_error FROM web_checkouts WHERE reservation_id=?",(row["id"],)).fetchone()
+                    if checkout:
+                        row["web_checkout_state"] = checkout["state"]
+                        row["web_checkout_expires"] = checkout["expires"]
+                        row["web_checkout_attention"] = checkout["last_error"]
                 row["receipts"] = finance_links.for_reservation(c,row["id"])
                 row.update(booking_policy.details(row))
             c.close()
@@ -2744,6 +2771,7 @@ class Handler(
 
     def do_POST(self):
         p = urlparse(
+
             self.path
         ).path
 
@@ -2758,6 +2786,39 @@ class Handler(
         if lengths and int(lengths[0]) > limit:
             self.close_connection = True
             return self.send_json({"error": "request too large"}, 413)
+
+        checkout_match = re.fullmatch(r"/api/public/checkouts(?:/([0-9a-f]{32})/(pay|status|cancel)|/(lookup))?", p)
+        if checkout_match:
+            # Same-origin only; no third-party POSTs or cross-origin fallback.
+            origin = self.headers.get("Origin", "")
+            if origin != APP_BASE_URL or self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
+                return self.send_json({"error":"invalid origin"}, 403)
+            try:
+                if not 0 < int(self.headers.get("Content-Length", "0")) <= 8192:
+                    return self.send_json({"error":"入力が長すぎます"}, 413)
+                data = self.read_json()
+                if not isinstance(data, dict):
+                    raise ValueError()
+                sid, action, lookup = checkout_match.groups()
+                if lookup:
+                    result = web_checkout.lookup(sys.modules[__name__], data.get("request_id"), data.get("checkout_secret"))
+                elif not action:
+                    result = web_checkout.create(sys.modules[__name__], data)
+                elif action == "pay":
+                    result = web_checkout.pay(sys.modules[__name__], sid, data.get("checkout_secret"), data.get("source_id"))
+                elif action == "cancel":
+                    result = web_checkout.abandon(sys.modules[__name__], sid, data.get("checkout_secret"))
+                else:
+                    result = web_checkout.status(sys.modules[__name__], sid, data.get("checkout_secret"))
+                return self.send_json(result)
+            except web_checkout.CheckoutError as exc:
+                return self.send_json({"error":str(exc)}, exc.status)
+            except booking_blocks.BookingBlocked as exc:
+                return self.send_json({"error":str(exc)},403)
+            except (ValueError, TypeError, UnicodeError):
+                return self.send_json({"error":"入力内容をご確認ください"},400)
+            except Exception:
+                return self.send_json({"error":"処理結果を確認できません。再度支払わず、画面で状態をご確認ください。"},503)
 
         if calendar_auth.handle_post(self, p, APP_BASE_URL):
             return
@@ -3308,6 +3369,8 @@ class Handler(
                 guest_note, celebration_items, plate_message = guest_requests(x)
             except (ValueError, TypeError, json.JSONDecodeError):
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
+            if not test_booking and payment_method == "CARD" and web_checkout.config(sys.modules[__name__])["enabled"]:
+                return self.send_json({"error":"お支払い画面が更新されました。ページを再読み込みしてください。"},409)
             if payment_method == "BANK":
                 if not bank_transfer.ready(DB):
                     return self.send_json({"error":"振込受付の通知設定を確認中です。店舗へご連絡ください"},503)
@@ -3602,6 +3665,10 @@ class Handler(
                     return self.send_json({"ok": True})
                 if row["status"] not in ("PENDING", "INVOICED", "ERROR", "CONFIRMED"):
                     return self.send_json({"error": "この予約はキャンセルできません"}, 409)
+                try:
+                    web_checkout.cancel_hold(c,row)
+                except web_checkout.CheckoutError as exc:
+                    return self.send_json({"error":str(exc)},exc.status)
                 if row["square_invoice_id"]:
                     try:
                         iid = row["square_invoice_id"]
@@ -3947,6 +4014,9 @@ class Handler(
                     404
                 )
 
+            if r["source"] == web_checkout.SOURCE:
+                c.close()
+                return self.send_json({"error":"画面内カード決済のため請求書は発行しません"},409)
             if r["payment_method"] == "BANK":
                 c.close()
                 return self.send_json({"error":"銀行振込希望のためカード請求は発行しません"},409)
@@ -4115,6 +4185,7 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
+
 
 
 
