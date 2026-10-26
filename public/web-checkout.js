@@ -78,7 +78,8 @@
       await mount();
       const details={amount:String(session.amount),currencyCode:'JPY',intent:'CHARGE',customerInitiated:true,sellerKeyedIn:false,
         billingContact:pending?{email:pending.email,phone:pending.phone}:{}};
-      const result=await card.tokenize(details);
+      message(t('カード会社の本人認証を確認しています…','Checking your card issuer verification…'));
+      const result=await Promise.race([card.tokenize(details),new Promise((_,reject)=>setTimeout(()=>reject(new Error(t('本人認証が完了しませんでした。入力に戻り、もう一度お試しください。決済は送信していません。','Verification did not finish. Return to your details and try again. No payment was submitted.'))),120000))]);
       if(result.status!=='OK')throw new Error(t('本人認証またはカード情報をご確認ください。決済は送信していません。','Please check your card details or verification. Payment has not been submitted.'));
       // Persist the fact that a payment is about to be sent before dispatch.
       session.state='PAYING';save();controls('PAYING');

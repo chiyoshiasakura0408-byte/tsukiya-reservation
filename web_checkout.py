@@ -352,11 +352,15 @@ def cancel_hold(c,r):
 def csp(nonce, sandbox):
     cdn='https://sandbox.web.squarecdn.com' if sandbox else 'https://web.squarecdn.com'
     pci='https://pci-connect.squareupsandbox.com' if sandbox else 'https://pci-connect.squareup.com'
-    return ("default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; "
+    # 3DS submits an HTTPS form into an issuer iframe. The Sandbox uses
+    # Square's simulator; live issuers have independent bank origins.
+    frames = (f"'self' {cdn} https://api.squareupsandbox.com" if sandbox else "'self' https:")
+    forms = ("'self' https://api.squareupsandbox.com" if sandbox else "'self' https:")
+    return (f"default-src 'self'; base-uri 'self'; object-src 'none'; form-action {forms}; "
             f"script-src 'self' 'nonce-{nonce}' {cdn}; "
             f"style-src 'self' 'unsafe-inline' {cdn}; "
             f"connect-src 'self' {cdn} {pci} https://o160250.ingest.sentry.io; "
-            f"frame-src {cdn}; font-src 'self' https://square-fonts-production-f.squarecdn.com https://d1g145x70srn7h.cloudfront.net; "
+            f"frame-src {frames}; font-src 'self' https://square-fonts-production-f.squarecdn.com https://d1g145x70srn7h.cloudfront.net; "
             "img-src 'self' data:; media-src 'self' blob:; frame-ancestors 'self'")
 
 

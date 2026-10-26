@@ -175,3 +175,12 @@ class CheckoutTest(unittest.TestCase):
    self.assertEqual(self.http('/api/reservations/'+str(s['reservation_id'])+'/cancel',{})[0],409)
    self.assertEqual(self.http('/api/reservations/'+str(s['reservation_id'])+'/send-invoice',{})[0],409)
   self.assertEqual(self.row(s['reservation_id'])['status'],'PENDING')
+
+ def test_csp_allows_3ds_form_and_preserves_script_nonce(self):
+  sandbox=wc.csp('testnonce',True);production=wc.csp('testnonce',False)
+  self.assertIn("form-action 'self' https://api.squareupsandbox.com",sandbox)
+  self.assertIn("frame-src 'self' https://sandbox.web.squarecdn.com https://api.squareupsandbox.com",sandbox)
+  self.assertIn("frame-src 'self' https:",production)
+  scripts=production.split('script-src ')[1].split(';')[0]
+  self.assertIn("'nonce-testnonce'",scripts)
+  self.assertNotIn('unsafe-inline',scripts);self.assertNotIn('unsafe-eval',scripts)
