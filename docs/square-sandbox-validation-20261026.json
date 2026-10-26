@@ -1,38 +1,51 @@
 {
-  "date_jst": "2026-10-26",
-  "environment": "Square Sandbox",
-  "currency": "JPY",
-  "amount": 132000,
-  "actual_api": {
-    "location": "ACTIVE/JP/JPY",
-    "payment": "PAID",
-    "duplicate_submission": "same PAID session",
-    "declined_card": "FAILED; seat released",
-    "refund_submission": "PENDING; not yet verified complete"
-  },
-  "local_tests": {
-    "focused_passed": 84,
-    "new_passed": 23,
-    "legacy_comparison": 120,
-    "existing_failures_unchanged": 19,
-    "new_regression_failures": 0
-  },
-  "not_verified": [
-    "actual Web Payments SDK rendering/tokenization",
-    "3DS challenge",
-    "real signed webhook round-trip",
-    "mobile browser compatibility"
-  ],
+  "date": "2026-10-26",
   "production_changed": false,
-  "official_site_guidance": {
-    "saved_version": 47,
-    "published": false
+  "tested_application_commit": "466777c0f5c6ca3447284e8c964eb42e630a20f4",
+  "sandbox_service": "srv-dbfdsh2vcj2c73fp5mqg",
+  "sandbox_url": "https://tsukiya-square-sandbox-20261026.onrender.com",
+  "new_automated_tests": 24,
+  "staff_faq_tests": 8,
+  "tests_external_network": "blocked",
+  "browser": "Chrome",
+  "browser_checks": {
+    "ja_3ds_challenge_and_confirmed": true,
+    "en_hold_reload_restore": true,
+    "en_foreign_card_zip_prompt": true,
+    "en_decline_releases_room": true,
+    "en_3ds_cancel_unpaid": true,
+    "en_no_challenge_payment_confirmed": true
   },
-  "sandbox_hosting": {
-    "service_id": "srv-dbfdsh2vcj2c73fp5mqg",
-    "plan": "free",
-    "auto_deploy": false,
-    "embedded_checkout_enabled": false
+  "square_api": {
+    "location": "ACTIVE JP JPY",
+    "payment_jpy": 132000,
+    "duplicate_replay": "same PAID session",
+    "decline": "FAILED, seat released",
+    "refund_jpy": 132000,
+    "refund_final_status": "COMPLETED"
   },
-  "blocker": "Authenticated Render browser account lacks access to target workspace; correct-account authentication required."
+  "actual_webhook_delivery": {
+    "payment.created": 200,
+    "payment.updated": 200,
+    "time_jst": "2026-10-26 14:22"
+  },
+  "legacy_regression_comparison": {
+    "baseline_tests": 120,
+    "baseline_existing_failures_errors": 19,
+    "same_legacy_failures_after_change": 19,
+    "new_legacy_failures": 0
+  },
+  "not_tested": [
+    "iPhone/Safari real device",
+    "browser network loss/process restart end-to-end",
+    "real mail/LINE/SMS delivery"
+  ],
+  "production_pending": [
+    "consistent SQLite backup",
+    "payment.created/payment.updated on existing subscription",
+    "public Application ID and new encryption key/flags",
+    "PR merge and Render deployment",
+    "matching official Site version 47 publish"
+  ],
+  "real_charge_or_customer_notification": false
 }
