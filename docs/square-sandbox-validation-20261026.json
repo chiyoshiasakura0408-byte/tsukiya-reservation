@@ -45,7 +45,15 @@
     "payment.created/payment.updated on existing subscription",
     "public Application ID and new encryption key/flags",
     "PR merge and Render deployment",
-    "matching official Site version 47 publish"
+    "matching official Site version 48 publish"
   ],
-  "real_charge_or_customer_notification": false
+  "real_charge_or_customer_notification": false,
+  "payment_term_update": {
+    "new_phone_invoice_hours": 24,
+    "new_bank_transfer_hours": 24,
+    "existing_communicated_terms": "unchanged",
+    "day_before_phone_limit": "visit day 08:00 JST",
+    "focused_offline_tests": 50,
+    "official_site_saved_version": 48
+  }
 }

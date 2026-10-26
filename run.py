@@ -131,6 +131,7 @@ ROOMS = (
 
 PUBLIC_COURSE_PRICE = 66000  # 税込・1名あたり
 PUBLIC_PAYMENT_HOURS = 48
+NEW_PAYMENT_HOURS = 24
 PUBLIC_COURSES = {
     "zuwaigani-oct": ("ずわい蟹おまかせコース", 44000),
     "matsuba-seko": ("松葉蟹おまかせコース", PUBLIC_COURSE_PRICE),
@@ -299,6 +300,7 @@ def con():
         "bank_payer": "TEXT",
         "bank_planned_date": "TEXT",
         "bank_due_at": "TEXT",
+        "invoice_payment_due_at": "TEXT",
         "bank_email_status": "TEXT",
         "confirmation_email_status": "TEXT",
         "confirmation_sms_status": "TEXT",
@@ -695,6 +697,22 @@ def make_invoice(r):
             "メールアドレスまたは電話番号が必要です"
         )
 
+    # Persist the new phone term before contacting Square so retries keep the
+    # exact same deadline. Previously issued invoices keep their agreed term.
+    r = dict(r)
+    if r['source'] == 'PHONE':
+        c = con()
+        try:
+            c.execute('BEGIN IMMEDIATE')
+            saved = c.execute('SELECT * FROM reservations WHERE id=?', (r['id'],)).fetchone()
+            if saved and not saved['square_invoice_id']:
+                deadline = saved['invoice_payment_due_at'] or new_phone_payment_deadline(r).isoformat()
+                c.execute('UPDATE reservations SET invoice_payment_due_at=? WHERE id=?', (deadline,r['id']))
+                r['invoice_payment_due_at'] = deadline
+            c.commit()
+        finally:
+            c.close()
+
     english = r["booking_language"] == "en"
     location_id = SQUARE_EN_LOCATION_ID if english and SQUARE_EN_LOCATION_ID else SQUARE_LOCATION_ID
     rid = str(r["id"])
@@ -782,6 +800,12 @@ def make_invoice(r):
 
     phone_deadline_ja = (f"前日電話予約のお支払期限：{phone_day:%Y年%m月%d日} 08:00（日本時間）。未決済の場合、予約は取り消しとなります。\n\n" if immediate_phone else "")
     phone_deadline_en = (f"Phone booking payment deadline: {phone_day:%Y-%m-%d} at 08:00 JST. Unpaid reservations will be canceled.\n\n" if immediate_phone else "")
+    if r.get('invoice_payment_due_at'):
+        phone_due = datetime.fromisoformat(r['invoice_payment_due_at']).astimezone(ZoneInfo('Asia/Tokyo'))
+        due = phone_due.date().isoformat()
+        term = 'お支払期限 / Payment deadline: ' + phone_due.isoformat(timespec='seconds') + ' (JST)\n'
+        phone_deadline_ja = term + '請求発行から24時間以内にお支払いください（前日電話予約は来店当日08:00まで）。未決済の場合は予約取消となります。\n\n'
+        phone_deadline_en = term + 'Please pay within 24 hours of invoice issuance (by 08:00 JST on the visit day for day-before bookings). Unpaid reservations will be canceled.\n\n'
     delivery_method = "EMAIL" if r["email"] else "SHARE_MANUALLY"
 
     invoice = square(
@@ -929,6 +953,16 @@ def parse_dt(s):
     )
 
 
+def new_phone_payment_deadline(reservation, now=None):
+    now = now or datetime.now(timezone.utc)
+    deadline = now + timedelta(hours=NEW_PAYMENT_HOURS)
+    visit_day = date.fromisoformat(reservation['visit_at'][:10])
+    if visit_day == now.astimezone(ZoneInfo('Asia/Tokyo')).date() + timedelta(days=1):
+        deadline = min(deadline, datetime.combine(visit_day, datetime.min.time(),
+                       tzinfo=ZoneInfo('Asia/Tokyo')) + timedelta(hours=8))
+    return deadline.astimezone(timezone.utc).replace(microsecond=0)
+
+
 def square_payment_deadline(invoice, reservation=None):
     """Square due_date expires at the end of that date in invoice.timezone.
 
@@ -946,6 +980,15 @@ def square_payment_deadline(invoice, reservation=None):
         deadline = datetime.combine(day + timedelta(days=1), datetime.min.time(),
                                     tzinfo=ZoneInfo(invoice["timezone"]))
         r = reservation or {}
+        if r.get('source') == 'PHONE' and r.get('invoice_payment_due_at'):
+            explicit = datetime.fromisoformat(r['invoice_payment_due_at'])
+            if explicit.tzinfo is None:
+                return None
+            explicit = explicit.astimezone(ZoneInfo('Asia/Tokyo'))
+            term = 'お支払期限 / Payment deadline: ' + explicit.isoformat(timespec='seconds') + ' (JST)'
+            if day != explicit.date() or term not in invoice.get('description', '').splitlines():
+                return None
+            return explicit
         if r.get("source") == "PHONE" and r.get("visit_at") and r.get("created_at"):
             visit_day = date.fromisoformat(r["visit_at"][:10])
             created_day = parse_dt(r["created_at"]).astimezone(ZoneInfo("Asia/Tokyo")).date()
@@ -1047,16 +1090,17 @@ def expire_public_reservations():
     try:
         c.execute("BEGIN IMMEDIATE")
         rows = c.execute(
-            "SELECT id,square_invoice_id,source,visit_at,created_at,invoice_issued_at,reminder_status,payment_method "
+            "SELECT id,square_invoice_id,source,visit_at,created_at,invoice_issued_at,invoice_payment_due_at,reminder_status,payment_method "
             "FROM reservations WHERE "
             "((source='WEB' AND payment_method!='BANK' AND square_invoice_id IS NULL AND created_at<=?) "
             "OR (source IN ('WEB','PHONE') AND square_invoice_id IS NOT NULL "
             "AND COALESCE(invoice_issued_at,created_at)<=? "
             "AND reminder_status IN ('SENT','SKIPPED_LEGACY')) "
+            "OR (source='PHONE' AND square_invoice_id IS NOT NULL AND invoice_payment_due_at<=?) "
             "OR (source='PHONE' AND square_invoice_id IS NOT NULL "
             "AND substr(visit_at,1,10)<=?)) "
             "AND status IN ('PENDING','INVOICED','ERROR') "
-            "ORDER BY id LIMIT 50", (cutoff, cutoff, now_jp.date().isoformat())
+            "ORDER BY id LIMIT 50", (cutoff, cutoff, now_iso(), now_jp.date().isoformat())
         ).fetchall()
         for row in rows:
             # Only PHONE reservations taken the calendar day before service have the
@@ -1072,6 +1116,9 @@ def expire_public_reservations():
                 ) + timedelta(hours=8)
             )
             normal_expired = (
+                row['source'] == 'PHONE' and row['invoice_payment_due_at']
+                and parse_dt(row['invoice_payment_due_at']) <= datetime.now(timezone.utc)
+            ) or (
                 row["source"] == "WEB"
                 and row["payment_method"] != "BANK"
                 and not row["square_invoice_id"]
@@ -3451,7 +3498,7 @@ class Handler(
                 )
                 rid = cur.lastrowid
                 if payment_method == "BANK":
-                    due=(datetime.fromisoformat(ts)+timedelta(hours=PUBLIC_PAYMENT_HOURS)).isoformat()
+                    due=(datetime.fromisoformat(ts)+timedelta(hours=NEW_PAYMENT_HOURS)).isoformat()
                     c.execute("UPDATE reservations SET payment_method='BANK',bank_payer=?,bank_planned_date=?,bank_due_at=? WHERE id=?",(bank_payer,bank_planned_date,due,rid))
                     bank_transfer.enqueue(c,c.execute("SELECT * FROM reservations WHERE id=?",(rid,)).fetchone(),sys.modules[__name__])
                 marketing.bind(c,rid,x.get("attribution"),ts,test_booking)
