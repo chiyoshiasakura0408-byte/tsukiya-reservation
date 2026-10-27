@@ -6,8 +6,8 @@ class RoomMoveTest(unittest.TestCase):
     def setUp(self):
         self.fixture=workflow.WorkflowTest();self.fixture.setUp()
         self.rid=self.fixture.reservation()
-        c=run.con();c.execute("UPDATE reservations SET source='DIRECT',square_invoice_id=NULL,seating_area='PRIVATE2',party_size=4,visit_at='2026-10-24T19:00',status='CONFIRMED' WHERE id=?",(self.rid,));c.commit();c.close()
-        self.data={'seating_area':'PRIVATE3','expected_seating_area':'PRIVATE2','expected_visit_at':'2026-10-24T19:00','expected_party_size':4}
+        c=run.con();c.execute("UPDATE reservations SET source='DIRECT',square_invoice_id=NULL,seating_area='PRIVATE2',party_size=4,visit_at='2026-10-24T18:00',status='CONFIRMED' WHERE id=?",(self.rid,));c.commit();c.close()
+        self.data={'seating_area':'PRIVATE3','expected_seating_area':'PRIVATE2','expected_visit_at':'2026-10-24T18:00','expected_party_size':4}
     def tearDown(self):self.fixture.tearDown()
     def move(self):
         c=run.con()

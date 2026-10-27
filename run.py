@@ -275,6 +275,13 @@ def con():
         )
         """
     )
+    c.execute("""CREATE TABLE IF NOT EXISTS reservation_note_history(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reservation_id INTEGER NOT NULL,
+        old_note TEXT NOT NULL,
+        new_note TEXT NOT NULL,
+        changed_at TEXT NOT NULL
+    )""")
     c.execute("""CREATE TABLE IF NOT EXISTS seat_blocks(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         visit_date TEXT NOT NULL,
@@ -1379,6 +1386,33 @@ def availability_check(
         False,
         "席の指定が不正です"
     )
+
+
+class ReservationNoteConflict(ValueError):
+    pass
+
+
+def change_reservation_note(c, rid, data):
+    """Edit the booking note only; never send confirmations or change seat/payment data."""
+    note = data.get("guest_note")
+    expected = data.get("expected_guest_note")
+    if not isinstance(note, str) or not isinstance(expected, str):
+        raise ValueError("備考の入力形式が不正です")
+    if len(note) > 5000 or "\x00" in note:
+        raise ValueError("備考は5000文字以内で入力してください")
+    r = c.execute("SELECT guest_note FROM reservations WHERE id=?", (rid,)).fetchone()
+    if not r:
+        raise ValueError("予約が見つかりません")
+    old = r["guest_note"] or ""
+    if old != expected:
+        raise ReservationNoteConflict("別の画面で備考が更新されています。予約を開き直して確認してください")
+    note = note.strip()
+    if note != old:
+        ts = now_iso()
+        c.execute("INSERT INTO reservation_note_history(reservation_id,old_note,new_note,changed_at) VALUES(?,?,?,?)",
+                  (rid, old, note, ts))
+        c.execute("UPDATE reservations SET guest_note=?,updated_at=? WHERE id=?", (note, ts, rid))
+    return {"ok": True, "id": rid, "guest_note": note}
 
 
 def change_direct_room(c, rid, data):
@@ -3229,6 +3263,33 @@ class Handler(
                 return self.send_json({"error": str(exc)}, 400)
             except Exception:
                 return self.send_json({"error": "名刺の処理を完了できませんでした"}, 503)
+
+        note_change = re.fullmatch(r"/api/reservations/(\d+)/note", p)
+        if note_change:
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if (not APP_BASE_URL or self.headers.get("X-Tsukiya-Action") != "edit-reservation-note"
+                    or self.headers.get("Origin") != APP_BASE_URL.rstrip('/')):
+                return self.send_json({"error": "予約管理画面を開き直してください"}, 403)
+            if not lengths or not 0 < int(lengths[0]) <= 64000:
+                return self.send_json({"error": "備考の入力が長すぎます"}, 413)
+            c = con()
+            try:
+                data = self.read_json()
+                if not isinstance(data, dict):
+                    raise ValueError("入力内容を確認してください")
+                c.execute("BEGIN IMMEDIATE")
+                result = change_reservation_note(c, int(note_change[1]), data)
+                c.commit()
+                return self.send_json(result)
+            except ReservationNoteConflict as exc:
+                c.rollback()
+                return self.send_json({"error": str(exc)}, 409)
+            except (ValueError, TypeError) as exc:
+                c.rollback()
+                return self.send_json({"error": str(exc)}, 400)
+            finally:
+                c.close()
 
         time_change = re.fullmatch(r"/api/reservations/(\d+)/(time|party|room)", p)
         if time_change:
