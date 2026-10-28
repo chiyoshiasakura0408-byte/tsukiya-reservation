@@ -33,7 +33,7 @@
         const result=await response.json();
         if(!response.ok)throw new Error(result.error||'ログインできませんでした');
         password.value='';
-        location.href='/';
+        location.href=new URLSearchParams(location.search).get('next')==='/gpt-setup'?'/gpt-setup':'/';
       }catch(e){error.textContent=e.message}
     });
   </script>

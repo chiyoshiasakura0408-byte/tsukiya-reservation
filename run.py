@@ -1,4 +1,5 @@
 import web_checkout
+import gpt_reservations
 import bank_transfer
 import cancellation_emails
 import booking_blocks
@@ -2282,6 +2283,9 @@ class Handler(
         u = urlparse(self.path)
         p = u.path
 
+        if gpt_reservations.handle_get(self, sys.modules[__name__], p, parse_qs(u.query)):
+            return
+
         if p == "/api/public/checkout-config":
             lang = parse_qs(u.query).get("language", ["ja"])[0]
             return self.send_json(web_checkout.config(sys.modules[__name__], lang))
@@ -2912,6 +2916,9 @@ class Handler(
         if lengths and int(lengths[0]) > limit:
             self.close_connection = True
             return self.send_json({"error": "request too large"}, 413)
+
+        if gpt_reservations.handle_post(self, sys.modules[__name__], p):
+            return
 
         checkout_match = re.fullmatch(r"/api/public/checkouts(?:/([0-9a-f]{32})/(pay|status|cancel)|/(lookup))?", p)
         if checkout_match:
