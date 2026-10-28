@@ -14,10 +14,10 @@ WRITE_LOCK = threading.Lock()
 FIELDS = ('id', 'source', 'guest_name', 'phone', 'email', 'visit_at', 'party_size',
           'course_name', 'amount', 'seating_area', 'counter_round', 'duration_minutes',
           'status', 'payment_method', 'guest_note', 'celebration_items', 'plate_message',
-          'customer_id', 'created_at', 'updated_at')
+          'customer_id', 'confirmation_note', 'created_at', 'updated_at')
 CREATE_FIELDS = {'mode', 'request_id', 'guest_name', 'phone', 'email', 'visit_at',
                  'party_size', 'seating_area', 'customer_id', 'guest_note',
-                 'celebration_items', 'plate_message'}
+                 'celebration_items', 'plate_message', 'confirmation_note'}
 CHANGE_FIELDS = {
     'note': {'guest_note', 'expected_guest_note'},
     'time': {'time', 'expected_visit_at'},
@@ -278,6 +278,7 @@ def openapi(base):
               'party_size': {'type': 'integer', 'minimum': 1, 'maximum': 8},
               'seating_area': string(enum=['COUNTER', 'PRIVATE1', 'PRIVATE2', 'PRIVATE3']),
               'customer_id': integer, 'guest_note': string(),
+              'confirmation_note': string('お客様への自動確定メールに載せる備考。店舗内の連絡事項は入れない。', maxLength=1000),
               'celebration_items': {'type': 'array', 'items': string()}, 'plate_message': string()}
     paths = {
         PREFIX + '/status': {'get': operation('connectionStatus', '接続状態の確認（顧客情報なし）')},

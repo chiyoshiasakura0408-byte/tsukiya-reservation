@@ -23,3 +23,6 @@ GPTキーは既存の管理APIには通用しない。取消、返金、入金�
 
 検証: `python -m unittest discover -s tests -p 'test_gpt_reservations.py'`
 テストは隔離DBとSquare／通知のモックを使用。本番のテスト予約や請求は作成しない。
+
+新規登録時の `confirmation_note` はお客様向け自動確定メールへ掲載する備考（1000文字以内）。
+店舗内備考の `guest_note` は確定メールへ転載しない。メール未登録時は備考を保存してもメールは送信されない。

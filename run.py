@@ -343,6 +343,7 @@ def con():
         "reminder_error": "TEXT",
         "square_reminder_policy": "TEXT",
         "guest_note": "TEXT",
+        "confirmation_note": "TEXT NOT NULL DEFAULT ''",
         "celebration_items": "TEXT",
         "plate_message": "TEXT",
         "customer_id": "INTEGER",
@@ -1656,6 +1657,9 @@ def send_confirmation(r):
     msg = EmailMessage()
 
     policy = booking_policy.details(r)
+    customer_note = str(dict(r).get("confirmation_note") or "").strip()
+    note_ja = "【ご予約に関する備考】\n" + customer_note if customer_note else ""
+    note_en = "Reservation notes:\n" + customer_note if customer_note else ""
     english = r["booking_language"] == "en"
     direct = r["source"] in ("DIRECT", "CONCIERGE_LINE")
     confirmation_ja = "下記の内容にてご予約を確定いたしました。\nお料理代は当日店舗にてお支払いください。" if direct else "ご入金を確認し、\n下記の内容にてご予約を確定いたしました。"
@@ -1690,6 +1694,8 @@ Guests: {r['party_size']}
 {'Course price (pay at restaurant)' if direct else 'Course payment'}: JPY {r['amount']:,}
 {policy['beverage_policy_en']}
 
+{note_en}
+
 {annex_message(r, True)}
 
 We look forward to welcoming you. Please arrive on time, as each seating begins together.
@@ -1717,6 +1723,8 @@ Nishitenma Tsukiya
 お料理代：{r['amount']:,}円
 予約区分：{policy['reservation_category']}
 {policy['beverage_policy']}
+
+{note_ja}
 
 {annex_message(r)}
 
@@ -3904,6 +3912,10 @@ class Handler(
                 x = self.read_json()
                 if not isinstance(x, dict):
                     raise ValueError("入力形式が不正です")
+                confirmation_note = x.get("confirmation_note", "")
+                if not isinstance(confirmation_note, str) or len(confirmation_note) > 1000 or "\x00" in confirmation_note:
+                    raise ValueError("確定メール備考は1000文字以内で入力してください")
+                confirmation_note = confirmation_note.strip()
                 linked_customer = x.get("customer_id")
                 if linked_customer is not None and (type(linked_customer) is not int or linked_customer < 1):
                     raise ValueError("顧客を選び直してください")
@@ -4097,6 +4109,7 @@ class Handler(
                 )
             )
 
+            c.execute("UPDATE reservations SET confirmation_note=? WHERE id=?", (confirmation_note, cur.lastrowid))
             c.execute("UPDATE reservations SET vip_through=?,vip_booking=?,customer_id=? WHERE id=?",(int(through),int(booking_policy.approved_customer(c,linked_customer)),linked_customer,cur.lastrowid))
 
             if not direct and request_id:
