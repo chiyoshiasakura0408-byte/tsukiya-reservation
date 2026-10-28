@@ -1207,7 +1207,8 @@ def availability_check(
     duration_minutes=150,
     exclude_id=None,
     allow_custom_start=False,
-    allow_room_exception=False
+    allow_room_exception=False,
+    restore_existing=False
 ):
     if not seating_area:
         return (
@@ -1224,7 +1225,7 @@ def availability_check(
     visit = parse_dt(visit_at)
 
     closure_reason = booking_policy.main_restaurant_closure_reason(visit.date(), seating_area)
-    if closure_reason:
+    if closure_reason and not restore_existing:
         return False, closure_reason
 
     if seating_area == "PRIVATE":
@@ -1390,6 +1391,47 @@ def availability_check(
 
 class ReservationNoteConflict(ValueError):
     pass
+
+
+def restore_paid_bank_reservation(c, rid, data):
+    """Restore an expired bank booking under the caller's write transaction; no invoice."""
+    r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+    if (not r or r['status'] != 'CANCELLED' or r['payment_method'] != 'BANK'
+            or r['square_invoice_id']
+            or r['payment_source'] or r['payment_confirmed_at']):
+        raise ValueError('取消済みの銀行振込予約のみ復活できます')
+    if (data.get('paid') is not True or type(data.get('amount')) is not int
+            or data['amount'] != r['amount'] or r['amount'] <= 0):
+        raise ValueError('全額入金の確認と正しい金額が必要です')
+    reference, staff = data.get('reference'), data.get('confirmed_by')
+    if (not isinstance(reference, str) or not reference.strip() or len(reference) > 200
+            or not isinstance(staff, str) or not staff.strip() or len(staff) > 100):
+        raise ValueError('振込記録と確認者名が必要です')
+    if data.get('expected_visit_at') != r['visit_at']:
+        raise ValueError('予約が更新されています。再読み込みしてください')
+    visit = parse_dt(r['visit_at'])
+    if visit.tzinfo is None:
+        visit = visit.replace(tzinfo=ZoneInfo('Asia/Tokyo'))
+    if visit <= datetime.now(timezone.utc):
+        raise ValueError('過去の予約は復活できません')
+    if r['seating_area'] not in ('COUNTER', *ROOMS) or r['vip_through']:
+        raise ValueError('通常のお席の予約のみ復活できます')
+    ok, message = availability_check(c, r['seating_area'], r['visit_at'], r['party_size'],
+                                     r['counter_round'], int(r['duration_minutes'] or 150), rid,
+                                     restore_existing=True)
+    if not ok:
+        raise ValueError(message)
+    ts = now_iso()
+    old_note = r['guest_note'] or ''
+    note = old_note + f'\n【振込済み予約復活】{ts}／{staff.strip()}／{reference.strip()}／追加請求なし'
+    c.execute("INSERT INTO reservation_note_history(reservation_id,old_note,new_note,changed_at) VALUES(?,?,?,?)",
+              (rid, old_note, note, ts))
+    c.execute("INSERT INTO payment_audit(reservation_id,source,amount,reference,confirmed_by,created_at) VALUES(?,?,?,?,?,?)",
+              (rid, 'BANK', r['amount'], reference.strip(), staff.strip(), ts))
+    c.execute("UPDATE reservations SET status='CONFIRMED',payment_source='BANK',payment_confirmed_at=?,"
+              "cancellation_reason=NULL,cancelled_at=NULL,staff_seen_at=NULL,guest_note=?,last_error=NULL,updated_at=? WHERE id=?",
+              (ts, note, ts, rid))
+    return dict(c.execute('SELECT * FROM reservations WHERE id=?', (rid,)).fetchone())
 
 
 def change_reservation_note(c, rid, data):
@@ -3698,6 +3740,29 @@ class Handler(
             result = deliver_confirmation(saved, retry_failed=True)
             ok = bool(result.get("confirmation_sent_at") if result.get("email") else result.get("confirmation_sms_status") == "QUEUED")
             return self.send_json({"ok": ok, "error": result.get("last_error") if result.get("email") else result.get("confirmation_sms_error")})
+
+        if re.fullmatch(r"/api/reservations/\d+/restore-bank-payment", p):
+            if not self.auth():
+                return self.send_json({'error': 'unauthorized'}, 401)
+            if (not APP_BASE_URL or self.headers.get('Origin') != APP_BASE_URL.rstrip('/')
+                    or self.headers.get('X-Tsukiya-Action') != 'restore-bank-payment'):
+                return self.send_json({'error': '予約管理画面を開き直してください'}, 403)
+            try:
+                details = self.read_json()
+                if not isinstance(details, dict):
+                    raise ValueError('入力内容を確認してください')
+                c = con()
+                try:
+                    c.execute('BEGIN IMMEDIATE')
+                    restored = restore_paid_bank_reservation(c, int(p.split('/')[3]), details)
+                    c.commit()
+                finally:
+                    c.close()
+            except (ValueError, TypeError) as exc:
+                return self.send_json({'error': str(exc)}, 409)
+            # Record and occupy the original booking only. Never create or send an invoice.
+            return self.send_json({'ok': True, 'id': restored['id'], 'status': restored['status'],
+                                   'payment_source': restored['payment_source']})
 
         if p.startswith("/api/reservations/") and p.endswith("/confirm-bank-payment"):
             if not self.auth():
