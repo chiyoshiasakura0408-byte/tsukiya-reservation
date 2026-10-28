@@ -2738,6 +2738,11 @@ class Handler(
             f = BASE / "public" / "login.html"
             return self.send_html(f.read_text(encoding="utf-8"))
 
+        if p == "/api/diagnostics/memory":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            import memory_diagnostics
+            return self.send_json(memory_diagnostics.status(), headers={"Cache-Control": "no-store"})
         if p == "/health":
             return self.send_json(
                 {
@@ -4469,6 +4474,8 @@ class Handler(
 if __name__ == "__main__":
     c = con()
     c.close()
+    import memory_diagnostics
+    memory_diagnostics.start(sys.modules[__name__])
     threading.Thread(target=guest_service.loop, args=(sys.modules[__name__],), daemon=True).start()
     threading.Thread(target=concierge.loop, args=(DB,), daemon=True).start()
     threading.Thread(target=line_reservations.loop, args=(sys.modules[__name__],), daemon=True).start()
@@ -4490,6 +4497,7 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
+
 
 
 
