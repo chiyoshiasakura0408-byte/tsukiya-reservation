@@ -315,6 +315,12 @@ def con():
         "confirmation_sms_sid": "TEXT",
         "confirmation_sms_sent_at": "TEXT",
         "confirmation_sms_error": "TEXT",
+        "confirmation_sms_correction_status": "TEXT",
+        "confirmation_sms_correction_sid": "TEXT",
+        "confirmation_sms_correction_sent_at": "TEXT",
+        "confirmation_sms_correction_error": "TEXT",
+        "confirmation_sms_correction_body": "TEXT",
+        "confirmation_sms_correction_original_sid": "TEXT",
         "invoice_sms_status": "TEXT",
         "invoice_sms_sid": "TEXT",
         "invoice_sms_sent_at": "TEXT",
@@ -677,6 +683,52 @@ def confirmation_sms_body(row):
             venue = venue.replace("までお越しください。", "でのご案内です。")
         body += "\n" + venue
     return body
+
+
+def send_confirmation_sms_correction(reservation, expected_sid):
+    """Send one auditable correction; retain the original SMS and never replay unknown results."""
+    rid = reservation["id"]
+    with SMS_LOCK:
+        c = con()
+        try:
+            row = dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+            if (row["source"] != "DIRECT" or row["status"] != "CONFIRMED" or not row.get("phone")
+                    or not row.get("confirmation_note") or not expected_sid
+                    or row.get("confirmation_sms_sid") != expected_sid):
+                raise ValueError("元のSMSと予約内容を確認してください")
+            if row.get("confirmation_sms_correction_status"):
+                return row
+            if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER):
+                raise ValueError("TwilioのSMS送信設定が未完了です")
+            day = date.fromisoformat(row["visit_at"][:10])
+            body = (f"西天満つきやです。{row['guest_name']}様\n先ほどのSMSのご案内を訂正いたします。\n"
+                    f"ご予約日：{day:%Y年%m月%d日}\nお席：{customer_seating_label(row)}\n人数：{row['party_size']}名様\n"
+                    "先ほどのSMSに入金確認済みとの記載がございましたが、お料理代は当日精算で承っております。\n"
+                    "【ご予約時刻について】\n" + row["confirmation_note"].strip())
+            venue = annex_message(row).replace("までお越しください。", "でのご案内です。")
+            if venue:
+                body += "\n" + venue
+            claimed = c.execute("UPDATE reservations SET confirmation_sms_correction_status='SENDING',"
+                                "confirmation_sms_correction_body=?,confirmation_sms_correction_original_sid=? "
+                                "WHERE id=? AND confirmation_sms_correction_status IS NULL",
+                                (body, expected_sid, rid)).rowcount
+            c.commit()
+            if claimed:
+                try:
+                    result = send_sms(row["phone"], body=body)
+                    if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
+                        raise RuntimeError("SMS送信を受け付けられませんでした")
+                    c.execute("UPDATE reservations SET confirmation_sms_correction_status='QUEUED',"
+                              "confirmation_sms_correction_sid=?,confirmation_sms_correction_sent_at=? WHERE id=?",
+                              (result["sid"], now_iso(), rid))
+                except Exception:
+                    c.execute("UPDATE reservations SET confirmation_sms_correction_status='ERROR',"
+                              "confirmation_sms_correction_error=? WHERE id=?",
+                              ("訂正SMSの結果を確認できません。送信履歴を確認してください。自動再送は行いません。", rid))
+                c.commit()
+            return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+        finally:
+            c.close()
 
 
 def send_confirmation_sms(reservation):
@@ -3755,6 +3807,34 @@ class Handler(
                     "Cache-Control": "no-store"
                 }
             )
+
+        correction_path = re.fullmatch(r"/api/reservations/(\d+)/send-confirmation-correction", p)
+        if correction_path:
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if (not APP_BASE_URL or self.headers.get("Origin") != APP_BASE_URL
+                    or self.headers.get("X-Tsukiya-Action") != "correct-confirmation-sms"):
+                return self.send_json({"error": "管理画面を開き直してください"}, 403)
+            try:
+                if not 0 < int(self.headers.get("Content-Length", "0")) <= 4096:
+                    raise ValueError("入力内容を確認してください")
+                payload = self.read_json()
+                if not isinstance(payload, dict) or not isinstance(payload.get("expected_sms_sid"), str):
+                    raise ValueError("元のSMSを確認してください")
+                c = con()
+                try:
+                    row = c.execute("SELECT * FROM reservations WHERE id=?", (int(correction_path[1]),)).fetchone()
+                    if not row:
+                        return self.send_json({"error": "not found"}, 404)
+                    saved = dict(row)
+                finally:
+                    c.close()
+                result = send_confirmation_sms_correction(saved, payload["expected_sms_sid"])
+                return self.send_json({"ok": result.get("confirmation_sms_correction_status") == "QUEUED",
+                                       "status": result.get("confirmation_sms_correction_status"),
+                                       "error": result.get("confirmation_sms_correction_error")})
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
 
         if p.startswith("/api/reservations/") and p.endswith("/send-confirmation"):
             if not self.auth():

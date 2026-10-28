@@ -68,6 +68,48 @@ class ConfirmationNotesTest(unittest.TestCase):
         self.assertIn('ご入金を確認',body)
         self.assertIn('ご来店時間をお守りください。',body)
         self.assertNotIn('【ご予約に関する備考】',body)
+    def original_sms(self):
+        row=self.row(NOTE.split('18:30にお越しください。')[0])
+        c=run.con();c.execute("UPDATE reservations SET confirmation_sms_status='QUEUED',confirmation_sms_sid='SM-old',confirmation_sms_sent_at='original-time' WHERE id=?",(row['id'],));c.commit();c.close()
+        return row
+    def test_correction_endpoint_sends_once_and_preserves_original_sms(self):
+        row=self.original_sms()
+        path=f"/api/reservations/{row['id']}/send-confirmation-correction"
+        body={'expected_sms_sid':'SM-old'}
+        self.assertEqual(self.fixture.call(path,body)[0],401)
+        self.assertEqual(self.fixture.call(path,body,headers={'x-admin-token':'staff-test'})[0],403)
+        headers={'x-admin-token':'staff-test','Origin':run.APP_BASE_URL,'X-Tsukiya-Action':'correct-confirmation-sms'}
+        with patch.multiple(run,TWILIO_ACCOUNT_SID='test',TWILIO_AUTH_TOKEN='test',TWILIO_FROM_NUMBER='+8100000000'), \
+             patch.object(run,'send_sms',return_value={'sid':'SM-correction','status':'queued'}) as sms:
+            first=self.fixture.call(path,body,headers=headers)
+            second=self.fixture.call(path,body,headers=headers)
+            self.assertEqual(first,(200,{'ok':True,'status':'QUEUED','error':None}))
+            self.assertEqual(second,first)
+            sms.assert_called_once()
+            sent=sms.call_args.kwargs['body']
+            self.assertIn('実際のご予約は18:30で承っております。',sent)
+            self.assertIn('当日精算で承っております。',sent)
+            self.assertNotIn('お越しください',sent)
+            self.assertNotIn('INTERNAL OWNER NOTE',sent)
+        c=run.con();saved=dict(c.execute('SELECT * FROM reservations WHERE id=?',(row['id'],)).fetchone());c.close()
+        self.assertEqual(saved['confirmation_sms_sid'],'SM-old')
+        self.assertEqual(saved['confirmation_sms_sent_at'],'original-time')
+        self.assertEqual(saved['confirmation_sms_correction_sid'],'SM-correction')
+        self.assertEqual(saved['confirmation_sms_correction_body'],sent)
+    def test_correction_uncertain_send_never_replays(self):
+        row=self.original_sms()
+        with patch.multiple(run,TWILIO_ACCOUNT_SID='test',TWILIO_AUTH_TOKEN='test',TWILIO_FROM_NUMBER='+8100000000'), \
+             patch.object(run,'send_sms',side_effect=TimeoutError()) as sms:
+            first=run.send_confirmation_sms_correction(row,'SM-old')
+            second=run.send_confirmation_sms_correction(row,'SM-old')
+            self.assertEqual(first['confirmation_sms_correction_status'],'ERROR')
+            self.assertEqual(second['confirmation_sms_correction_status'],'ERROR')
+            sms.assert_called_once()
+    def test_correction_rejects_stale_original(self):
+        row=self.original_sms()
+        with patch.object(run,'send_sms') as sms:
+            with self.assertRaises(ValueError):run.send_confirmation_sms_correction(row,'wrong-sid')
+            sms.assert_not_called()
     def test_invalid_customer_note_never_saves_a_reservation(self):
         for value in (None,123,{},'x'*1001,'bad\x00note'):
             body=dict(self.fixture.body,confirmation_note=value,request_id=str(uuid.uuid4()))
