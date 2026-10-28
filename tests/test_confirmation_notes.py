@@ -45,6 +45,29 @@ class ConfirmationNotesTest(unittest.TestCase):
         body=self.render(row)
         self.assertIn('Reservation notes:\n'+NOTE,body)
         self.assertNotIn('INTERNAL OWNER NOTE',body)
+    def test_sms_direct_note_and_destination_are_sent_once(self):
+        note = NOTE.split('18:30にお越しください。')[0]
+        row=self.row(note)
+        with patch.multiple(run,TWILIO_ACCOUNT_SID='test',TWILIO_AUTH_TOKEN='test',TWILIO_FROM_NUMBER='+8100000000'), \
+             patch.object(run,'send_sms',return_value={'sid':'SM-test-only','status':'queued'}) as sms:
+            first=run.send_confirmation_sms(row)
+            second=run.send_confirmation_sms(row)
+            self.assertEqual(first['confirmation_sms_status'],'QUEUED')
+            self.assertEqual(second['confirmation_sms_sid'],'SM-test-only')
+            sms.assert_called_once()
+            self.assertEqual(sms.call_args.args[0],row['phone'])
+            body=sms.call_args.kwargs['body']
+            self.assertIn(note,body)
+            self.assertIn('お料理代は当日店舗にてお支払いください。',body)
+            self.assertNotIn('ご入金を確認',body)
+            self.assertNotIn('お越しください',body)
+            self.assertNotIn('INTERNAL OWNER NOTE',body)
+    def test_prepaid_sms_keeps_payment_confirmation_without_customer_note(self):
+        row=self.row('');row['source']='PHONE'
+        body=run.confirmation_sms_body(row)
+        self.assertIn('ご入金を確認',body)
+        self.assertIn('ご来店時間をお守りください。',body)
+        self.assertNotIn('【ご予約に関する備考】',body)
     def test_invalid_customer_note_never_saves_a_reservation(self):
         for value in (None,123,{},'x'*1001,'bad\x00note'):
             body=dict(self.fixture.body,confirmation_note=value,request_id=str(uuid.uuid4()))

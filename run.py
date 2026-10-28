@@ -656,6 +656,29 @@ def send_invoice_sms(reservation):
             c.close()
 
 
+def confirmation_sms_body(row):
+    """Use the explicitly customer-facing note, never the internal booking note."""
+    direct = row["source"] in ("DIRECT", "CONCIERGE_LINE")
+    intro = ("ご予約を確定いたしました。お料理代は当日店舗にてお支払いください。" if direct
+             else "ご入金を確認し、ご予約を確定いたしました。")
+    note = str(dict(row).get("confirmation_note") or "").strip()
+    body = (f"西天満つきやです。{row['guest_name']}様\n{intro}\n"
+            f"日時：{row['visit_at'].replace('T', ' ')}\nお席：{customer_seating_label(row)}\n"
+            f"人数：{row['party_size']}名様\n")
+    if note:
+        body += "【ご予約に関する備考】\n" + note + "\n"
+    else:
+        body += ("ご指定の時刻から23時までお過ごしいただけます。" if row.get('vip_through')
+                 else "当店は一斉スタートでお料理をご提供します。ご来店時間をお守りください。") + "\n"
+    body += "当日は心を尽くしてお迎えいたします。"
+    venue = annex_message(row)
+    if venue:
+        if note:
+            venue = venue.replace("までお越しください。", "でのご案内です。")
+        body += "\n" + venue
+    return body
+
+
 def send_confirmation_sms(reservation):
     """Claim a confirmed phone-only notification before contacting Twilio."""
     if reservation.get("email") or not reservation.get("phone"):
@@ -678,11 +701,9 @@ def send_confirmation_sms(reservation):
                                     "(confirmation_sms_status IS NULL OR confirmation_sms_status='NOT_CONFIGURED')", (rid,)).rowcount
                 c.commit()
                 if claimed:
-                    body = (f"西天満つきやです。{row['guest_name']}様\nご入金を確認し、ご予約を確定いたしました。\n"
-                            f"日時：{row['visit_at'].replace('T', ' ')}\nお席：{customer_seating_label(row)}\n"
-                            f"人数：{row['party_size']}名様\n" + ("ご指定の時刻から23時までお過ごしいただけます。" if row.get('vip_through') else "当店は一斉スタートでお料理をご提供します。ご来店時間をお守りください。") + "\n当日は心を尽くしてお迎えいたします。")
+                    body = confirmation_sms_body(row)
                     try:
-                        result = send_sms(row["phone"], body=body + ("\n" + annex_message(row) if annex_message(row) else ""))
+                        result = send_sms(row["phone"], body=body)
                         if not result.get("sid") or result.get("status") in ("failed", "undelivered", "canceled"):
                             raise RuntimeError("SMS送信を受け付けられませんでした")
                         c.execute("UPDATE reservations SET confirmation_sms_status='QUEUED',confirmation_sms_sid=?,"
