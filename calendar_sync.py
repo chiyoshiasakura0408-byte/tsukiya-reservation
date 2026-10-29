@@ -1,5 +1,6 @@
 """Opt-in, one-way Calendar projection. Never writes reservation rows or notifies guests."""
 import calendar_auth
+from contextlib import closing
 import fcntl
 import hashlib
 import json
@@ -136,7 +137,7 @@ def schema(db):
 
 def reconcile(db_path, client, namespace, now=None):
     now = time.time() if now is None else now
-    with sqlite3.connect(db_path, timeout=30) as db:
+    with closing(sqlite3.connect(db_path, timeout=30)) as db:
         db.row_factory = sqlite3.Row
         schema(db)
         rows = {r['id']: dict(r) for r in db.execute('SELECT * FROM reservations')}
@@ -168,8 +169,9 @@ def reconcile(db_path, client, namespace, now=None):
                       now + min(3600, 30 * 2 ** min(attempts - 1, 7)), previous.get('last_success'), code)
             result['failed'] += 1
             LOG.warning('calendar sync failed reservation_id=%s code=%s', rid, code)
-        with sqlite3.connect(db_path, timeout=30) as db:
-            db.execute('INSERT OR REPLACE INTO calendar_sync_state VALUES (?,?,?,?,?,?,?,?)', values)
+        with closing(sqlite3.connect(db_path, timeout=30)) as db:
+            with db:
+                db.execute('INSERT OR REPLACE INTO calendar_sync_state VALUES (?,?,?,?,?,?,?,?)', values)
     return result
 
 
@@ -193,3 +195,4 @@ def loop(db_path):
         except Exception as error:
             LOG.error('calendar sync cycle failed: %s', str(error) if isinstance(error, SyncError) else type(error).__name__)
         time.sleep(30)
+

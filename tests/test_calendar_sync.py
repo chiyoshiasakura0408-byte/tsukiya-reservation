@@ -117,3 +117,38 @@ class CalendarSyncTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+import unittest
+import sqlite3
+from unittest.mock import patch
+import calendar_sync as sync
+
+class ConnectionLifetimeTest(CalendarSyncTest):
+    def check_tick(self, read_failure=False):
+        original=sqlite3.connect
+        opened=[]
+        class Tracked(sqlite3.Connection):
+            closed_explicitly=False
+            def close(self):
+                self.closed_explicitly=True
+                return super().close()
+        def connect(*args,**kwargs):
+            kwargs['factory']=Tracked
+            if read_failure:args=(':memory:',)
+            conn=original(*args,**kwargs);opened.append(conn);return conn
+        with patch.object(sync.sqlite3,'connect',connect):
+            if read_failure:
+                with self.assertRaises(sqlite3.OperationalError):self.tick()
+                result=None
+            else:result=self.tick()
+        self.assertTrue(opened)
+        self.assertTrue(all(c.closed_explicitly for c in opened))
+        return result
+    def test_close_after_success_and_unchanged(self):
+        self.assertEqual(self.check_tick()['synced'],1)
+        self.assertEqual(self.check_tick()['unchanged'],1)
+    def test_close_after_remote_error(self):
+        self.client.fail=True
+        self.assertEqual(self.check_tick()['failed'],1)
+    def test_close_after_read_error(self):self.check_tick(read_failure=True)
