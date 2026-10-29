@@ -62,6 +62,13 @@ def image_path(db, name, expiry, signature):
     path = Path(db).parent / 'line-images' / name
     return path if path.is_file() else None
 
+BRIEFING_SESSIONS = ('18:00', '20:30', '通し')
+
+def reservation_session(row):
+    """Report grouping only; preserve the actual arrival time and booking terms."""
+    clock = row['visit_at'][11:16]
+    return clock if clock in BRIEFING_SESSIONS[:2] and not row.get('vip_through') else '通し'
+
 def briefing_html(db, day, font_data, session=None):
     """Portrait report; keep personal contact details out of the group image."""
     from html import escape
@@ -71,7 +78,7 @@ def briefing_html(db, day, font_data, session=None):
     finally:
         c.close()
     if session is not None:
-        rows = [r for r in rows if r.get('vip_through') or ('18:00' if r['visit_at'][11:16] < '20:30' else '20:30') == session]
+        rows = [r for r in rows if reservation_session(r) == session]
     labels = {'COUNTER':'本店・カウンター','PRIVATE1':'別邸・個室①','PRIVATE2':'別邸・個室②','PRIVATE3':'別邸・個室③'}
     statuses = {'CONFIRMED':'予約確定','INVOICED':'請求済み','PENDING':'未決済','ERROR':'要確認'}
     cards = []
@@ -140,7 +147,7 @@ def capture(db, day, port, admin, base_url, session=None):
     finally:
         c.close()
     if session is not None:
-        rows = [r for r in rows if r.get('vip_through') or ('18:00' if r['visit_at'][11:16] < '20:30' else '20:30') == session]
+        rows = [r for r in rows if reservation_session(r) == session]
     labels = {'COUNTER':'本店・カウンター','PRIVATE1':'別邸・個室①','PRIVATE2':'別邸・個室②','PRIVATE3':'別邸・個室③'}
     statuses = {'CONFIRMED':'予約確定','INVOICED':'請求済み','PENDING':'未決済','ERROR':'要確認'}
     fonts = {size: ImageFont.truetype(str(font), size) for size in (22,23,25,29,30,34)}
@@ -341,7 +348,7 @@ def printable_message(db, day, base_url):
     doorman_pdf.generate(db, day, path)
     expiry = int(time.time()) + 48 * 3600
     url = f'{base_url}/line-image/{path.name}?expires={expiry}&sig={image_signature(path.name, expiry)}'
-    return {'type':'template','altText':f'{day} ドアマン用予約表 PDF','template':{'type':'buttons','title':'ドアマン用予約表','text':f'{day}｜A4・2ページ\n有効期限：48時間','actions':[{'type':'uri','label':'PDFを開く','uri':url}]}}
+    return {'type':'template','altText':f'{day} ドアマン用予約表 PDF','template':{'type':'buttons','title':'ドアマン用予約表','text':f'{day}｜A4・3ページ\n有効期限：48時間','actions':[{'type':'uri','label':'PDFを開く','uri':url}]}}
 
 def resend_briefing(db, day=None, charts=None, printable=None):
     """Explicit correction: one text-only resend per day and exact payload."""
@@ -362,7 +369,7 @@ def resend_briefing(db, day=None, charts=None, printable=None):
                 encoded = json.dumps({'to':TARGET,'messages':[printable_message(db,day,printable)]},ensure_ascii=False)
             if charts and not existing:
                 port, admin, base_url = charts
-                payload = {'to': TARGET, 'messages': [capture(db, day, port, admin, base_url, session) for session in ('18:00','20:30')]}
+                payload = {'to': TARGET, 'messages': [capture(db, day, port, admin, base_url, session) for session in BRIEFING_SESSIONS]}
                 encoded = json.dumps(payload, ensure_ascii=False)
             c.execute("INSERT OR IGNORE INTO line_deliveries VALUES(?,?,?,'READY',NULL,?)", (key, str(uuid.uuid4()), encoded, time.time()))
             c.commit()
@@ -421,7 +428,7 @@ def deliver(db, port, admin, base_url, day=None):
                     payload = json.loads(row['payload'])
                 else:
                     api('info')  # Validate token before generating the screenshot.
-                    payload = {'to':TARGET,'messages':briefing_text_messages(db,day,base_url) + [capture(db,day,port,admin,base_url,session) for session in ('18:00','20:30')] + [printable_message(db,day,base_url)] + bank_transfer.accounting_digest(db,base_url)}
+                    payload = {'to':TARGET,'messages':briefing_text_messages(db,day,base_url) + [capture(db,day,port,admin,base_url,session) for session in BRIEFING_SESSIONS] + [printable_message(db,day,base_url)] + bank_transfer.accounting_digest(db,base_url)}
                     c.execute("UPDATE line_deliveries SET payload=?,state='READY',updated=? WHERE day=?", (json.dumps(payload),time.time(),day))
                     c.commit()
                 push_briefing_payload(payload,row['retry_key'])
@@ -461,3 +468,4 @@ def loop(db, port, admin, base_url):
         except Exception:
             pass  # Recorded in authenticated delivery status; retry with the same key.
         time.sleep(60)
+

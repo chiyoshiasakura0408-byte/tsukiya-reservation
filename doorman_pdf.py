@@ -39,10 +39,10 @@ def generate(db, day, output):
     def grid(xs,top,height):
         c.setLineWidth(.5);c.rect(xs[0],top-height,xs[-1]-xs[0],height)
         for x in xs[1:-1]:c.line(x,top,x,top-height)
-    for page,session in enumerate(('18:00','20:30'),1):
-        selected=[r for r in rows if r.get('vip_through') or ('18:00' if r['visit_at'][11:16]<'20:30' else '20:30')==session]
+    for page,session in enumerate(delivery.BRIEFING_SESSIONS,1):
+        selected=[r for r in rows if delivery.reservation_session(r)==session]
         text(35,800,'西天満つきや｜ドアマン用予約表',19)
-        text(35,773,label+'　'+session+'の回',14)
+        text(35,773,label+'　'+(session if session=='通し' else session+'の回'),14)
         text(35,750,'当日の追加予約は空欄にご記入ください。',10)
         text(35,717,'本店｜カウンター8席',14)
         counter=[r for r in selected if r['seating_area']=='COUNTER']
@@ -57,7 +57,7 @@ def generate(db, day, output):
             for offset in range(n):
                 text(53,y-22-33*offset,str(seat+offset),11)
                 if offset:c.line(35,y-33*offset,96,y-33*offset)
-            fit(104,y-25,str(r['guest_name']).removesuffix('様')+'様',216)
+            fit(104,y-25,(r['visit_at'][11:16]+'　' if session=='通し' else '')+str(r['guest_name']).removesuffix('様')+'様',216)
             text(334,y-height/2-4,str(n)+'名',12)
             for j,note in enumerate(notes(r)):fit(383,y-16-12*j,note,165,8)
             c.rect(538,y-height+9,9,9)
@@ -82,5 +82,6 @@ def generate(db, day, output):
             c.rect(383,y-62,9,9);text(398,y-61,'到着',8);y-=71
         text(35,87,'連絡・引継ぎメモ',10);c.line(35,65,560,65)
         text(35,42,'＊空欄は9時時点の情報です。追加・変更は予約管理画面をご確認ください。',8)
-        text(527,42,str(page)+'/2',9);c.showPage()
+        text(527,42,str(page)+'/3',9);c.showPage()
     c.save()
+

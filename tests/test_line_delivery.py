@@ -13,6 +13,7 @@ class DeliveryTests(unittest.TestCase):
         self.pdf_patch=patch.object(d,'printable_message',return_value={'type':'text','text':'PDF'})
         self.pdf_patch.start();self.addCleanup(self.pdf_patch.stop)
         c=d.connect(self.db)
+        c.execute('CREATE TABLE IF NOT EXISTS concierge_settings(key TEXT PRIMARY KEY,value TEXT)')
         c.execute('INSERT INTO line_sources VALUES(?,?,?,1)',(d.TARGET,'group','now'))
         c.commit();c.close()
     def tearDown(self):self.tmp.cleanup()
@@ -26,7 +27,7 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):d.deliver(self.db,1,'admin','https://example.com','2026-10-04')
             d.deliver(self.db,1,'admin','https://example.com','2026-10-04')
             self.assertEqual(api.call_args_list[1],api.call_args_list[2])
-            self.assertEqual(capture.call_count,2)
+            self.assertEqual(capture.call_count,3)
     def test_wrong_group_fails_closed(self):
         c=d.connect(self.db);c.execute('DELETE FROM line_sources');c.commit();c.close()
         with patch.object(d,'api') as api:
@@ -78,12 +79,29 @@ class DeliveryTests(unittest.TestCase):
         with patch.object(d,'capture',return_value={'type':'image'}) as capture, patch.object(d,'api',return_value={}) as api:
             self.assertTrue(d.resend_briefing(self.db,'2026-10-19',charts=(1,'admin','https://example.com'))['resent'])
             self.assertTrue(d.resend_briefing(self.db,'2026-10-19',charts=(1,'admin','https://example.com'))['already_sent'])
-            self.assertEqual(capture.call_count,2)
+            self.assertEqual(capture.call_count,3)
             self.assertEqual(api.call_count,1)
-            self.assertEqual(len(api.call_args.args[1]['messages']),2)
+            self.assertEqual(len(api.call_args.args[1]['messages']),3)
             self.assertTrue(d.resend_briefing(self.db,'2026-10-19',printable='https://example.com')['resent'])
             self.assertTrue(d.resend_briefing(self.db,'2026-10-19',printable='https://example.com')['already_sent'])
             self.assertEqual(api.call_count,2)
+
+    def test_nonstandard_times_only_in_through_report(self):
+        c=d.connect(self.db)
+        c.execute("CREATE TABLE reservations(id INTEGER PRIMARY KEY,guest_name TEXT,visit_at TEXT,party_size INTEGER,seating_area TEXT,status TEXT,celebration_items TEXT,plate_message TEXT,guest_note TEXT,vip_through INTEGER)")
+        cases=[('first','18:00',0,'18:00'),('second','20:30',0,'20:30'),('early','17:45',0,'通し'),('middle','18:30',0,'通し'),('matsuyama','20:00',0,'通し'),('late','21:00',0,'通し'),('vip','18:00',1,'通し')]
+        for name,clock,vip,session in cases:
+            row=dict(visit_at='2026-10-29T'+clock,vip_through=vip)
+            self.assertEqual(d.reservation_session(row),session)
+            c.execute("INSERT INTO reservations(guest_name,visit_at,party_size,seating_area,status,vip_through) VALUES(?,?,2,'PRIVATE1','CONFIRMED',?)",(name,row['visit_at'],vip))
+        c.execute("INSERT INTO reservations(guest_name,visit_at,party_size,seating_area,status,vip_through) VALUES('cancelled','2026-10-29T20:00',2,'PRIVATE1','CANCELLED',0)")
+        c.commit();c.close()
+        reports={session:d.briefing_html(self.db,'2026-10-29','',session) for session in d.BRIEFING_SESSIONS}
+        for name,clock,vip,session in cases:
+            for key,html in reports.items():
+                self.assertEqual(name+' 様' in html,key==session)
+            self.assertIn(clock,reports[session])
+        self.assertNotIn('cancelled',reports['通し'])
 
     def test_correction_sent_once(self):
         with patch.object(d,'api',return_value={}) as api, patch.object(d,'message',return_value={'type':'text','text':'corrected'}):
@@ -95,3 +113,4 @@ class DeliveryTests(unittest.TestCase):
     def test_default_disabled(self):self.assertFalse(d.status(self.db)['delivery_enabled'])
 
 if __name__=='__main__':unittest.main()
+
