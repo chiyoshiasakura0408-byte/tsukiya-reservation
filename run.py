@@ -1,4 +1,5 @@
 import web_checkout
+import reservation_changes
 import gpt_reservations
 import bank_transfer
 import cancellation_emails
@@ -217,6 +218,7 @@ def con():
     c = sqlite3.connect(DB, timeout=30)
     c.row_factory = sqlite3.Row
     refunds.schema(c)
+    reservation_changes.schema(c)
     marketing.schema(c)
 
     c.execute(
@@ -1696,6 +1698,8 @@ def customer_cancellation(token, confirm=False, accepted=False, expected_fee=Non
             return 200, {"cancelled": True, "refund": refunds.public(c, r["id"])}
         if r["status"] != "CONFIRMED":
             return 409, {"error": "この予約はオンラインでキャンセルできません。店舗へお問い合わせください。"}
+        if reservation_changes.records(c, r['id']):
+            return 409, {"error": "人数変更の差額請求があるため、キャンセルは店舗へお問い合わせください。"}
         fee = r["amount"] if now.date() >= visit.astimezone(now.tzinfo).date() - timedelta(days=3) else 0
         if confirm:
             if accepted is not True or expected_fee != fee:
@@ -2024,6 +2028,12 @@ def import_booking(event):
 
 
 def deliver_confirmation(reservation, retry_failed=False):
+    check = con()
+    try:
+        if reservation_changes.summary(check, reservation['id'])['additional_unpaid']:
+            return dict(reservation)
+    finally:
+        check.close()
     result = send_confirmation_sms(reservation)
     if not result.get("email") or result["status"] != "CONFIRMED":
         return result
@@ -2075,6 +2085,7 @@ def reconcile_reservations():
         return
     try:
         web_checkout.reconcile(sys.modules[__name__])
+        reservation_changes.reconcile(sys.modules[__name__])
         c = con()
         rows = [dict(r) for r in c.execute("SELECT * FROM reservations WHERE status IN ('INVOICED','CONFIRMED') ORDER BY id")]
         c.close()
@@ -2842,6 +2853,7 @@ class Handler(
                         row["web_checkout_state"] = checkout["state"]
                         row["web_checkout_expires"] = checkout["expires"]
                         row["web_checkout_attention"] = checkout["last_error"]
+                row.update(reservation_changes.summary(c,row["id"]))
                 row["receipts"] = finance_links.for_reservation(c,row["id"])
                 row.update(booking_policy.details(row))
             c.close()
@@ -3426,6 +3438,38 @@ class Handler(
             finally:
                 c.close()
 
+        paid_change = re.fullmatch(r"/api/reservations/(\d+)/(paid-party|difference-invoice)", p)
+        if paid_change:
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if (not APP_BASE_URL or self.headers.get("Origin") != APP_BASE_URL.rstrip('/')
+                    or self.headers.get("X-Tsukiya-Action") != "paid-reservation-change"):
+                return self.send_json({"error": "予約管理画面を開き直してください"}, 403)
+            if not lengths or not 0 < int(lengths[0]) <= 64000:
+                return self.send_json({"error": "入力が長すぎます"}, 413)
+            c = con()
+            try:
+                data = self.read_json()
+                if not isinstance(data, dict):
+                    raise ValueError("入力内容を確認してください")
+                rid = int(paid_change[1])
+                if paid_change[2] == 'paid-party':
+                    reservation_changes.verify_original(sys.modules[__name__], c, rid)
+                    c.execute('BEGIN IMMEDIATE')
+                    result = reservation_changes.change(sys.modules[__name__], c, rid, data)
+                    c.commit()
+                else:
+                    result = reservation_changes.issue(sys.modules[__name__], rid, data.get('change_id'))
+                return self.send_json(result)
+            except (ValueError, TypeError) as exc:
+                c.rollback()
+                return self.send_json({"error": str(exc)}, 400)
+            except Exception:
+                c.rollback()
+                return self.send_json({"error": "処理結果を確認できません。予約詳細を開き直してください。同じ差額請求を再確認できます。"}, 502)
+            finally:
+                c.close()
+
         time_change = re.fullmatch(r"/api/reservations/(\d+)/(time|party|room)", p)
         if time_change:
             if not self.auth():
@@ -3970,6 +4014,8 @@ class Handler(
                     return self.send_json({"ok": True})
                 if row["status"] not in ("PENDING", "INVOICED", "ERROR", "CONFIRMED"):
                     return self.send_json({"error": "この予約はキャンセルできません"}, 409)
+                if reservation_changes.records(c, rid):
+                    return self.send_json({"error": "差額請求がある予約です。Squareで元決済と差額請求を確認して店舗対応してください。"}, 409)
                 try:
                     web_checkout.cancel_hold(c,row)
                 except web_checkout.CheckoutError as exc:
