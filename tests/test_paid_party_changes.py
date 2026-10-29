@@ -121,6 +121,7 @@ class PaidPartyChangesTest(unittest.TestCase):
             self.assertEqual(len(self.calls),count)
         order=next(b for p,b in self.calls if p=='/v2/orders')
         self.assertEqual(order['order']['line_items'][0]['base_price_money']['amount'],88000)
+        self.assertLessEqual(len(order['order']['reference_id']),40)
         inv=next(b for p,b in self.calls if p=='/v2/invoices')['invoice']
         self.assertEqual(inv['delivery_method'],'EMAIL')
         self.assertIn('子ども1名・食事なし',inv['description'])

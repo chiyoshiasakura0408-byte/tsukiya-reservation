@@ -117,14 +117,14 @@ def issue(app, rid, ident):
             if not row['customer_id']:
                 customer = app.square('/v2/customers',body={
                     'idempotency_key':key+'-customer','given_name':s['guest_name'],
-                    'email_address':s['email'],'reference_id':'tsukiya-change-'+ident})['customer']
+                    'email_address':s['email'],'reference_id':'chg:'+ident})['customer']
                 row['customer_id'] = customer['id']
                 c.execute('UPDATE reservation_changes SET customer_id=? WHERE id=?',(customer['id'],ident))
                 c.commit()
             if not row['order_id']:
                 order = app.square('/v2/orders',body={'idempotency_key':key+'-order','order':{
                     'location_id':s['location_id'],'customer_id':row['customer_id'],
-                    'reference_id':'tsukiya-change-'+ident,'line_items':[{
+                    'reference_id':'chg:'+ident,'line_items':[{
                         'name':f"人数変更の差額 #{rid}（{row['old_party']}名→{row['new_party']}名）",
                         'quantity':'1','base_price_money':{'amount':row['amount'],'currency':'JPY'}}]}})['order']
                 row['order_id'] = order['id']
