@@ -15,7 +15,7 @@ class BankTransferTest(unittest.TestCase):
   self.receipt=patch.object(bank_transfer,'receipt');self.receipt.start()
   self.invoice=patch.object(run,'make_invoice',return_value=('c','o','i','https://square.example/pay'));self.mock_invoice=self.invoice.start()
   self.server=ThreadingHTTPServer(('127.0.0.1',0),run.Handler);threading.Thread(target=self.server.serve_forever,daemon=True).start()
-  today=datetime.now(timezone(timedelta(hours=9))).date();self.day=next(today+timedelta(days=i) for i in range(1,365) if run.public_slot_allowed(today+timedelta(days=i),'18:00'))
+  today=datetime.now(timezone(timedelta(hours=9))).date();self.day=next(today+timedelta(days=i) for i in range(1,365) if run.public_slot_allowed(today+timedelta(days=i),'18:00') and not run.booking_policy.main_restaurant_closure_reason(today+timedelta(days=i),'COUNTER'))
   self.body={'date':str(self.day),'time':'18:00','seating_area':'COUNTER','party_size':2,'guest_name':'テスト','email':'test@example.com','phone':'09012345678','request_id':str(uuid.uuid4()),'cancellation_policy_accepted':True,'payment_method':'BANK','bank_payer':'テスト','bank_planned_date':''}
  def tearDown(self):
   self.server.shutdown();self.server.server_close();self.invoice.stop();self.receipt.stop();self.env.stop();self.token.stop();run.DB=self.old;self.tmp.cleanup()
@@ -43,6 +43,19 @@ class BankTransferTest(unittest.TestCase):
  def test_overdue_requests_review_not_false_cancellation(self):
   rid=self.book();c=run.con();old=(datetime.now(timezone.utc)-timedelta(hours=49)).isoformat();c.execute('UPDATE reservations SET created_at=?,bank_due_at=?',(old,old));c.commit();c.close();run.expire_public_reservations();bank_transfer.overdue(run);bank_transfer.overdue(run)
   c=run.con();self.assertEqual(c.execute('SELECT status FROM reservations').fetchone()[0],'PENDING');self.assertEqual(c.execute("SELECT count(*) FROM bank_notices WHERE stage='overdue'").fetchone()[0],1);c.close()
+ def test_owner_final_check_without_date_or_staff_preserves_guards_and_audit(self):
+  rid=self.book();url=f'/api/reservations/{rid}/confirm-bank-payment';body={'amount':132000,'owner_confirmed':True}
+  self.assertEqual(self.call(url,body)[0],401)
+  self.assertEqual(self.call(url,{**body,'amount':1},True)[0],409)
+  for value in (False,'true',1,None):
+   self.assertEqual(self.call(url,{**body,'owner_confirmed':value},True)[0],400)
+  with patch.object(run,'square') as square,patch.object(run,'deliver_confirmation',side_effect=lambda r:r):
+   self.assertEqual(self.call(url,body,True)[0],200)
+   self.assertEqual(self.call(url,body,True)[0],409)
+   square.assert_not_called()
+  c=run.con();audit=c.execute('SELECT * FROM payment_audit').fetchone()
+  self.assertEqual(audit['confirmed_by'],'朝倉');self.assertIn('朝倉確認済み',audit['reference'])
+  self.assertEqual(c.execute('SELECT count(*) FROM payment_audit').fetchone()[0],1);c.close()
  def test_invalid_and_unlinked_rejected_without_booking(self):
   for changes in [{'payment_method':'OTHER'},{'bank_payer':''},{'bank_planned_date':'2028-01-01'}]:self.assertEqual(self.call('/api/public/reservations',{**self.body,**changes})[0],400)
   c=concierge.connect(run.DB);concierge.put(c,'owner','');c.commit();c.close();self.assertEqual(self.call('/api/public/reservations',self.body)[0],503)

@@ -1470,6 +1470,17 @@ class ReservationNoteConflict(ValueError):
     pass
 
 
+def bank_confirmation_record(data):
+    """Owner-checked transfers need only the final authenticated confirmation."""
+    if data.get('owner_confirmed') is True:
+        return '朝倉確認済み・最終チェックで確定', '朝倉'
+    reference, staff = data.get('reference'), data.get('confirmed_by')
+    if (not isinstance(reference, str) or not reference.strip() or len(reference) > 200
+            or not isinstance(staff, str) or not staff.strip() or len(staff) > 100):
+        raise ValueError('朝倉確認済みの最終チェックが必要です')
+    return reference.strip(), staff.strip()
+
+
 def restore_paid_bank_reservation(c, rid, data):
     """Restore an expired bank booking under the caller's write transaction; no invoice."""
     r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
@@ -1480,10 +1491,7 @@ def restore_paid_bank_reservation(c, rid, data):
     if (data.get('paid') is not True or type(data.get('amount')) is not int
             or data['amount'] != r['amount'] or r['amount'] <= 0):
         raise ValueError('全額入金の確認と正しい金額が必要です')
-    reference, staff = data.get('reference'), data.get('confirmed_by')
-    if (not isinstance(reference, str) or not reference.strip() or len(reference) > 200
-            or not isinstance(staff, str) or not staff.strip() or len(staff) > 100):
-        raise ValueError('振込記録と確認者名が必要です')
+    reference, staff = bank_confirmation_record(data)
     if data.get('expected_visit_at') != r['visit_at']:
         raise ValueError('予約が更新されています。再読み込みしてください')
     visit = parse_dt(r['visit_at'])
@@ -3935,13 +3943,14 @@ class Handler(
             try:
                 rid = int(p.split("/")[3])
                 details = self.read_json()
-                amount = int(details.get("amount"))
-                reference = str(details.get("reference") or "").strip()
-                staff = str(details.get("confirmed_by") or "").strip()
+                if not isinstance(details, dict):
+                    raise ValueError('入力形式が不正です')
+                amount = details.get("amount")
+                if type(amount) is not int or amount <= 0:
+                    raise ValueError('金額が不正です')
+                reference, staff = bank_confirmation_record(details)
             except (ValueError, TypeError):
-                return self.send_json({"error": "金額と振込記録を入力してください"}, 400)
-            if not reference or not staff or len(reference) > 200 or len(staff) > 100:
-                return self.send_json({"error": "振込記録と確認者名が必要です"}, 400)
+                return self.send_json({"error": "金額と朝倉確認済みの最終チェックを確認してください"}, 400)
             c = con()
             
             try:

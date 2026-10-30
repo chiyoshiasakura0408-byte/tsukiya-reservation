@@ -71,6 +71,18 @@ class RestoreBankTest(unittest.TestCase):
         self.assertIn('追加請求なし', r['guest_note'])
         c.close()
 
+    def test_owner_final_check_needs_no_transfer_date_or_staff_input(self):
+        body = {k: v for k, v in self.body.items() if k not in ('reference', 'confirmed_by')}
+        body['owner_confirmed'] = True
+        with patch.object(run, 'make_invoice') as invoice, patch.object(run, 'deliver_confirmation') as notification:
+            self.assertEqual(self.call(body)[0], 200)
+            invoice.assert_not_called(); notification.assert_not_called()
+        c = run.con()
+        audit = c.execute('SELECT * FROM payment_audit').fetchone()
+        self.assertEqual(audit['confirmed_by'], '朝倉')
+        self.assertIn('朝倉確認済み', audit['reference'])
+        c.close()
+
     def test_rejects_occupied_seat_and_existing_payment(self):
         c = run.con()
         c.execute("INSERT INTO reservations(source,guest_name,visit_at,party_size,amount,seating_area,status,created_at,updated_at) VALUES('DIRECT','Other',?,2,88000,'PRIVATE1','CONFIRMED',?,?)", (self.visit, run.now_iso(), run.now_iso()))
