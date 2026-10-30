@@ -1589,7 +1589,10 @@ def change_direct_time(c, rid, data):
 
 def change_direct_party(c, rid, data):
     r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
-    if not r or r["source"] != "DIRECT" or r["status"] != "CONFIRMED" or r["vip_through"] or r["square_invoice_id"] or r["payment_confirmed_at"]:
+    pending_bank = bool(r and r["payment_method"] == "BANK" and r["status"] == "PENDING"
+                        and not r["payment_source"] and not r["square_order_id"])
+    direct = bool(r and r["source"] == "DIRECT" and r["status"] == "CONFIRMED")
+    if not r or not (direct or pending_bank) or r["vip_through"] or r["square_invoice_id"] or r["payment_confirmed_at"] or r["source"] == web_checkout.SOURCE:
         raise ValueError("この予約は人数変更の対象外です")
     if data.get("expected_party_size") != r["party_size"] or data.get("expected_visit_at") != r["visit_at"] or data.get("expected_amount") != r["amount"]:
         raise ValueError("予約が更新されています。再読み込みしてください")
@@ -1601,7 +1604,7 @@ def change_direct_party(c, rid, data):
     if not r["party_size"] or int(r["amount"]) % r["party_size"]:
         raise ValueError("1名様の料金を確認してください")
     ok, message = availability_check(c, r["seating_area"], r["visit_at"], party, r["counter_round"], int(r["duration_minutes"] or 150), rid,
-                                     allow_custom_start=bool(r["seating_area"] in ROOMS))
+                                     allow_custom_start=bool(r["seating_area"] in ROOMS), restore_existing=pending_bank)
     if not ok:
         raise ValueError(message)
     amount = int(r["amount"]) // r["party_size"] * party
