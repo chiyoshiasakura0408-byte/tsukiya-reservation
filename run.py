@@ -1,5 +1,6 @@
 import web_checkout
 import reservation_changes
+import customer_party
 import gpt_reservations
 import bank_transfer
 import cancellation_emails
@@ -219,6 +220,7 @@ def con():
     c.row_factory = sqlite3.Row
     refunds.schema(c)
     reservation_changes.schema(c)
+    customer_party.schema(c)
     marketing.schema(c)
 
     c.execute(
@@ -684,6 +686,9 @@ def confirmation_sms_body(row):
         if note:
             venue = venue.replace("までお越しください。", "でのご案内です。")
         body += "\n" + venue
+    link = cancellation_url(row)
+    if link:
+        body += "\n人数変更・キャンセル（2名以上）\n" + link
     return body
 
 
@@ -1588,6 +1593,8 @@ def change_direct_time(c, rid, data):
 
 
 def change_direct_party(c, rid, data):
+    if customer_party.latest(c, rid):
+        raise ValueError("お客様の人数変更履歴があります。お客様用変更画面から変更してください")
     r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
     pending_bank = bool(r and r["payment_method"] == "BANK" and r["status"] == "PENDING"
                         and not r["payment_source"] and not r["square_order_id"])
@@ -1709,6 +1716,8 @@ def customer_cancellation(token, confirm=False, accepted=False, expected_fee=Non
             return 200, {"cancelled": True, "refund": refunds.public(c, r["id"])}
         if r["status"] != "CONFIRMED":
             return 409, {"error": "この予約はオンラインでキャンセルできません。店舗へお問い合わせください。"}
+        if customer_party.open_balance(c, r['id']):
+            return 409, {"error": "人数変更の差額精算を確認中です。キャンセルは店舗へお問い合わせください。"}
         if reservation_changes.records(c, r['id']):
             return 409, {"error": "人数変更の差額請求があるため、キャンセルは店舗へお問い合わせください。"}
         fee = r["amount"] if now.date() >= visit.astimezone(now.tzinfo).date() - timedelta(days=3) else 0
@@ -1717,6 +1726,8 @@ def customer_cancellation(token, confirm=False, accepted=False, expected_fee=Non
                 return 400, {"error": "キャンセル規定をご確認ください。"}
             c.execute("UPDATE reservations SET status='CANCELLED',staff_seen_at=NULL,cancellation_reason='CUSTOMER',cancelled_at=?,updated_at=? WHERE id=? AND status='CONFIRMED'", (now_iso(), now_iso(), r["id"]))
             refunds.enqueue(c, r, fee, now_iso())
+            if customer_party.paid_history(c, r['id']):
+                c.execute("UPDATE cancellation_refunds SET status='MANUAL' WHERE reservation_id=? AND amount>0", (r['id'],))
             c.commit()
             return 200, {"cancelled": True, "fee": fee, "refund": refunds.public(c, r["id"])}
         return 200, {"cancelled": False, "name": r["guest_name"], "visit_at": r["visit_at"], "party_size": r["party_size"], "amount": r["amount"], "paid": r["amount"] if r["payment_source"] in ("SQUARE", "BANK") else 0, "fee": fee}
@@ -1766,8 +1777,8 @@ def send_confirmation(r):
     chat_link = APP_BASE_URL + '/concierge/en#visit=' + chat_proof if chat_proof and APP_BASE_URL.startswith('https://') else ''
     staff_en = ('Talk to staff on the day of your visit (Japan time):\n' + chat_link + '\nSend messages in English; Mr Asakura replies via LINE with translation. Please allow time during service.') if chat_link else ''
     cancel_link = cancellation_url(r)
-    cancel_ja = ("ご予約のキャンセルはこちら\n" + cancel_link + "\nリンク先で内容とキャンセル規定をご確認のうえ、お手続きください。キャンセル規定に基づき返金対象額を計算します。Squareカード決済は店舗責任者の確認・承認後に返金し、銀行振込・処理できない場合は店舗で対応します。カード明細への反映には通常さらに2〜7営業日ほどかかる場合があります。") if cancel_link else "キャンセルをご希望の場合は店舗へお問い合わせください。"
-    cancel_en = ("Cancel your reservation:\n" + cancel_link + "\nReview the cancellation policy before confirming. Eligible Square card payments are refunded after approval by the restaurant owner. Bank transfers and exceptions require assistance from the restaurant. Card statements may take a further 2–7 business days to reflect refunds.") if cancel_link else "Please contact the restaurant to cancel your reservation."
+    cancel_ja = ("人数変更・キャンセルはこちら（2名以上）\n" + cancel_link + "\nリンク先で内容とキャンセル規定をご確認のうえ、お手続きください。キャンセル規定に基づき返金対象額を計算します。Squareカード決済は店舗責任者の確認・承認後に返金し、銀行振込・処理できない場合は店舗で対応します。カード明細への反映には通常さらに2〜7営業日ほどかかる場合があります。") if cancel_link else "キャンセルをご希望の場合は店舗へお問い合わせください。"
+    cancel_en = ("Change guest count (minimum 2) or cancel your reservation:\n" + cancel_link + "\nReview the cancellation policy before confirming. Eligible Square card payments are refunded after approval by the restaurant owner. Bank transfers and exceptions require assistance from the restaurant. Card statements may take a further 2–7 business days to reflect refunds.") if cancel_link else "Please contact the restaurant to cancel your reservation."
     if english:
         seat_en = "Private Room" if str(r["seating_area"]).startswith("PRIVATE") else "Counter"
         msg.set_content(
@@ -2041,7 +2052,7 @@ def import_booking(event):
 def deliver_confirmation(reservation, retry_failed=False):
     check = con()
     try:
-        if reservation_changes.summary(check, reservation['id'])['additional_unpaid']:
+        if reservation_changes.summary(check, reservation['id'])['additional_unpaid'] or customer_party.open_balance(check, reservation['id']):
             return dict(reservation)
     finally:
         check.close()
@@ -2288,6 +2299,7 @@ class Handler(
             text = text.replace("</head>", "<script>" + (BASE / "public" / "crab-loader.js").read_text() + "</script></head>", 1)
         if 'aria-label="管理画面"' in text:
             text += "<script>" + (BASE / "public" / "refund-badge.js").read_text() + "</script>"
+            text += "<script>" + (BASE / "public" / "party-adjustments.js").read_text() + "</script>"
         payment_page = urlparse(self.path).path in ("/book", "/book-en", "/book.html", "/book-en.html")
         if payment_page:
             text, payment_nonce = web_checkout.secure_page(text)
@@ -2570,6 +2582,15 @@ class Handler(
         if p == "/webhooks/line":
             return self.send_json({"service": "tsukiya-line-webhook", "version": 1,
                                    "method": "POST", "delivery_enabled": False})
+
+        if p == "/api/customer-party-changes":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            c = con()
+            try:
+                return self.send_json({"changes": customer_party.staff_list(c)}, headers={"Cache-Control":"no-store"})
+            finally:
+                c.close()
 
         if p == "/api/refunds":
             if not self.auth():
@@ -2865,6 +2886,8 @@ class Handler(
                         row["web_checkout_expires"] = checkout["expires"]
                         row["web_checkout_attention"] = checkout["last_error"]
                 row.update(reservation_changes.summary(c,row["id"]))
+                row.update(customer_party.summary(c,row["id"]))
+                row["management_url"] = cancellation_url(row)
                 row["receipts"] = finance_links.for_reservation(c,row["id"])
                 row.update(booking_policy.details(row))
             c.close()
@@ -3392,6 +3415,39 @@ class Handler(
                 return self.send_json({"error": "webhook temporarily unavailable"}, 503)
             return self.send_json(result, status, {"Cache-Control": "no-store"})
 
+        if p in ("/api/public/party-change/preview", "/api/public/party-change/confirm"):
+            try:
+                if not 0 < int(self.headers.get("Content-Length", "0")) <= 4096:
+                    return self.send_json({"error":"入力サイズが不正です"}, 413)
+                data = self.read_json()
+                if not isinstance(data, dict):
+                    raise ValueError()
+                status, result = customer_party.handle(sys.modules[__name__], data, p.endswith('/confirm'))
+                return self.send_json(result, status, {"Cache-Control":"no-store", "Referrer-Policy":"no-referrer"})
+            except (ValueError, TypeError, json.JSONDecodeError):
+                return self.send_json({"error":"入力内容を確認してください"}, 400)
+
+        party_settle = re.fullmatch(r"/api/reservations/(\d+)/party-settlement", p)
+        if party_settle:
+            if not self.auth():
+                return self.send_json({"error":"unauthorized"}, 401)
+            if self.headers.get("X-Tsukiya-Action") != "party-settlement":
+                return self.send_json({"error":"invalid request"}, 403)
+            c = con()
+            try:
+                data = self.read_json()
+                if not isinstance(data, dict):
+                    raise ValueError()
+                c.execute('BEGIN IMMEDIATE')
+                result = customer_party.settle(sys.modules[__name__], c, int(party_settle[1]), data)
+                c.commit()
+                return self.send_json(result)
+            except (ValueError, TypeError) as exc:
+                c.rollback()
+                return self.send_json({"error":str(exc)}, 409)
+            finally:
+                c.close()
+
         if p in ("/api/public/cancellation/preview", "/api/public/cancellation/confirm"):
             try:
                 if int(self.headers.get("Content-Length", "0")) > 2048:
@@ -3713,7 +3769,7 @@ class Handler(
                 if existing:
                     c.rollback()
                     if existing["payment_method"] == "BANK" and existing["status"] != "CANCELLED":
-                        return self.send_json(bank_transfer.response(existing))
+                        return self.send_json(bank_transfer.response(existing, sys.modules[__name__]))
                     if existing["square_invoice_url"] and existing["status"] != "CANCELLED":
                         return self.send_json({
                             "reservation_id": existing["id"],
@@ -3768,7 +3824,7 @@ class Handler(
                 c.close()
             if payment_method == "BANK":
                 bank_transfer.receipt(sys.modules[__name__],row)
-                return self.send_json(bank_transfer.response(row))
+                return self.send_json(bank_transfer.response(row, sys.modules[__name__]))
             try:
                 customer_id, order_id, invoice_id, payment_url = make_invoice(row)
                 c = con()
@@ -4026,6 +4082,8 @@ class Handler(
                     return self.send_json({"ok": True})
                 if row["status"] not in ("PENDING", "INVOICED", "ERROR", "CONFIRMED"):
                     return self.send_json({"error": "この予約はキャンセルできません"}, 409)
+                if customer_party.open_balance(c, rid):
+                    return self.send_json({"error":"人数変更の差額精算を先に確認してください。"}, 409)
                 if reservation_changes.records(c, rid):
                     return self.send_json({"error": "差額請求がある予約です。Squareで元決済と差額請求を確認して店舗対応してください。"}, 409)
                 try:
@@ -4056,6 +4114,8 @@ class Handler(
                         visit = visit.replace(tzinfo=now.tzinfo)
                     fee = row["amount"] if now.date() >= visit.astimezone(now.tzinfo).date() - timedelta(days=3) else 0
                     refunds.enqueue(c, row, fee, now_iso())
+                    if customer_party.paid_history(c, rid):
+                        c.execute("UPDATE cancellation_refunds SET status='MANUAL' WHERE reservation_id=? AND amount>0", (rid,))
                 c.commit()
                 return self.send_json({"ok": True})
             finally:

@@ -52,10 +52,11 @@ def enqueue(c, r, app, stage='requested'):
             key=concierge.enqueue(c,destination,[{'type':'text','text':text}],channel='owner',kind='bank-transfer',reservation_id=r['id'])
             c.execute('UPDATE bank_notices SET outbox_id=? WHERE reservation_id=? AND stage=? AND destination=?',(key,r['id'],stage,destination))
 
-def response(r):
+def response(r, app=None):
     return {'reservation_id':r['id'],'payment_method':'BANK','status':r['status'],
             'bank_account':ACCOUNT_EN if r['booking_language']=='en' else ACCOUNT_JA,
-            'bank_due_at':r['bank_due_at'],'amount':r['amount']}
+            'bank_due_at':r['bank_due_at'],'amount':r['amount'],
+            'management_url':app.cancellation_url(r) if app else ''}
 
 def receipt(app, r):
     c=app.con()
@@ -67,6 +68,9 @@ def receipt(app, r):
         deadline=datetime.fromisoformat(r['bank_due_at']).astimezone(JST).strftime('%Y/%m/%d %H:%M')
         body=(f"{r['guest_name']}\nReservation request #{r['id']} received. Awaiting bank transfer; not yet confirmed.\nVisit: {r['visit_at']} / {r['party_size']} guests\nAmount: JPY {r['amount']:,}\nTransfer name: {r['bank_payer']}\nTransfer by: {deadline} JST\n\n{ACCOUNT_EN}\n\nWe will confirm your reservation after staff verify full payment.\n" if english else
               f"{r['guest_name']} 様\nお申込み（受付番号 {r['id']}）を受け付けました。現在は入金確認待ちで、ご予約は未確定です。\n来店：{r['visit_at']}／{r['party_size']}名様\n振込金額：{r['amount']:,}円\n振込名義：{r['bank_payer']}\n振込期限：{deadline}（日本時間）\n\n{ACCOUNT_JA}\n\n全額の着金を店舗で確認後、ご予約確定の通知をお送りします。\n")
+        link=app.cancellation_url(r)
+        if link:
+            body+='\n人数変更・キャンセル（2名以上） / Change guest count (minimum 2):\n'+link+'\n'
         body+='\n'+app.booking_policy.details(r)['beverage_policy_en' if english else 'beverage_policy']+'\n'+app.annex_message(r,english)+'\n西天満つきや'
         try:
             if not all((app.SMTP_HOST,app.SMTP_USER,app.SMTP_PASS,app.MAIL_FROM)): raise RuntimeError('SMTP未設定')

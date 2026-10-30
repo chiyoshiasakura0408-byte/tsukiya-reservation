@@ -1,5 +1,6 @@
 """Staff changes to paid bookings; supplemental invoices retain original payments."""
 import json
+import customer_party
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -47,6 +48,8 @@ def verify_original(app, c, rid):
 def change(app, c, rid, data):
     """Caller owns a BEGIN IMMEDIATE transaction. No network or message sends here."""
     r = c.execute('SELECT * FROM reservations WHERE id=?', (rid,)).fetchone()
+    if customer_party.latest(c, rid):
+        raise ValueError("お客様の人数変更履歴があります。お客様用変更画面から変更してください")
     if (not r or r['status'] != 'CONFIRMED' or r['payment_source'] != 'SQUARE'
             or not r['square_invoice_id'] or r['vip_through']):
         raise ValueError('Square請求書の決済済み通常予約のみ変更できます')
