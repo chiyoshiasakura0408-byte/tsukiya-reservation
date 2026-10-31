@@ -1,4 +1,5 @@
 """Bank-intent bookings: no card invoice; audited staff reconciliation only."""
+import email_sms
 import os
 import re
 from datetime import datetime, timedelta, timezone, date
@@ -82,6 +83,7 @@ def receipt(app, r):
             state='SENT'
         except Exception: state='ERROR'
         c.execute('UPDATE reservations SET bank_email_status=? WHERE id=?',(state,r['id']));c.commit()
+        if state=='SENT':email_sms.accepted(app,r,msg,'bank')
     finally: c.close()
 
 def overdue(app):
@@ -124,4 +126,5 @@ def accounting_digest(db, base_url):
         text+='\n確認後は決済管理から予約確定してください。\n'+base_url.rstrip('/')+'/'
         return [{'type':'text','text':text}]
     finally:c.close()
+
 

@@ -1,3 +1,4 @@
+import email_sms
 import web_checkout
 import reservation_changes
 import customer_party
@@ -1166,6 +1167,7 @@ def send_payment_reminder(reservation, invoice):
         c.execute("UPDATE reservations SET reminder_status='SENT',reminder_sent_at=? WHERE id=?",
                   (now_iso(), reservation["id"]))
         c.commit(); c.close()
+        email_sms.accepted(sys.modules[__name__], reservation, message, "payment-reminder")
         return True
 
 
@@ -1258,6 +1260,10 @@ def expiry_loop():
             cancellation_emails.process(sys.modules[__name__])
         except Exception as exc:
             print(f"Cancellation email worker failed: {type(exc).__name__}")
+        try:
+            email_sms.process(sys.modules[__name__])
+        except Exception as exc:
+            print(f"Guest email SMS worker failed: {type(exc).__name__}")
         time.sleep(300)
 
 
@@ -1855,6 +1861,7 @@ Nishitenma Tsukiya
                 msg
             )
 
+        email_sms.accepted(sys.modules[__name__], r, msg, "confirmation")
         return (
             True,
             ""

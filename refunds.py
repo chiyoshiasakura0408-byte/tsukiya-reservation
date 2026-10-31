@@ -1,4 +1,5 @@
 """Durable cancellation refunds. Never submit a new key after an ambiguous result."""
+import email_sms
 import re
 import concierge
 import json
@@ -154,6 +155,7 @@ def notify(app, job, reservation, stage):
         except Exception:
             result='UNKNOWN'
         c=app.con(); c.execute('UPDATE refund_notices SET status=? WHERE reservation_id=? AND stage=? AND audience=?',(result,job['reservation_id'],stage,audience)); c.commit(); c.close()
+        if audience=='guest' and result=='SENT':email_sms.accepted(app,reservation,msg,'refund:'+stage)
 
 def process(app):
     if not LOCK.acquire(blocking=False): return
@@ -209,5 +211,6 @@ def process(app):
             c=app.con(); current=dict(c.execute('SELECT * FROM cancellation_refunds WHERE reservation_id=?',(rid,)).fetchone()); c.close()
             notify(app,current,r,current['status'])
     finally: LOCK.release()
+
 
 

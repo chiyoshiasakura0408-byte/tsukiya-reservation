@@ -3,6 +3,7 @@
 SMTP has no idempotency API: ambiguous DATA failures are held for review,
 never retried automatically. Successful means SMTP accepted, not inbox delivery.
 """
+import email_sms
 import smtplib
 import time
 from email.message import EmailMessage
@@ -130,3 +131,5 @@ def _send(app, rid):
         c.commit()
     finally:
         c.close()
+    if state == 'SENT':email_sms.accepted(app,r,mail,'cancellation')
+

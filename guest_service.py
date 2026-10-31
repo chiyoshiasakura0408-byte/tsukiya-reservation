@@ -1,4 +1,5 @@
 """Guest care, premium sake catalogue and durable reservation notifications."""
+import email_sms
 import base64
 import hashlib
 import io
@@ -206,11 +207,12 @@ def payment_event(app,event):
     finally:c.close()
 
 
-def send_email(app,to,body):
+def send_email(app,to,body,reservation=None):
     if not all((app.SMTP_HOST,app.SMTP_USER,app.SMTP_PASS,app.MAIL_FROM)):raise RuntimeError('SMTP not configured')
     message=EmailMessage();message['From']=app.mail_sender();message['To']=to;message['Subject']='西天満つきやからのご案内 / Tsukiya at Nishi-Tenma';message.set_content(body)
     with smtplib.SMTP(app.SMTP_HOST,app.SMTP_PORT,timeout=20) as smtp:
         smtp.starttls();smtp.login(app.SMTP_USER,app.SMTP_PASS);smtp.send_message(message)
+    if reservation is not None:email_sms.accepted(app,reservation,message,'guest-service')
 
 
 def deliver(app):
@@ -271,7 +273,7 @@ def deliver(app):
                         continue
                     with c:c.execute("UPDATE guest_jobs SET state='unknown',channel=?,error='送信結果確認待ち' WHERE id=?",(destination,job['id']))
                     try:
-                        if destination=='email':send_email(app,r['email'],body['text'])
+                        if destination=='email':send_email(app,r['email'],body['text'],reservation=r)
                         else:app.send_sms(r['phone'],body=body['text'])
                         with c:c.execute("UPDATE guest_jobs SET state='accepted',error=NULL WHERE id=?",(job['id'],))
                     except Exception:
@@ -416,4 +418,5 @@ def drain_stock(app):
                 bot.enqueue(c,line_delivery.TARGET,[bot.text_message(message,False)],channel='owner',kind='stock-draft')
                 c.execute('UPDATE sake_stock_inbox SET state=? WHERE id=?',(state,row['id']))
     finally:c.close()
+
 
