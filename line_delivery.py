@@ -62,12 +62,18 @@ def image_path(db, name, expiry, signature):
     path = Path(db).parent / 'line-images' / name
     return path if path.is_file() else None
 
-BRIEFING_SESSIONS = ('18:00', '20:30', '通し')
+BRIEFING_SESSIONS = ('18:00', '20:30')
 
 def reservation_session(row):
     """Report grouping only; preserve the actual arrival time and booking terms."""
     clock = row['visit_at'][11:16]
     return clock if clock in BRIEFING_SESSIONS[:2] and not row.get('vip_through') else '通し'
+
+def reservation_sessions(row):
+    """Through reservations appear in both reports, with one underlying booking."""
+    session = reservation_session(row)
+    return BRIEFING_SESSIONS if session == '通し' else (session,)
+
 
 def briefing_html(db, day, font_data, session=None):
     """Portrait report; keep personal contact details out of the group image."""
@@ -78,7 +84,7 @@ def briefing_html(db, day, font_data, session=None):
     finally:
         c.close()
     if session is not None:
-        rows = [r for r in rows if reservation_session(r) == session]
+        rows = [r for r in rows if session in reservation_sessions(r)]
     labels = {'COUNTER':'本店・カウンター','PRIVATE1':'別邸・個室①','PRIVATE2':'別邸・個室②','PRIVATE3':'別邸・個室③'}
     statuses = {'CONFIRMED':'予約確定','INVOICED':'請求済み','PENDING':'未決済','ERROR':'要確認'}
     cards = []
@@ -147,7 +153,7 @@ def capture(db, day, port, admin, base_url, session=None):
     finally:
         c.close()
     if session is not None:
-        rows = [r for r in rows if reservation_session(r) == session]
+        rows = [r for r in rows if session in reservation_sessions(r)]
     labels = {'COUNTER':'本店・カウンター','PRIVATE1':'別邸・個室①','PRIVATE2':'別邸・個室②','PRIVATE3':'別邸・個室③'}
     statuses = {'CONFIRMED':'予約確定','INVOICED':'請求済み','PENDING':'未決済','ERROR':'要確認'}
     fonts = {size: ImageFont.truetype(str(font), size) for size in (22,23,25,29,30,34)}
@@ -468,4 +474,5 @@ def loop(db, port, admin, base_url):
         except Exception:
             pass  # Recorded in authenticated delivery status; retry with the same key.
         time.sleep(60)
+
 
