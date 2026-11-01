@@ -39,7 +39,7 @@ def enqueue(c, raw, signature, payload):
                 and e.get('type') == 'message' and message.get('type') == 'text'
                 and (re.fullmatch(r'つきやシフト連携\s+[A-F0-9]{12}', str(message.get('text', '')).strip(), re.IGNORECASE)
                      or re.match(r'^(希望シフト|シフト希望|[0-9０-９])', str(message.get('text', '')).strip())
-                     or str(message.get('text', '')).strip() in ('入力', 'シフト', 'シフト入力'))):
+                     or str(message.get('text', '')).strip() in ('入力', 'シフト', 'シフト入力', '確定シフト', '確定シフトカレンダー', 'シフト確認', '確定カレンダー'))):
             relevant.append(e['webhookEventId'])
             continue
         if e.get('source', {}).get('groupId') != GROUP or e.get('source', {}).get('type') != 'group':
