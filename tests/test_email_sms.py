@@ -27,13 +27,12 @@ class EmailSmsTests(unittest.TestCase):
         with email_sms.connect(self.app) as c:
             return [dict(r) for r in c.execute('SELECT * FROM guest_email_sms')]
 
-    def test_guest_notice_contains_spam_and_deadline_without_seat_details(self):
+    def test_sms_matches_accepted_email_body_verbatim(self):
         email_sms.accepted(self.app,self.row,self.mail,'bank')
         self.app.send_sms.assert_called_once()
         text = self.app.send_sms.call_args.kwargs['body']
-        self.assertIn('迷惑メールフォルダ',text)
-        self.assertIn('期限内',text)
-        self.assertNotIn('個室',text)
+        self.assertEqual(text, self.mail.get_content())
+        self.assertEqual(self.notices()[0]['body'], self.mail.get_content())
         self.assertEqual(self.notices()[0]['state'],'ACCEPTED')
 
     def test_retries_and_concurrent_callbacks_send_once(self):
@@ -110,10 +109,23 @@ class EmailSmsTests(unittest.TestCase):
         self.app.send_sms.assert_called_once()
         self.assertEqual(self.notices()[0]['state'],'ACCEPTED')
 
-    def test_english_and_no_payment_claim_for_confirmation(self):
-        text=email_sms.body({**self.row,'booking_language':'en'},'confirmation')
-        self.assertIn('spam/junk',text)
-        self.assertNotIn('payment',text)
+    def test_english_sms_preserves_email_text_and_links(self):
+        self.mail.set_content('Dear Guest,\nYour reservation is confirmed.\n'
+                              'https://example.com/reservation?token=test\n')
+        email_sms.accepted(self.app,{**self.row,'booking_language':'en'},self.mail,'confirmation')
+        self.assertEqual(self.app.send_sms.call_args.kwargs['body'],self.mail.get_content())
+
+    def test_bank_sms_matches_actual_smtp_message(self):
+        import bank_transfer
+        self.bank_setup()
+        with patch.object(self.app.smtplib,'SMTP') as smtp:
+            client = smtp.return_value.__enter__.return_value
+            client.send_message.return_value = {}
+            bank_transfer.receipt(self.app,self.row)
+        sent_mail = client.send_message.call_args.args[0]
+        self.assertEqual(self.app.send_sms.call_args.kwargs['body'],sent_mail.get_content())
+        self.assertIn('0655295',self.app.send_sms.call_args.kwargs['body'])
+
 
 
 if __name__=='__main__':unittest.main()

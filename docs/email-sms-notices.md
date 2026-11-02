@@ -1,10 +1,10 @@
 # Guest email notification SMS
 
 After the reservation system's SMTP server accepts a guest email, send an SMS
-to the phone recorded on that reservation. The SMS asks the guest to check their
-registered email address and spam/junk folder. Bank/payment reminders also ask
-the guest to observe the deadline in the email. English bookings use English.
-No room number, seat number, account details or private notes appear in the SMS.
+to the phone recorded on that reservation. The SMS contains the accepted email's
+plain-text body verbatim, preserving the language, line breaks, payment deadline,
+bank account instructions and links. It no longer substitutes a check-email notice.
+Customer-facing room/seat labels remain governed by the email templates.
 
 Covered: reservation confirmation (including changed confirmation content), bank
 instructions, payment reminders, expiry cancellation, guest refund updates, and

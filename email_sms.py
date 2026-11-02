@@ -18,20 +18,9 @@ def connect(app):
     return c
 
 
-def body(row, kind):
-    if row.get('booking_language') == 'en':
-        text = ('Tsukiya at Nishi-Tenma: We have sent an email to your registered email address. '
-                'Please check your inbox and spam/junk folder.')
-        if kind in ('bank', 'payment-reminder'):
-            text += ' Please complete payment by the deadline stated in the email.'
-        return text
-    text = ('西天満つきやでございます。ご登録のメールアドレス宛にメールをお送りしました。'
-            '受信箱に見当たらない場合は、迷惑メールフォルダもご確認ください。')
-    if kind == 'bank':
-        text += 'お振込みには期限がございますので、メールに記載の期限内にお手続きをお願いいたします。'
-    elif kind == 'payment-reminder':
-        text += 'メールに記載のお支払期限内にお手続きをお願いいたします。'
-    return text
+def body(message):
+    """Use the accepted email's plain-text body verbatim, including links."""
+    return message.get_content()
 
 
 def accepted(app, reservation, message, kind):
@@ -53,7 +42,7 @@ def accepted(app, reservation, message, kind):
                 c.execute('INSERT OR IGNORE INTO guest_email_sms '
                           '(event_key,reservation_id,email,phone,body,state,created) '
                           'VALUES(?,?,?,?,?,?,?)',
-                          (key, r['id'], recipient, phone, body(r, kind),
+                          (key, r['id'], recipient, phone, body(message),
                            'PENDING' if phone else 'SKIPPED', time.time()))
         finally:
             c.close()
