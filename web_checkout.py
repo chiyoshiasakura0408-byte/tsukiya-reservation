@@ -3,6 +3,7 @@
 The legacy invoice path is independent. New reservations use source WEB_CARD;
 all seat writers continue to share reservations and BEGIN IMMEDIATE.
 """
+import payment_terms
 import hashlib
 import hmac
 import json
@@ -102,7 +103,7 @@ def expire(app):
         rows = c.execute("SELECT id,reservation_id FROM web_checkouts WHERE state='HOLD' AND expires<=?", (time.time(),)).fetchall()
         for s in rows:
             c.execute("UPDATE web_checkouts SET state='EXPIRED',updated=? WHERE id=? AND state='HOLD'", (time.time(),s['id']))
-            c.execute("UPDATE reservations SET status='CANCELLED',cancellation_reason='CHECKOUT_EXPIRED',cancelled_at=?,updated_at=? WHERE id=? AND status='PENDING'", (app.now_iso(),app.now_iso(),s['reservation_id']))
+            c.execute("UPDATE reservations SET status='CANCELLED',cancellation_reason=CASE WHEN payment_term_policy='UNIFIED_24H_V1' THEN 'PAYMENT_EXPIRED' ELSE 'CHECKOUT_EXPIRED' END,cancelled_at=?,updated_at=? WHERE id=? AND status='PENDING'", (app.now_iso(),app.now_iso(),s['reservation_id']))
         c.commit()
         return len(rows)
     finally:
@@ -171,13 +172,14 @@ def create(app, x):
             VALUES(?,?,?,?,?,?,?,?,?,?,?,150,'PENDING',?,?,?,?,?,?,?)''',
             (SOURCE,name,phone,email,visit,party,course,language,amount,area,round_number,
              'web-card:'+request,now,now,now,note,items,plate)).lastrowid
+        payment_terms.register(c,rid,now)
         app.marketing.bind(c,rid,x.get('attribution'),now,False)
         sid=uuid.uuid4().hex;ts=time.time();location=config(app,language)['location_id']
         c.execute('''INSERT INTO web_checkouts(id,request_id,secret_hash,payload_hash,reservation_id,
             environment,location_id,amount,language,state,expires,created,updated,idempotency_key)
             VALUES(?,?,?,?,?,?,?,?,?,'HOLD',?,?,?,?)''',
             (sid,request,digest,payload_hash,rid,app.SQUARE_ENV,location,amount,language,
-             ts+900,ts,ts,'wc-'+sid))
+             ts+payment_terms.HOURS*3600,ts,ts,'wc-'+sid))
         s=dict(c.execute('SELECT * FROM web_checkouts WHERE id=?',(sid,)).fetchone())
         c.commit()
         return response(s)

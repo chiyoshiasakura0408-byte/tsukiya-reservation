@@ -113,7 +113,7 @@
       if(result){session.amount=result.amount;await show(result);if(result.state==='HOLD')await mount();}
     }
     if(configuration.enabled){
-      const guide=document.createElement('p');guide.className='sub';guide.textContent=t('カードはこの予約画面内でお支払いいただけます。全額決済後に予約確定となります。お支払い中のお席の一時確保は15分です。銀行振込は店舗で全額の着金を確認後に確定します。','Pay by credit card within this reservation page. Your reservation is confirmed after full payment. Your table is held for 15 minutes while you pay.');
+      const guide=document.createElement('p');guide.className='sub';guide.textContent=t('カードはこの予約画面内でお支払いいただけます。全額決済後に予約確定となります。お支払い期限はお申込みから24時間です。期限までに全額決済が完了しない場合、ご予約は自動取消となります。銀行振込は店舗で全額の着金を確認後に確定します。','Pay by credit card within this reservation page. Your reservation is confirmed after full payment. Payment is due within 24 hours of your request. Unpaid reservations are automatically cancelled after the deadline.');
       form.prepend(guide);document.getElementById('submit').textContent=t('内容を確認してお支払いへ','Review and continue to payment');
     }
   }catch(e){configuration=null;message(e.message,true);if(session){panel.hidden=false;form.hidden=true;}}

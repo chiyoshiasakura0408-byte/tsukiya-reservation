@@ -41,7 +41,7 @@ class BankTransferTest(unittest.TestCase):
    self.assertEqual(self.call(url,body,True)[0],200);self.assertEqual(self.call(url,body,True)[0],409);square.assert_not_called()
   c=run.con();r=c.execute('SELECT * FROM reservations').fetchone();self.assertEqual((r['status'],r['payment_source']),('CONFIRMED','BANK'));self.assertEqual(c.execute('SELECT count(*) FROM payment_audit').fetchone()[0],1);self.assertEqual(c.execute("SELECT count(*) FROM bank_notices WHERE stage='confirmed'").fetchone()[0],1);c.close()
  def test_overdue_requests_review_not_false_cancellation(self):
-  rid=self.book();c=run.con();old=(datetime.now(timezone.utc)-timedelta(hours=49)).isoformat();c.execute('UPDATE reservations SET created_at=?,bank_due_at=?',(old,old));c.commit();c.close();run.expire_public_reservations();bank_transfer.overdue(run);bank_transfer.overdue(run)
+  rid=self.book();c=run.con();old=(datetime.now(timezone.utc)-timedelta(hours=49)).isoformat();c.execute('UPDATE reservations SET payment_term_policy=NULL,created_at=?,bank_due_at=?',(old,old));c.commit();c.close();run.expire_public_reservations();bank_transfer.overdue(run);bank_transfer.overdue(run)
   c=run.con();self.assertEqual(c.execute('SELECT status FROM reservations').fetchone()[0],'PENDING');self.assertEqual(c.execute("SELECT count(*) FROM bank_notices WHERE stage='overdue'").fetchone()[0],1);c.close()
  def test_owner_final_check_without_date_or_staff_preserves_guards_and_audit(self):
   rid=self.book();url=f'/api/reservations/{rid}/confirm-bank-payment';body={'amount':132000,'owner_confirmed':True}
@@ -64,10 +64,10 @@ class BankTransferTest(unittest.TestCase):
   rid=self.book();self.assertEqual(self.call(f'/api/reservations/{rid}/cancel',{},True)[0],200)
   c=run.con();self.assertEqual(c.execute('SELECT status FROM reservations').fetchone()[0],'CANCELLED');self.assertEqual(c.execute("SELECT count(*) FROM bank_notices WHERE stage='cancelled'").fetchone()[0],1);c.close()
   self.invoice.stop()
-  with self.assertRaises(ValueError):run.make_invoice({'payment_method':'BANK'})
+  with self.assertRaises(ValueError):run.make_invoice({'source':'WEB','payment_method':'BANK'})
   self.invoice.start()
  def test_card_path_retained(self):
-  with patch.object(run,'SQUARE_TOKEN','test'),patch.object(run,'SQUARE_LOCATION_ID','location'):
+  with patch.object(run,'SQUARE_TOKEN','test'),patch.object(run,'SQUARE_LOCATION_ID','location'),patch.object(run.web_checkout,'enabled',return_value=False):
    code,r=self.call('/api/public/reservations',{**self.body,'payment_method':'CARD'});self.assertEqual(code,200,r);self.assertIn('payment_url',r);self.mock_invoice.assert_called_once()
   c=run.con();self.assertEqual(c.execute('SELECT count(*) FROM bank_notices').fetchone()[0],0);c.close()
  def test_notification_delivery_uses_both_destinations_once(self):

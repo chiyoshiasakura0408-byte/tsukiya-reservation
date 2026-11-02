@@ -4,6 +4,7 @@ import reservation_changes
 import customer_party
 import gpt_reservations
 import bank_transfer
+import payment_terms
 import cancellation_emails
 import booking_blocks
 from email.utils import formataddr, parseaddr
@@ -310,6 +311,8 @@ def con():
     web_checkout.schema(c)
     wanted = {
         "payment_method": "TEXT NOT NULL DEFAULT 'CARD'",
+        "payment_term_policy": "TEXT",
+        "payment_term_due_at": "TEXT",
         "bank_payer": "TEXT",
         "bank_planned_date": "TEXT",
         "bank_due_at": "TEXT",
@@ -790,14 +793,18 @@ def make_invoice(r):
     # Persist the new phone term before contacting Square so retries keep the
     # exact same deadline. Previously issued invoices keep their agreed term.
     r = dict(r)
-    if r['source'] == 'PHONE':
+    if r['source'] == 'PHONE' or r.get('payment_term_policy') == payment_terms.POLICY:
         c = con()
         try:
             c.execute('BEGIN IMMEDIATE')
             saved = c.execute('SELECT * FROM reservations WHERE id=?', (r['id'],)).fetchone()
             if saved and not saved['square_invoice_id']:
-                deadline = saved['invoice_payment_due_at'] or new_phone_payment_deadline(r).isoformat()
+                deadline = saved['invoice_payment_due_at'] or (
+                    saved['payment_term_due_at'] if saved['payment_term_policy'] == payment_terms.POLICY and saved['source'] == 'WEB'
+                    else new_phone_payment_deadline(r).isoformat())
                 c.execute('UPDATE reservations SET invoice_payment_due_at=? WHERE id=?', (deadline,r['id']))
+                if saved['payment_term_policy'] == payment_terms.POLICY:
+                    c.execute('UPDATE reservations SET payment_term_due_at=? WHERE id=?', (deadline,r['id']))
                 r['invoice_payment_due_at'] = deadline
             c.commit()
         finally:
@@ -896,6 +903,9 @@ def make_invoice(r):
         term = 'お支払期限 / Payment deadline: ' + phone_due.isoformat(timespec='seconds') + ' (JST)\n'
         phone_deadline_ja = term + '請求発行から24時間以内にお支払いください（前日電話予約は来店当日08:00まで）。未決済の場合は予約取消となります。\n\n'
         phone_deadline_en = term + 'Please pay within 24 hours of invoice issuance (by 08:00 JST on the visit day for day-before bookings). Unpaid reservations will be canceled.\n\n'
+    if r.get('payment_term_policy') == payment_terms.POLICY:
+        phone_deadline_ja = term + 'お支払期限は24時間です。期限までに全額の決済が確認できない場合は予約取消となります。\n\n'
+        phone_deadline_en = term + 'The payment deadline is 24 hours. Unpaid reservations are automatically cancelled after the deadline.\n\n'
     delivery_method = "EMAIL" if r["email"] else "SHARE_MANUALLY"
 
     invoice = square(
@@ -1046,6 +1056,8 @@ def parse_dt(s):
 def new_phone_payment_deadline(reservation, now=None):
     now = now or datetime.now(timezone.utc)
     deadline = now + timedelta(hours=NEW_PAYMENT_HOURS)
+    if dict(reservation).get('payment_term_policy') == payment_terms.POLICY:
+        return deadline.astimezone(timezone.utc).replace(microsecond=0)
     visit_day = date.fromisoformat(reservation['visit_at'][:10])
     if visit_day == now.astimezone(ZoneInfo('Asia/Tokyo')).date() + timedelta(days=1):
         deadline = min(deadline, datetime.combine(visit_day, datetime.min.time(),
@@ -1070,7 +1082,7 @@ def square_payment_deadline(invoice, reservation=None):
         deadline = datetime.combine(day + timedelta(days=1), datetime.min.time(),
                                     tzinfo=ZoneInfo(invoice["timezone"]))
         r = reservation or {}
-        if r.get('source') == 'PHONE' and r.get('invoice_payment_due_at'):
+        if (r.get('source') == 'PHONE' or r.get('payment_term_policy') == payment_terms.POLICY) and r.get('invoice_payment_due_at'):
             explicit = datetime.fromisoformat(r['invoice_payment_due_at'])
             if explicit.tzinfo is None:
                 return None
@@ -1173,11 +1185,12 @@ def send_payment_reminder(reservation, invoice):
 
 def expire_public_reservations():
     """Release expired public holds only after Square confirms an invoice is unpaid."""
+    policy_expired = payment_terms.expire(sys.modules[__name__])
     web_checkout.expire(sys.modules[__name__])
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=PUBLIC_PAYMENT_HOURS)).isoformat()
     now_jp = datetime.now(timezone(timedelta(hours=9)))
     c = con()
-    expired = 0
+    expired = policy_expired
     try:
         c.execute("BEGIN IMMEDIATE")
         rows = c.execute(
@@ -1191,6 +1204,7 @@ def expire_public_reservations():
             "OR (source='PHONE' AND square_invoice_id IS NOT NULL "
             "AND substr(visit_at,1,10)<=?)) "
             "AND status IN ('PENDING','INVOICED','ERROR') "
+            "AND payment_term_policy IS NULL "
             "ORDER BY id LIMIT 50", (cutoff, cutoff, now_iso(), now_jp.date().isoformat())
         ).fetchall()
         for row in rows:
@@ -3820,6 +3834,7 @@ class Handler(
                      150, "PENDING", request_id, ts, ts, ts, guest_note, celebration_items, plate_message)
                 )
                 rid = cur.lastrowid
+                payment_terms.register(c, rid, ts)
                 if payment_method == "BANK":
                     due=(datetime.fromisoformat(ts)+timedelta(hours=NEW_PAYMENT_HOURS)).isoformat()
                     c.execute("UPDATE reservations SET payment_method='BANK',bank_payer=?,bank_planned_date=?,bank_due_at=? WHERE id=?",(bank_payer,bank_planned_date,due,rid))
@@ -4340,6 +4355,8 @@ class Handler(
                 )
             )
 
+            if not same_day_direct:
+                payment_terms.register(c, cur.lastrowid, ts)
             c.execute("UPDATE reservations SET confirmation_note=? WHERE id=?", (confirmation_note, cur.lastrowid))
             c.execute("UPDATE reservations SET vip_through=?,vip_booking=?,customer_id=? WHERE id=?",(int(through),int(booking_policy.approved_customer(c,linked_customer)),linked_customer,cur.lastrowid))
 
