@@ -27,6 +27,21 @@ class LineWebhookTests(unittest.TestCase):
         self.assertEqual(self.request([])[0], 200)
         self.assertIsNotNone(line_bot.status(self.db)['last_verified_at'])
 
+    def test_confirmed_shift_bypasses_faq_and_is_relayed_once(self):
+        for i, text in enumerate(('確定シフト', '確定シフト11月分', '確定シフト １１月分',
+                                  '確定シフトカレンダー', 'シフト確認', '確定カレンダー')):
+            event = {'webhookEventId': 'confirmed-'+str(i), 'type': 'message',
+                     'source': {'type': 'user', 'userId': 'U'+'1'*32},
+                     'message': {'type': 'text', 'text': text}, 'replyToken': 'test-only'}
+            with self.subTest(text=text), patch.object(line_bot.staff_faq, 'question_events', wraps=line_bot.staff_faq.question_events) as faq:
+                self.assertEqual(self.request([event])[0], 200)
+                self.assertFalse(any(event in call.args[0] for call in faq.call_args_list))
+                self.assertEqual(self.request([event])[1]['received'], 0)
+            with line_bot.connect(self.db) as c:
+                self.assertEqual(c.execute('SELECT COUNT(*) FROM receipt_relay').fetchone()[0], i+1)
+                body = c.execute('SELECT body FROM receipt_relay ORDER BY created DESC LIMIT 1').fetchone()[0]
+                self.assertEqual(json.loads(body)['events'][0]['message']['text'], text)
+
     def test_fail_closed(self):
         self.assertEqual(line_bot.receive(self.db, b'{}', '')[0], 403)
         with patch.dict(os.environ, {'LINE_CHANNEL_SECRET': ''}):

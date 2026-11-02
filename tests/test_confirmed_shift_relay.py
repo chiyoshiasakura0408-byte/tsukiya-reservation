@@ -5,7 +5,7 @@ import line_receipts
 
 class ConfirmedShiftRelayTests(unittest.TestCase):
     def test_confirmed_commands_are_enqueued_for_employee(self):
-        for text in ('確定シフト', '確定シフトカレンダー', 'シフト確認', '確定カレンダー', 'シフト', '希望シフト'):
+        for text in ('確定シフト', '確定シフト11月分', '確定シフト １１月分', '確定シフトカレンダー', 'シフト確認', '確定カレンダー', 'シフト', '希望シフト'):
             with self.subTest(text=text), sqlite3.connect(':memory:') as c:
                 event={'webhookEventId':'test-event','type':'message','source':{'type':'user','userId':'U'+'1'*32},'message':{'type':'text','text':text}}
                 payload={'events':[event]};raw=json.dumps(payload).encode()

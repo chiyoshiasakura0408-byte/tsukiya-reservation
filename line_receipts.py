@@ -10,11 +10,23 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import unicodedata
 
 GROUP = 'Cc95ce7808ee54a2a3d19a4a7b7d78818'
 RELAY = 'https://tsukiya-line-receiver.chiyoshi-a-0408.chatgpt.site/receipt-relay'
 LOCK = threading.Lock()
 MAX_IMAGE = 12 * 1024 * 1024
+
+def is_shift_event(event):
+    source, message = event.get('source', {}), event.get('message', {})
+    text = unicodedata.normalize('NFKC', str(message.get('text', '')).strip())
+    return bool(source.get('type') == 'user'
+        and re.fullmatch(r'U[0-9a-f]{32}', str(source.get('userId', '')))
+        and event.get('type') == 'message' and message.get('type') == 'text'
+        and (re.fullmatch(r'つきやシフト連携\s+[A-F0-9]{12}', text, re.IGNORECASE)
+             or re.match(r'^(希望シフト|シフト希望|[0-9])', text)
+             or text in ('入力', 'シフト', 'シフト入力')
+             or re.fullmatch(r'(?:確定シフト(?:カレンダー)?|シフト確認|確定カレンダー)(?:\s*(?:[0-9]{4}年\s*)?(?:[1-9]|1[0-2])月分?)?', text)))
 
 def schema(c):
     c.execute('CREATE TABLE IF NOT EXISTS receipt_bridge_config(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
@@ -34,12 +46,7 @@ def enqueue(c, raw, signature, payload):
         # Forward employee pairing and explicitly prefixed shift submissions only.
         source = e.get('source', {})
         message = e.get('message', {})
-        if (source.get('type') == 'user'
-                and re.fullmatch(r'U[0-9a-f]{32}', str(source.get('userId', '')))
-                and e.get('type') == 'message' and message.get('type') == 'text'
-                and (re.fullmatch(r'つきやシフト連携\s+[A-F0-9]{12}', str(message.get('text', '')).strip(), re.IGNORECASE)
-                     or re.match(r'^(希望シフト|シフト希望|[0-9０-９])', str(message.get('text', '')).strip())
-                     or str(message.get('text', '')).strip() in ('入力', 'シフト', 'シフト入力', '確定シフト', '確定シフトカレンダー', 'シフト確認', '確定カレンダー'))):
+        if is_shift_event(e):
             relevant.append(e['webhookEventId'])
             continue
         if e.get('source', {}).get('groupId') != GROUP or e.get('source', {}).get('type') != 'group':

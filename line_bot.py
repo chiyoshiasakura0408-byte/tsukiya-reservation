@@ -98,6 +98,10 @@ def receive(db, raw, signature):
             for e in new_events:
                 if e['webhookEventId'] in claimed:
                     continue
+                # The finance receiver owns these commands and their reply token.
+                # Never let the general staff FAQ claim them before forwarding.
+                if line_receipts.is_shift_event(e):
+                    continue
                 source = e.get('source', {})
                 if source.get('type') != 'user':
                     continue
