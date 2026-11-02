@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from cryptography.fernet import Fernet
 
 SOURCE = 'WEB_CARD'
+HOLD_SECONDS = 5 * 60
 TERMINAL = ('PAID', 'FAILED', 'EXPIRED', 'CANCELLED')
 LOCKED = ('PAYING', 'UNKNOWN', 'REVIEW')
 DECLINES = {'CARD_DECLINED', 'GENERIC_DECLINE', 'CVV_FAILURE', 'VERIFY_CVV_FAILURE',
@@ -179,7 +180,7 @@ def create(app, x):
             environment,location_id,amount,language,state,expires,created,updated,idempotency_key)
             VALUES(?,?,?,?,?,?,?,?,?,'HOLD',?,?,?,?)''',
             (sid,request,digest,payload_hash,rid,app.SQUARE_ENV,location,amount,language,
-             ts+payment_terms.HOURS*3600,ts,ts,'wc-'+sid))
+             ts+HOLD_SECONDS,ts,ts,'wc-'+sid))
         s=dict(c.execute('SELECT * FROM web_checkouts WHERE id=?',(sid,)).fetchone())
         c.commit()
         return response(s)

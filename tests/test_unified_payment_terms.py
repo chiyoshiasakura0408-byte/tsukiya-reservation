@@ -36,16 +36,33 @@ class UnifiedTermsTest(unittest.TestCase):
         finally:
             f.tearDown()
 
-    def test_card_hold_lasts_24_hours_but_unknown_payment_is_not_released(self):
+    def test_card_hold_lasts_five_minutes_but_unknown_payment_is_not_released(self):
         f = card_fixtures.CheckoutTest(); f.setUp()
         try:
             x, session = f.book()
             c = run.con(); saved = c.execute('SELECT * FROM web_checkouts').fetchone()
-            self.assertEqual(saved['expires']-saved['created'], 86400)
+            self.assertEqual(saved['expires']-saved['created'], 300)
             c.execute("UPDATE web_checkouts SET state='UNKNOWN',expires=0")
             c.commit(); c.close()
             self.assertEqual(run.web_checkout.expire(run), 0)
             self.assertEqual(f.row(session['reservation_id'])['status'], 'PENDING')
+        finally:
+            f.tearDown()
+
+    def test_card_hold_releases_seat_at_five_minutes_not_before(self):
+        f = card_fixtures.CheckoutTest(); f.setUp()
+        try:
+            x, session = f.book()
+            c = run.con()
+            created = c.execute('SELECT created FROM web_checkouts').fetchone()[0]
+            c.close()
+            with patch.object(run.web_checkout.time, 'time', return_value=created+299):
+                self.assertEqual(run.web_checkout.expire(run), 0)
+                self.assertEqual(f.row(session['reservation_id'])['status'], 'PENDING')
+            with patch.object(run.web_checkout.time, 'time', return_value=created+300):
+                self.assertEqual(run.web_checkout.expire(run), 1)
+                self.assertEqual(f.row(session['reservation_id'])['status'], 'CANCELLED')
+            self.assertEqual(f.square.call_count, 0)
         finally:
             f.tearDown()
 
