@@ -1290,10 +1290,28 @@ def october_private_time(visit_at, area):
             and visit > datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None))
 
 
+def approved_staff_reservation_room(data, direct):
+    """Two owner-approved direct reservations; never grant permanent VIP access."""
+    if not direct:
+        return None
+    key = "|".join((str(data.get("guest_name", "")).strip(),
+                    str(data.get("visit_at", "")), str(data.get("party_size", ""))))
+    room = {
+        "3df8906d5103a54dd2a4d4417e7fd652fc6963783d7ce576dfce5dfdeb31c0f6": "PRIVATE1",
+        "4ed328edb714efd3dd144f83441ab85b0ce244749d9dedb7ea527242ec4294b3": "PRIVATE2",
+    }.get(hashlib.sha256(key.encode()).hexdigest())
+    if (room and data.get("seating_area") in ("PRIVATE", room)
+            and parse_dt(data["visit_at"]) > datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)):
+        return room
+    return None
+
+
 def approved_staff_time_exception(data, direct):
     """Owner-approved, single-party legacy reservation exception (2026-10-18)."""
     if not direct or data.get("seating_area") not in ("PRIVATE", *ROOMS):
         return False
+    if approved_staff_reservation_room(data, direct):
+        return True
     key = "|".join((str(data.get("email", "")).strip().lower(),
                     str(data.get("visit_at", "")), str(data.get("party_size", ""))))
     return (hashlib.sha256(key.encode()).hexdigest() == "88bd040da22421392f8e5a516df10cbbcb5745b1527e59d1808713ebcc81c879"
@@ -4221,7 +4239,7 @@ class Handler(
                     400
                 )
 
-            area = x["seating_area"]
+            area = approved_staff_reservation_room(x, direct) or x["seating_area"]
 
             rnd = (
                 int(
@@ -4639,6 +4657,7 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
+
 
 
 
