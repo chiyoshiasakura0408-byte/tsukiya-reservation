@@ -2,6 +2,7 @@ import email_sms
 import web_checkout
 import reservation_changes
 import customer_party
+import unpaid_invoice_changes
 import gpt_reservations
 import bank_transfer
 import payment_terms
@@ -223,6 +224,7 @@ def con():
     refunds.schema(c)
     reservation_changes.schema(c)
     customer_party.schema(c)
+    unpaid_invoice_changes.schema(c)
     marketing.schema(c)
 
     c.execute(
@@ -861,6 +863,11 @@ def make_invoice(r):
     )
 
     ikey = f"{rid}-{created}"
+    revision_db = con()
+    try:
+        ikey += unpaid_invoice_changes.invoice_suffix(revision_db, r)
+    finally:
+        revision_db.close()
 
     customer_body = {
         "idempotency_key":
@@ -4466,6 +4473,25 @@ class Handler(
                 if row["status"] == "INVOICED":
                     row = send_invoice_sms(row)
             return self.send_json(row)
+
+        unpaid_party_match = re.fullmatch(r"/api/reservations/(\d+)/unpaid-party", p)
+        if unpaid_party_match:
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if (self.headers.get("Origin") != APP_BASE_URL.rstrip('/')
+                    or self.headers.get("X-Tsukiya-Action") != "unpaid-party"):
+                return self.send_json({"error": "invalid origin or action"}, 403)
+            try:
+                if not lengths or not 0 < int(lengths[0]) <= 4096:
+                    raise ValueError("入力形式が不正です")
+                data = self.read_json()
+                if not isinstance(data, dict):
+                    raise ValueError("入力形式が不正です")
+                return self.send_json(unpaid_invoice_changes.replace(sys.modules[__name__], int(unpaid_party_match.group(1)), data))
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 409)
+            except Exception:
+                return self.send_json({"error": "請求変更の結果を確認できません。旧請求の状態を確認し、新規予約を作成せず同じ変更を再確認してください"}, 503)
 
         prepayment_match = re.fullmatch(r"/api/reservations/(\d+)/prepayment", p)
         if prepayment_match:
