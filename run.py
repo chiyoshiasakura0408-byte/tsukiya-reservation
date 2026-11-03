@@ -780,6 +780,44 @@ def send_confirmation_sms(reservation):
             c.close()
 
 
+def direct_to_prepayment(rid, expected):
+    """Convert an unpaid direct booking without changing its guest, slot or price."""
+    c = con()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        saved = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+        if not saved:
+            raise ValueError("予約が見つかりません")
+        r = dict(saved)
+        fields = ("guest_name", "visit_at", "party_size", "amount", "phone", "email", "seating_area")
+        if any(expected.get(k) != r.get(k) for k in fields):
+            raise ValueError("予約内容が変更されました。画面を更新して確認してください")
+        if (r["source"] != "DIRECT" or r["status"] != "CONFIRMED"
+                or r.get("square_invoice_id") or r.get("payment_source")
+                or r.get("payment_confirmed_at") or r.get("payment_method") == "BANK"
+                or c.execute("SELECT 1 FROM payment_audit WHERE reservation_id=?", (rid,)).fetchone()):
+            raise ValueError("未精算の当日精算予約のみ前受け請求へ変更できます")
+        if not r.get("phone") and not r.get("email"):
+            raise ValueError("請求先の電話番号またはメールを登録してください")
+        ts = now_iso()
+        visit = parse_dt(r["visit_at"])
+        if visit.tzinfo is None:
+            visit = visit.replace(tzinfo=ZoneInfo('Asia/Tokyo'))
+        if visit <= parse_dt(ts):
+            raise ValueError("来店前の予約のみ前受け請求へ変更できます")
+        booking_blocks.ensure_allowed(c, r.get("phone"), r.get("email"), r.get("customer_id"), staff=True)
+        c.execute("UPDATE reservations SET source='PHONE',status='PENDING',last_error=NULL,updated_at=? WHERE id=?", (ts, rid))
+        payment_terms.register(c, rid, ts)
+        out = dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
+        c.commit()
+        return out
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
 def make_invoice(r):
     if r["source"] == web_checkout.SOURCE:
         raise ValueError("Webカード決済のため請求書は発行しません")
@@ -4428,6 +4466,23 @@ class Handler(
                 if row["status"] == "INVOICED":
                     row = send_invoice_sms(row)
             return self.send_json(row)
+
+        prepayment_match = re.fullmatch(r"/api/reservations/(\d+)/prepayment", p)
+        if prepayment_match:
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if (self.headers.get("Origin") != APP_BASE_URL.rstrip('/')
+                    or self.headers.get("X-Tsukiya-Action") != "prepayment"):
+                return self.send_json({"error": "invalid origin or action"}, 403)
+            try:
+                if not lengths or not 0 < int(lengths[0]) <= 4096:
+                    raise ValueError("入力形式が不正です")
+                expected = self.read_json()
+                if not isinstance(expected, dict):
+                    raise ValueError("入力形式が不正です")
+                return self.send_json(direct_to_prepayment(int(prepayment_match.group(1)), expected))
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self.send_json({"error": str(exc)}, 409)
 
         if (
             p.startswith(
