@@ -96,6 +96,8 @@ class SupportTests(unittest.TestCase):
             self.assertEqual(msg['Reply-To'], address)
             self.assertEqual(call.kwargs, {'from_addr': address, 'to_addrs': [support.RECIPIENT]})
             self.assertIn('Square登録メールアドレス：'+address, msg.get_content())
+            self.assertIn('店舗名：つきや\n', msg.get_content())
+            self.assertIn('Squareアカウント代表者名：朝倉千勝', msg.get_content())
             self.assertEqual(run.MAIL_FROM, 'store@example.com')
 
     def test_missing_card_details_retry_then_stop_without_email(self):
