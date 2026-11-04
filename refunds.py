@@ -1,5 +1,6 @@
 """Durable cancellation refunds. Never submit a new key after an ambiguous result."""
 import email_sms
+import refund_support
 import re
 import concierge
 import json
@@ -15,7 +16,7 @@ AUTH_LOCK = threading.Lock()
 AUTH_FAILURES = deque()
 DELAY = 'カード明細への反映には通常さらに2〜7営業日ほどかかる場合があります。'
 GUIDE = '''残高不足の場合の対応手順：
-1. 登録メールアドレスから square-jp@help-messaging.squareup.com へ連絡。
+1. 新しいカード返金は square-jp@help-messaging.squareup.com へ自動問い合わせ（決済管理に送信状況を表示）。登録メールとの一致確認を求められた場合は店舗で対応。
 2. 取引日・取引額・返金希望額・カード会社・カード番号下4桁・登録メールアドレス・代表者名を伝える。
 3. Squareから振込先の案内を受けて入金。
 4. 残高への反映連絡を受けて、返金手続きを再実行。
@@ -73,6 +74,7 @@ def schema(c):
     c.execute('''CREATE TABLE IF NOT EXISTS refund_notices(
         reservation_id INTEGER NOT NULL, stage TEXT NOT NULL, audience TEXT NOT NULL,
         status TEXT NOT NULL, PRIMARY KEY(reservation_id,stage,audience))''')
+    refund_support.schema(c)
 
 def enqueue(c, r, fee, now):
     paid = r['payment_source'] in ('SQUARE', 'BANK')
@@ -80,6 +82,7 @@ def enqueue(c, r, fee, now):
     status = ('AWAITING_APPROVAL' if r['payment_source']=='SQUARE' else 'MANUAL') if amount else 'NONE'
     c.execute('INSERT OR IGNORE INTO cancellation_refunds(reservation_id,fee,amount,status,request_key,created_at) VALUES(?,?,?,?,?,?)',
               (r['id'], fee, amount, status, str(uuid.uuid4()), now))
+    refund_support.enqueue(c, r, amount)
 
 def public(c, rid):
     r = c.execute('SELECT fee,amount,status FROM cancellation_refunds WHERE reservation_id=?',(rid,)).fetchone()
@@ -160,6 +163,11 @@ def notify(app, job, reservation, stage):
 def process(app):
     if not LOCK.acquire(blocking=False): return
     try:
+        # Inquiry sends no refund request and does not alter owner approval.
+        try:
+            refund_support.process(app)
+        except Exception:
+            pass  # An inquiry problem must not block refund status reconciliation.
         c=app.con(); jobs=[dict(r) for r in c.execute('SELECT * FROM cancellation_refunds')]; c.close()
         for job in jobs:
             rid=job['reservation_id']; c=app.con()

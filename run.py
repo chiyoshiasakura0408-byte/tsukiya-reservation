@@ -2680,7 +2680,7 @@ class Handler(
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
             c = con()
-            rows = [dict(r) for r in c.execute("SELECT f.*,r.guest_name,r.visit_at,r.cancellation_reason FROM cancellation_refunds f JOIN reservations r ON r.id=f.reservation_id ORDER BY f.created_at DESC")]
+            rows = [dict(r) for r in c.execute("SELECT f.*,r.guest_name,r.visit_at,r.cancellation_reason,i.state AS support_inquiry_status,i.sent AS support_inquiry_sent_at FROM cancellation_refunds f JOIN reservations r ON r.id=f.reservation_id LEFT JOIN refund_support_inquiries i ON i.reservation_id=f.reservation_id ORDER BY f.created_at DESC")]
             c.close()
             return self.send_json({"refunds": rows, "action_required_count": refunds.action_required_count(rows), "guide": refunds.GUIDE, "approval_configured": refunds.approval_configured(sys.modules[__name__])}, 200, {"Cache-Control": "no-store"})
         if p == "/cancel-reservation":
