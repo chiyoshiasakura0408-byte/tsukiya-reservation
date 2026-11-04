@@ -217,6 +217,40 @@ class Tests(unittest.TestCase):
   self.assertEqual(c.execute("SELECT COUNT(*) FROM line_booking_audit WHERE action='note'").fetchone()[0],4)
   self.assertNotEqual(calendar_sync.event_body(after,'test'),calendar_sync.event_body(r,'test'))
   c.close()
+ def test_consultation_reply_group_binding_status_and_no_repeat(self):
+  import guest_service
+  group='C'+'e'*32
+  c=concierge.connect(run.DB)
+  with c:
+   r,_,_=lb.perform(run,c,item())
+   c.execute("UPDATE reservations SET celebration_items='ケーキ',guest_note='卵不可' WHERE id=?",(r['id'],))
+  c.close();guest_service.sync_requests(run)
+  c=concierge.connect(run.DB)
+  with c:
+   delivery=c.execute('SELECT delivery_id FROM booking_consultations').fetchone()[0]
+   c.execute('UPDATE concierge_outbox SET user_id=? WHERE id=?',(group,delivery))
+   row=c.execute('SELECT * FROM concierge_outbox WHERE id=?',(delivery,)).fetchone()
+   self.assertIn('リプライ',row['payload'])
+   concierge.remember_reservation_messages(c,row,json.dumps({'sentMessages':[{'id':'888'}]}))
+  c.close()
+  e=self.event('group-reply','ケーキ用意可能');e['source']['groupId']=group;e['message']['quotedMessageId']='888'
+  self.signed([e]);self.signed([e])
+  with patch.object(lb,'extract') as extract:lb.drain(run);extract.assert_not_called()
+  guest_service.sync_requests(run)
+  c=concierge.connect(run.DB)
+  self.assertEqual(c.execute('SELECT count(*) FROM booking_consultations').fetchone()[0],1)
+  self.assertEqual(c.execute('SELECT status FROM concierge_requests').fetchone()[0],'担当回答受付済み（予約備考へ記録）')
+  self.assertEqual(c.execute('SELECT guest_note FROM reservations').fetchone()[0],'卵不可\n【朝倉追記】ケーキ用意可能')
+  self.assertEqual(c.execute("SELECT count(*) FROM line_booking_audit WHERE action='note'").fetchone()[0],1)
+  confirmation=c.execute("SELECT user_id,payload FROM concierge_outbox WHERE kind='line-booking'").fetchone()
+  self.assertEqual(confirmation['user_id'],group);self.assertIn('お客様への送信',confirmation['payload'])
+  c.close()
+  # Another member, or copying the quote ID into another group, cannot write.
+  for i,(actor,dest) in enumerate((('U'+'b'*32,group),(OWNER,'C'+'f'*32))):
+   bad=self.event('unauthorized-reply'+str(i),'変更しない',actor=actor)
+   bad['source']['groupId']=dest;bad['message']['quotedMessageId']='888';self.signed([bad]);lb.drain(run)
+  c=concierge.connect(run.DB)
+  self.assertNotIn('変更しない',c.execute('SELECT guest_note FROM reservations').fetchone()[0]);c.close()
  def test_unknown_quote_and_wrong_destination_do_not_mutate(self):
   c=concierge.connect(run.DB)
   with c:

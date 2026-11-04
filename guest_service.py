@@ -349,9 +349,14 @@ def sync_requests(app):
     try:
         with c:
             c.execute('CREATE TABLE IF NOT EXISTS booking_consultations(id TEXT PRIMARY KEY,request_id TEXT NOT NULL,notified INTEGER NOT NULL DEFAULT 0)')
+            if 'delivery_id' not in {r[1] for r in c.execute('PRAGMA table_info(booking_consultations)')}:
+                c.execute('ALTER TABLE booking_consultations ADD COLUMN delivery_id TEXT')
             now=datetime.now(bot.JST).strftime('%Y-%m-%dT%H:%M')
             for record in c.execute("SELECT * FROM reservations WHERE visit_at>=? AND status IN ('CONFIRMED','PENDING','INVOICED') AND (coalesce(guest_note,'')!='' OR coalesce(celebration_items,'')!='' OR coalesce(plate_message,'')!='')",(now,)).fetchall():
                 r=dict(record)
+                # Owner reply notes must not generate a new guest consultation.
+                r['guest_note']=re.split(r'(?:^|\n)【朝倉追記】',r.get('guest_note') or '',maxsplit=1)[0]
+                if not any(r.get(k) for k in ('guest_note','celebration_items','plate_message')):continue
                 body=f"予約番号 {r['id']} ／ {r['guest_name']}様 ／ {r['visit_at']}\nお祝い：{r.get('celebration_items') or 'なし'}\nプレート：{r.get('plate_message') or 'なし'}\n記念日・食事制限等のご希望：{r.get('guest_note') or 'なし'}\n特別対応はVIP担当確認待ちです。"
                 key=hashlib.sha256(body.encode()).hexdigest();qid='reservation-'+key[:24]
                 linked=c.execute('SELECT user_id FROM concierge_customers WHERE customer_id=? AND active=1 ORDER BY user_id LIMIT 1',(r.get('customer_id'),)).fetchone()
@@ -362,8 +367,8 @@ def sync_requests(app):
             if owner:
                 for row in c.execute('SELECT b.id,r.body FROM booking_consultations b JOIN concierge_requests r ON r.id=b.request_id WHERE b.notified=0').fetchall():
                     match=re.match(r'予約番号 (\d+) ／',row['body'])
-                    bot.enqueue(c,owner,[bot.text_message('【予約ページからのご相談】\n'+row['body'],False)],channel='owner',kind='request',reservation_id=int(match[1]) if match else None)
-                    c.execute('UPDATE booking_consultations SET notified=1 WHERE id=?',(row['id'],))
+                    delivery_id=bot.enqueue(c,owner,[bot.text_message('【予約ページからのご相談】\n'+row['body']+'\n\nこの通知をLINEの「リプライ」で選び、回答を送信してください。予約備考へ記録し、受付確認を返します。お客様への送信は行いません。',False)],channel='owner',kind='request',reservation_id=int(match[1]) if match else None)
+                    c.execute('UPDATE booking_consultations SET notified=1,delivery_id=? WHERE id=?',(delivery_id,row['id']))
     finally:c.close()
 
 

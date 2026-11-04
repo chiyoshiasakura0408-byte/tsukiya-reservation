@@ -57,9 +57,13 @@ def ingest(c,raw,signature,payload):
     claimed=set()
     for e in payload['events']:
         src=e.get('source',{}); m=e.get('message',{}); mid=str(m.get('id',''))
-        if not actor or src.get('userId')!=actor or not (src.get('type')=='user' or src.get('type')=='group' and src.get('groupId')==GROUP):
+        quoted=str(m.get('quotedMessageId',''))
+        linked_group=(src.get('type')=='group' and re.fullmatch(r'\d{1,30}',quoted)
+                      and c.execute('SELECT 1 FROM reservation_message_links WHERE message_id=? AND destination=?',
+                                    (quoted,src.get('groupId'))).fetchone())
+        if not actor or src.get('userId')!=actor or not (src.get('type')=='user' or src.get('type')=='group' and (src.get('groupId')==GROUP or linked_group)):
             continue
-        destination=actor if src.get('type')=='user' else GROUP
+        destination=actor if src.get('type')=='user' else src['groupId']
         if e.get('type')=='unsend':
             c.execute("UPDATE line_booking_jobs SET state='withdrawn',raw=NULL,signature=NULL WHERE message_id=? AND state IN ('pending','failed','extracted')",(str(e.get('unsend',{}).get('messageId','')),))
             c.execute("UPDATE line_booking_items SET state='withdrawn' WHERE state='pending' AND job_id IN (SELECT id FROM line_booking_jobs WHERE state='withdrawn')")
@@ -302,7 +306,7 @@ def append_note(app,c,rid,note,job):
     c.execute('UPDATE reservations SET guest_note=?,updated_at=?,staff_seen_at=NULL WHERE id=?',(new,app.now_iso(),rid))
     after=dict(c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone())
     sync,done=sync_state(c,after)
-    result=f"【予約への追記完了】\n予約ID：{rid}\n{row['guest_name']}様\n{row['visit_at'].replace('T',' ')}\n\n{note}\n\n備考へ記録しました。手配・購入の完了を示すものではありません。\nGoogleカレンダー：{sync}"
+    result=f"【予約への追記完了】\n予約ID：{rid}\n{row['guest_name']}様\n{row['visit_at'].replace('T',' ')}\n\n{note}\n\n返答を受け付け、予約の備考へ記録しました。お客様への送信は行っていません。手配・購入の完了を示すものではありません。\nGoogleカレンダー：{sync}"
     c.execute("INSERT INTO line_booking_items(id,job_id,payload,state,reservation_id,result,sync_notice) VALUES(?,?,?,'done',?,?,?)",(ident,job['id'],json.dumps({'action':'note','note':note},ensure_ascii=False),rid,result,int(done)))
     c.execute('INSERT INTO line_booking_audit(job_id,item_id,actor,action,reservation_id,before_json,after_json,created) VALUES(?,?,?,?,?,?,?,?)',(job['id'],ident,job['actor'],'note',rid,json.dumps(before,ensure_ascii=False),json.dumps(after,ensure_ascii=False),time.time()))
     notify(c,result,job['group_id'],reservation_id=rid)
@@ -315,13 +319,16 @@ def process_note(app,c,job):
     try:
         latest=c.execute('SELECT state FROM line_booking_jobs WHERE id=?',(job['id'],)).fetchone()
         if not latest or latest[0]!='pending':c.rollback();return True
-        link=c.execute('SELECT reservation_id FROM reservation_message_links WHERE message_id=? AND destination=?',(quoted,job['group_id'])).fetchone() if quoted else None
+        link=c.execute('SELECT reservation_id,outbox_id FROM reservation_message_links WHERE message_id=? AND destination=?',(quoted,job['group_id'])).fetchone() if quoted else None
         if quoted and not link:
             raise ValueError('返信元の予約を特定できません。予約番号を添えて送信してください')
         if not link and not explicit:raise ValueError('予約番号と追記内容を送信してください')
         rid=link[0] if link else int(explicit[1])
         if explicit and int(explicit[1])!=rid:raise ValueError('返信元と指定した予約番号が一致しません')
         append_note(app,c,rid,explicit[2] if explicit else job['text'],job)
+        if link and 'delivery_id' in {r[1] for r in c.execute('PRAGMA table_info(booking_consultations)')}:
+            # Only close the consultation linked to this exact notification.
+            c.execute("UPDATE concierge_requests SET status='担当回答受付済み（予約備考へ記録）' WHERE id IN (SELECT request_id FROM booking_consultations WHERE delivery_id=?)", (link['outbox_id'],))
         c.execute("UPDATE line_booking_jobs SET state='done' WHERE id=?",(job['id'],))
     except ValueError as e:
         notify(c,'【予約への追記未反映】\n'+str(e),job['group_id'],command='予約追記 予約番号\n追記内容')
