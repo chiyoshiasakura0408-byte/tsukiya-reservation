@@ -1,5 +1,6 @@
 """Real SQLite + fake Square/SMTP; no external email or money movement."""
 import concurrent.futures
+import os
 import tempfile
 import threading
 import unittest
@@ -83,6 +84,19 @@ class SupportTests(unittest.TestCase):
             support.process(run)
             self.assertEqual(self.row()['state'], 'WAITING_CONFIG')
             sq.assert_not_called()
+
+    def test_square_sender_is_independent_of_guest_mail_sender(self):
+        address = 'chiyoshi.a.0408@icloud.com'
+        with patch.dict(os.environ, {'SQUARE_REFUND_MAIL_FROM': address}), patch.object(run, 'square', side_effect=self.square), patch.object(run.smtplib, 'SMTP') as smtp:
+            smtp.return_value.__enter__.return_value.send_message.return_value = {}
+            support.process(run)
+            call = smtp.return_value.__enter__.return_value.send_message.call_args
+            msg = call.args[0]
+            self.assertIn(address, str(msg['From']))
+            self.assertEqual(msg['Reply-To'], address)
+            self.assertEqual(call.kwargs, {'from_addr': address, 'to_addrs': [support.RECIPIENT]})
+            self.assertIn('Square登録メールアドレス：'+address, msg.get_content())
+            self.assertEqual(run.MAIL_FROM, 'store@example.com')
 
     def test_missing_card_details_retry_then_stop_without_email(self):
         del self.p['card_details']

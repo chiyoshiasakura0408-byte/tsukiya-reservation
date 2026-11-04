@@ -1,10 +1,16 @@
 """One durable support email per new card cancellation; never move money here."""
 import time
+import os
 from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
-from email.utils import parseaddr
+from email.utils import parseaddr, formataddr
 
 RECIPIENT = 'square-jp@help-messaging.squareup.com'
+
+
+def sender_address(app):
+    return parseaddr(os.getenv('SQUARE_REFUND_MAIL_FROM', app.MAIL_FROM))[1]
+
 LABELS = {
     'PENDING': '問い合わせ送信待ち', 'PREPARING': '決済情報確認中',
     'WAITING_CONFIG': 'メール設定待ち', 'SENDING': '問い合わせ送信中',
@@ -66,9 +72,10 @@ def payment(app, c, r):
 def message(app, inquiry, p):
     card = p['card_details']['card']
     paid_at = datetime.fromisoformat(p['created_at'].replace('Z', '+00:00')).astimezone(timezone(timedelta(hours=9)))
-    sender = parseaddr(app.MAIL_FROM)[1]
+    sender = sender_address(app)
     msg = EmailMessage()
-    msg['From'] = app.mail_sender()
+    msg['From'] = formataddr(('西天満つきや', sender))
+    msg['Reply-To'] = sender
     msg['To'] = RECIPIENT
     msg['Subject'] = f"払い戻し資金の入金方法・振込先の問い合わせ（西天満つきや #{inquiry['reservation_id']}）"
     msg['Message-ID'] = inquiry['message_id']
@@ -83,10 +90,10 @@ def message(app, inquiry, p):
         f"払い戻し希望額：{inquiry['amount']:,}円\n"
         f"カード会社：{card['card_brand']}\nカード番号下4桁：{card['last_4']}\n"
         f"Square決済ID：{p['id']}\nSquare店舗ID：{p['location_id']}\n"
-        f"問い合わせ元メール：{sender}\n当店管理番号：{inquiry['reservation_id']}\n\n"
+        f"Square登録メールアドレス：{sender}\n当店管理番号：{inquiry['reservation_id']}\n\n"
         '返金操作は店舗側で別途確認・承認して実行します。'
         '本メールは振込先・手順の問い合わせです。\n'
-        '本送信元が登録アドレスと異なる場合や、代表者名など追加のアカウント確認が必要な場合は、'
+        '代表者名など追加のアカウント確認が必要な場合は、'
         '安全な確認方法をご案内ください。\n'
         '以前の口座への先行振込は行わず、今回のご案内をお待ちします。\n'
         'ご回答は本メールへの返信でお願いいたします。\n\n西天満つきや\n朝倉\n')
@@ -123,7 +130,7 @@ def dispatch(app, rid):
             with c:
                 c.execute("UPDATE refund_support_inquiries SET state='SKIPPED' WHERE reservation_id=?", (rid,))
             return
-        if not all((app.SMTP_HOST, app.SMTP_USER, app.SMTP_PASS, app.MAIL_FROM)):
+        if not all((app.SMTP_HOST, app.SMTP_USER, app.SMTP_PASS, sender_address(app))):
             with c:
                 c.execute("UPDATE refund_support_inquiries SET state='WAITING_CONFIG' WHERE reservation_id=?", (rid,))
             return
@@ -145,7 +152,7 @@ def dispatch(app, rid):
             with app.smtplib.SMTP(app.SMTP_HOST, app.SMTP_PORT, timeout=30) as server:
                 server.starttls()
                 server.login(app.SMTP_USER, app.SMTP_PASS)
-                refused = server.send_message(msg)
+                refused = server.send_message(msg, from_addr=sender_address(app), to_addrs=[RECIPIENT])
                 if refused:
                     raise RuntimeError('Recipient refused')
         except Exception as exc:
