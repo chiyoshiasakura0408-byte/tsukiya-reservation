@@ -4365,12 +4365,12 @@ class Handler(
                         raise ValueError("顧客が見つかりません")
                 booking_blocks.ensure_allowed(c, x.get("phone"), x.get("email"), linked_customer, staff=True)
                 if special:
-                    guest_key = " ".join(x["guest_name"].split()).casefold()
+                    guest_key = line_reservations.norm(x["guest_name"])
                     existing_names = c.execute(
                         "SELECT guest_name FROM reservations WHERE substr(visit_at,1,10)=? AND status IN (?,?,?,?)",
                         (day.isoformat(), *ACTIVE_STATUSES),
                     )
-                    if any(" ".join(row["guest_name"].split()).casefold() == guest_key for row in existing_names):
+                    if any(line_reservations.norm(row["guest_name"]) == guest_key for row in existing_names):
                         ok, msg = False, "同じ日に同名の予約があります。既存予約を確認してください"
                     else:
                         ok, msg = availability_check(c, area, x["visit_at"], party, None, dur, special_slot=True)

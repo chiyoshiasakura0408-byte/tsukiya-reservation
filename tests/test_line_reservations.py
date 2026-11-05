@@ -67,6 +67,30 @@ class Tests(unittest.TestCase):
   payloads=[json.loads(r[0])[0]['text'] for r in c.execute("SELECT payload FROM concierge_outbox WHERE kind='line-booking'")]
   self.assertTrue(any('予約登録成功' in p for p in payloads))
   self.assertTrue(any('重複登録なし' in p for p in payloads));c.close()
+ def test_special_owner_text_preserves_seats_meals_and_duration_without_duplicates(self):
+  text='予約追加、 特別枠\n2099/12/25 17:00〜19:00 別邸・個室③ 試験 太郎 大人4名・子ども3名（席のみ）料理4人前'
+  payload=item(visit_at='2099-12-25T17:00',party_size=7,seating_area='PRIVATE3',
+               special_end_time='19:00',special_meal_count=4)
+  with patch.object(lb,'extract',side_effect=lambda *args:{'is_reservation':True,'items':[dict(payload)]}),patch.object(run,'make_invoice') as invoice:
+   for ident in ('special','special-resend'):
+    self.signed([self.event(ident,text)])
+    lb.drain(run)
+   invoice.assert_not_called()
+  c=run.con()
+  try:
+   rows=c.execute('SELECT * FROM reservations').fetchall()
+   self.assertEqual(len(rows),1)
+   row=dict(rows[0])
+   self.assertEqual((row['party_size'],row['special_meal_count'],row['duration_minutes'],row['amount'],row['status']),
+                    (7,4,120,264000,'CONFIRMED'))
+   self.assertEqual(calendar_sync.event_body(row,'test')['end']['dateTime'],'2099-12-25T19:00:00+09:00')
+   self.assertFalse(run.availability_check(c,'PRIVATE3','2099-12-25T18:00',7)[0])
+   self.assertEqual([r[0] for r in c.execute('SELECT action FROM line_booking_audit ORDER BY id')],['add','duplicate'])
+   with self.assertRaisesRegex(ValueError,'特別枠の変更'):
+    lb.perform(run,c,item(action='party',reservation_id=row['id'],party_size=6))
+  finally:
+   c.close()
+
  def test_line_phone_invoice_once_after_commit(self):
   self.signed([self.event()])
   def invoice(row):
