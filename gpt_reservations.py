@@ -32,11 +32,18 @@ def key():
     return value if len(value) >= 40 else ''
 
 
-def authorized(h):
-    expected = key()
+def auth_scope(h):
     values = h.headers.get_all('Authorization', [])
-    return bool(expected and len(values) == 1 and
-                hmac.compare_digest(values[0].encode(), ('Bearer ' + expected).encode()))
+    if len(values) != 1:
+        return None
+    supplied = values[0].encode()
+    for scope, expected in (
+        ('gpt', key()),
+        ('special', os.getenv('TSUKIYA_MCP_KEY', '')),
+    ):
+        if len(expected) >= 40 and hmac.compare_digest(supplied, ('Bearer ' + expected).encode()):
+            return scope
+    return None
 
 
 def clean(row):
@@ -71,7 +78,9 @@ def handle_get(h, app, path, query):
         return True
     if not (path == PREFIX or path.startswith(PREFIX + '/')):
         return False
-    if not authorized(h):
+    scope = auth_scope(h)
+    if not scope or (scope == 'special' and path not in
+                     (PREFIX + '/reservations', PREFIX + '/availability')):
         reject(h)
         return True
     try:
@@ -96,13 +105,21 @@ def handle_get(h, app, path, query):
                     raise ValueError('ページ指定が不正です')
                 rows = c.execute('''SELECT * FROM reservations WHERE substr(visit_at,1,10) BETWEEN ? AND ?
                     AND id>? ORDER BY id LIMIT ?''', (start.isoformat(), end.isoformat(), after_id, limit + 1)).fetchall()
-                h.send_json({'reservations': [clean(dict(row)) for row in rows[:limit]],
+                reservations = [clean(dict(row)) for row in rows[:limit]]
+                if scope == 'special':
+                    fields = ('id', 'guest_name', 'visit_at', 'duration_minutes', 'seating_area',
+                              'party_size', 'special_meal_count', 'status', 'amount')
+                    reservations = [{field: row[field] for field in fields} for row in reservations]
+                h.send_json({'reservations': reservations,
                              'next_after_id': rows[limit - 1]['id'] if len(rows) > limit else None,
                              'timezone': 'Asia/Tokyo'})
             elif path == PREFIX + '/availability':
                 visit = query.get('visit_at', [''])[0]
                 end_time = query.get('special_end_time', [None])[0]
                 special = end_time is not None
+                if scope == 'special' and not special:
+                    reject(h)
+                    return True
                 duration = app.special_slot_duration(visit, end_time) if special else 150
                 if not special:
                     validate_visit(visit)
@@ -183,7 +200,8 @@ def handle_post(h, app, path):
         return True
     if not (path == PREFIX or path.startswith(PREFIX + '/')):
         return False
-    if not authorized(h):
+    scope = auth_scope(h)
+    if not scope or (scope == 'special' and path != PREFIX + '/reservations'):
         reject(h)
         return True
     try:
@@ -196,6 +214,11 @@ def handle_post(h, app, path):
         data = h.read_json()
         if not isinstance(data, dict):
             raise ValueError('JSONオブジェクトを指定してください')
+        if scope == 'special' and (data.get('mode') != 'special' or set(data) - {
+                'mode', 'request_id', 'guest_name', 'guest_note', 'visit_at', 'party_size',
+                'seating_area', 'special_end_time', 'special_meal_count'}):
+            reject(h)
+            return True
         request_id = data.get('request_id', '')
         if not isinstance(request_id, str) or str(uuid.UUID(request_id)) != request_id:
             raise ValueError('request_idには新しい小文字UUIDを指定してください')
