@@ -14,10 +14,11 @@ WRITE_LOCK = threading.Lock()
 FIELDS = ('id', 'source', 'guest_name', 'phone', 'email', 'visit_at', 'party_size',
           'course_name', 'amount', 'seating_area', 'counter_round', 'duration_minutes',
           'status', 'payment_method', 'guest_note', 'celebration_items', 'plate_message',
-          'customer_id', 'confirmation_note', 'created_at', 'updated_at')
+          'customer_id', 'special_meal_count', 'confirmation_note', 'created_at', 'updated_at')
 CREATE_FIELDS = {'mode', 'request_id', 'guest_name', 'phone', 'email', 'visit_at',
                  'party_size', 'seating_area', 'customer_id', 'guest_note',
-                 'celebration_items', 'plate_message', 'confirmation_note'}
+                 'celebration_items', 'plate_message', 'confirmation_note',
+                 'special_end_time', 'special_meal_count'}
 CHANGE_FIELDS = {
     'note': {'guest_note', 'expected_guest_note'},
     'time': {'time', 'expected_visit_at'},
@@ -100,17 +101,24 @@ def handle_get(h, app, path, query):
                              'timezone': 'Asia/Tokyo'})
             elif path == PREFIX + '/availability':
                 visit = query.get('visit_at', [''])[0]
-                validate_visit(visit)
+                end_time = query.get('special_end_time', [None])[0]
+                special = end_time is not None
+                duration = app.special_slot_duration(visit, end_time) if special else 150
+                if not special:
+                    validate_visit(visit)
                 area = query.get('seating_area', [''])[0]
                 party = int(query.get('party_size', ['0'])[0])
-                if area not in ('COUNTER', *app.ROOMS) or not 1 <= party <= 8:
+                if area not in (app.ROOMS if special else ('COUNTER', *app.ROOMS)) or not 1 <= party <= 8:
                     raise ValueError('席・人数を確認してください')
                 rnd = (1 if visit[11:16] == '18:00' else 2) if area == 'COUNTER' else None
-                ok, message = app.availability_check(c, area, visit, party, rnd, 150)
+                meals = int(query.get('special_meal_count', [str(party)])[0]) if special else party
+                if not 1 <= meals <= party:
+                    raise ValueError('料理数を確認してください')
+                ok, message = app.availability_check(c, area, visit, party, rnd, duration, special_slot=special)
                 course = app.bookable_course(app.parse_dt(visit).date())
-                h.send_json({'available': bool(ok and course and app.staff_slot_allowed(app.parse_dt(visit).date(), visit[11:16])),
+                h.send_json({'available': bool(ok and course and (special or app.staff_slot_allowed(app.parse_dt(visit).date(), visit[11:16]))),
                              'message': message, 'course_name': course[0] if course else None,
-                             'amount': course[1] * party if course else None, 'timezone': 'Asia/Tokyo'})
+                             'amount': course[1] * meals if course else None, 'timezone': 'Asia/Tokyo'})
             else:
                 h.send_json({'error': 'not found'}, 404)
         finally:
@@ -130,13 +138,23 @@ def validate_create(data, app):
     if set(data) - CREATE_FIELDS:
         raise ValueError('未対応の予約項目です')
     mode = data.get('mode')
-    if mode not in ('direct', 'phone'):
-        raise ValueError('direct（当日精算）またはphone（前受け請求）を指定してください')
-    validate_visit(data.get('visit_at'))
+    if mode not in ('direct', 'phone', 'special'):
+        raise ValueError('当日精算・電話予約・特別枠のいずれかを指定してください')
+    special = mode == 'special'
+    if special:
+        app.special_slot_duration(data.get('visit_at'), data.get('special_end_time'))
+    else:
+        if {'special_end_time', 'special_meal_count'} & data.keys():
+            raise ValueError('終了時刻・料理数は特別枠専用です')
+        validate_visit(data.get('visit_at'))
     if type(data.get('party_size')) is not int or not 1 <= data['party_size'] <= 8:
         raise ValueError('人数を確認してください')
     if data.get('seating_area') not in ('COUNTER', *app.ROOMS):
         raise ValueError('席を確認してください')
+    if special and (data['seating_area'] not in app.ROOMS
+                    or type(data.get('special_meal_count')) is not int
+                    or not 1 <= data['special_meal_count'] <= data['party_size']):
+        raise ValueError('特別枠の個室・料理数を確認してください')
     for field, maximum in (('guest_name', 80), ('phone', 50), ('email', 254)):
         value = data.get(field, '')
         if not isinstance(value, str) or len(value) > maximum or '\x00' in value:
@@ -148,7 +166,7 @@ def validate_create(data, app):
     payload = dict(data)
     payload.pop('mode')
     payload['counter_round'] = (1 if data['visit_at'][11:16] == '18:00' else 2) if data['seating_area'] == 'COUNTER' else None
-    return '/api/reservations/' + mode, payload
+    return '/api/reservations/' + ('direct' if special else mode), payload
 
 
 def handle_post(h, app, path):
@@ -272,12 +290,15 @@ def openapi(base):
         return item
     def param(name, definition, required=True, where='query'):
         return {'name': name, 'in': where, 'required': required, 'schema': definition}
-    create = {'mode': string('directは当日精算。phoneは前受け請求書・通知を発行する場合がある。利用者の指定に従う。', enum=['direct', 'phone']),
+    create = {'mode': string('directは当日精算。phoneは前受け請求書・通知を発行する場合がある。specialは個室の特別枠を当日精算で登録。利用者の指定に従う。', enum=['direct', 'phone', 'special']),
               'guest_name': string(), 'phone': string(), 'email': string(),
-              'visit_at': string('日本時間YYYY-MM-DDT18:00またはYYYY-MM-DDT20:30'),
+              'visit_at': string('日本時間YYYY-MM-DDTHH:MM。通常枠は18:00または20:30、特別枠は17:00以降。'),
               'party_size': {'type': 'integer', 'minimum': 1, 'maximum': 8},
               'seating_area': string(enum=['COUNTER', 'PRIVATE1', 'PRIVATE2', 'PRIVATE3']),
               'customer_id': integer, 'guest_note': string(),
+              'special_end_time': string('特別枠に必須。同日23:00までの終了時刻HH:MM。'),
+              'special_meal_count': {'type': 'integer', 'minimum': 1, 'maximum': 8,
+                                     'description': '特別枠に必須。料理の人数。party_sizeは席のみの人数を含む総人数。'},
               'confirmation_note': string('お客様への自動確定メールに載せる備考。店舗内の連絡事項は入れない。', maxLength=1000),
               'celebration_items': {'type': 'array', 'items': string()}, 'plate_message': string()}
     paths = {
@@ -290,7 +311,9 @@ def openapi(base):
                               ['mode', 'guest_name', 'visit_at', 'party_size', 'seating_area'])},
         PREFIX + '/reservations/{id}': {'get': operation('getReservation', '変更前に予約の現在値を取得する', parameters=[param('id', integer, where='path')])},
         PREFIX + '/availability': {'get': operation('checkAvailability', '日本時間の来店日時・席・人数で空席と料理代を確認', parameters=[
-            param('visit_at', create['visit_at']), param('seating_area', create['seating_area']), param('party_size', create['party_size'])])},
+            param('visit_at', create['visit_at']), param('seating_area', create['seating_area']), param('party_size', create['party_size']),
+            param('special_end_time', create['special_end_time'], False),
+            param('special_meal_count', create['special_meal_count'], False)])},
     }
     definitions = {
         'note': {'guest_note': string(), 'expected_guest_note': string('getReservationで取得した備考。NULLは空文字。')},
@@ -302,6 +325,6 @@ def openapi(base):
         paths[PREFIX + '/reservations/{id}/' + kind] = {'post': operation('changeReservation' + kind.title(),
             '備考変更' if kind == 'note' else '直接予約の変更。請求済み・支払済みなど既存ルールで変更できない予約は拒否する。',
             props, list(props), [param('id', integer, where='path')])}
-    return {'openapi': '3.1.0', 'info': {'title': 'つきや予約管理 GPT連携', 'version': '1.0.0'},
+    return {'openapi': '3.1.0', 'info': {'title': 'つきや予約管理 GPT連携', 'version': '1.1.0'},
             'servers': [{'url': base or 'https://tsukiya-reservation.onrender.com'}],
             'security': [{'gptBearer': []}], 'components': {'schemas': {}, 'securitySchemes': {'gptBearer': {'type': 'http', 'scheme': 'bearer'}}}, 'paths': paths}

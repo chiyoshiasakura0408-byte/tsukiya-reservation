@@ -75,6 +75,42 @@ class GPTAPITest(unittest.TestCase):
         self.assertEqual(c.execute('SELECT count(*) FROM reservations').fetchone()[0], 1)
         self.assertEqual(c.execute('SELECT count(*) FROM gpt_api_audit').fetchone()[0], 2)
         c.close()
+    def test_special_room_booking_uses_total_capacity_and_meal_price(self):
+        self.body.update(mode='special', seating_area='PRIVATE3', visit_at='2099-12-05T17:00',
+                         special_end_time='19:00', special_meal_count=4, party_size=7)
+        availability = ('/api/gpt/availability?visit_at=2099-12-05T17:00&party_size=7'
+                        '&seating_area=PRIVATE3&special_end_time=19:00&special_meal_count=4')
+        c = run.con()
+        c.execute("""INSERT INTO seat_blocks(visit_date,time_text,seating_area,seat_number,note,created_at)
+                     VALUES('2099-12-05','18:00','PRIVATE3',0,'',?)""", (run.now_iso(),))
+        c.commit()
+        self.assertFalse(self.call(availability)[1]['available'])
+        self.assertEqual(self.call('/api/gpt/reservations', self.body)[0], 409)
+        c.execute('DELETE FROM seat_blocks')
+        c.commit()
+        c.close()
+        self.body['request_id'] = str(uuid.uuid4())
+        self.assertTrue(self.call(availability)[1]['available'])
+        with patch.object(run, 'make_invoice') as invoice, patch.object(run, 'deliver_confirmation') as notify:
+            row = self.create()
+            self.assertEqual(self.create(), row)
+            invoice.assert_not_called()
+            notify.assert_not_called()
+        self.assertEqual((row['party_size'], row['special_meal_count'], row['amount'], row['duration_minutes']),
+                         (7, 4, 264000, 120))
+        event = run.calendar_sync.event_body(row, 'test')
+        self.assertEqual(event['end']['dateTime'], '2099-12-05T19:00:00+09:00')
+        self.assertIn('料理4人前／席のみ3名', event['description'])
+        self.assertFalse(self.call(availability)[1]['available'])
+        duplicate = dict(self.body, request_id=str(uuid.uuid4()), visit_at='2099-12-05T20:30',
+                         special_end_time='23:00')
+        self.assertEqual(self.call('/api/gpt/reservations', duplicate)[0], 409)
+        overlap = dict(self.body, request_id=str(uuid.uuid4()), mode='direct', guest_name='Other guest',
+                       visit_at='2099-12-05T18:00')
+        overlap.pop('special_end_time')
+        overlap.pop('special_meal_count')
+        self.assertEqual(self.call('/api/gpt/reservations', overlap)[0], 409)
+
     def test_phone_invoice_only_once(self):
         self.body['mode']='phone'
         with patch.object(run,'make_invoice',return_value=('c','o','i','https://example.test')) as invoice, \

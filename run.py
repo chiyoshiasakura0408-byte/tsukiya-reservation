@@ -338,6 +338,7 @@ def con():
         "seating_area": "TEXT",
         "counter_round": "INTEGER",
         "duration_minutes": "INTEGER DEFAULT 150",
+        "special_meal_count": "INTEGER",
         "vip_through": "INTEGER NOT NULL DEFAULT 0",
         "vip_booking": "INTEGER NOT NULL DEFAULT 0",
         "vip_seats": "TEXT NOT NULL DEFAULT '[]'",
@@ -1363,6 +1364,18 @@ def approved_staff_time_exception(data, direct):
             and parse_dt(data["visit_at"]) > datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None))
 
 
+def special_slot_duration(visit_at, end_time):
+    clock = r"(?:1[7-9]|2[0-2]):[0-5]\d"
+    if (not isinstance(visit_at, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T" + clock, visit_at)
+            or not isinstance(end_time, str) or not re.fullmatch(clock + r"|23:00", end_time)):
+        raise ValueError("特別枠は日本時間の17:00〜23:00の間で指定してください")
+    start = parse_dt(visit_at)
+    end = parse_dt(visit_at[:10] + "T" + end_time)
+    if start <= datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None) or end <= start:
+        raise ValueError("未来の開始時刻と、開始後の終了時刻を指定してください")
+    return int((end - start).total_seconds() // 60)
+
+
 def availability_check(
     c,
     seating_area,
@@ -1373,7 +1386,8 @@ def availability_check(
     exclude_id=None,
     allow_custom_start=False,
     allow_room_exception=False,
-    restore_existing=False
+    restore_existing=False,
+    special_slot=False
 ):
     if not seating_area:
         return (
@@ -1405,9 +1419,9 @@ def availability_check(
 
     if seating_area == "COUNTER" or seating_area in ROOMS:
         slot = (visit.hour, visit.minute)
-        if slot not in ((18, 0), (20, 30)) and not october_private_time(visit_at, seating_area) and not (allow_custom_start and seating_area in ROOMS and 18 <= visit.hour < 23):
+        if not special_slot and slot not in ((18, 0), (20, 30)) and not october_private_time(visit_at, seating_area) and not (allow_custom_start and seating_area in ROOMS and 18 <= visit.hour < 23):
             return (False, "開始時刻は18:00または20:30を選択してください")
-        if duration_minutes != 150:
+        if not special_slot and duration_minutes != 150:
             return (False, "利用時間は150分です")
         expected_round = 1 if slot == (18, 0) else 2
         if seating_area == "COUNTER" and counter_round != expected_round:
@@ -1483,7 +1497,7 @@ def availability_check(
             )
         )
 
-        if visit.year == 2026 and visit.month == 10:
+        if special_slot or (visit.year == 2026 and visit.month == 10):
             for block in c.execute("SELECT time_text FROM seat_blocks WHERE visit_date=? AND seating_area=?", (visit.date().isoformat(), seating_area)):
                 block_start = parse_dt(visit.date().isoformat() + "T" + block["time_text"])
                 if visit < block_start + timedelta(minutes=150) and block_start < end:
@@ -1633,7 +1647,7 @@ def change_reservation_note(c, rid, data):
 def change_direct_room(c, rid, data):
     """Atomically move a confirmed direct booking without recreating it."""
     r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
-    if not r or r["source"] != "DIRECT" or r["status"] != "CONFIRMED" or r["vip_through"] or r["square_invoice_id"]:
+    if not r or r["source"] != "DIRECT" or r["status"] != "CONFIRMED" or r["vip_through"] or r["special_meal_count"] is not None or r["square_invoice_id"]:
         raise ValueError("この予約は個室変更の対象外です")
     if (data.get("expected_seating_area") != r["seating_area"]
             or data.get("expected_visit_at") != r["visit_at"]
@@ -1655,7 +1669,7 @@ def change_direct_time(c, rid, data):
     r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
     if not r:
         raise ValueError("予約が見つかりません")
-    if r["source"] != "DIRECT" or r["status"] != "CONFIRMED" or r["vip_through"] or r["square_invoice_id"] or r["payment_confirmed_at"]:
+    if r["source"] != "DIRECT" or r["status"] != "CONFIRMED" or r["vip_through"] or r["special_meal_count"] is not None or r["square_invoice_id"] or r["payment_confirmed_at"]:
         raise ValueError("この予約は時刻変更の対象外です")
     if data.get("expected_visit_at") != r["visit_at"]:
         raise ValueError("予約が更新されています。再読み込みしてください")
@@ -1682,7 +1696,7 @@ def change_direct_party(c, rid, data):
     pending_bank = bool(r and r["payment_method"] == "BANK" and r["status"] == "PENDING"
                         and not r["payment_source"] and not r["square_order_id"])
     direct = bool(r and r["source"] == "DIRECT" and r["status"] == "CONFIRMED")
-    if not r or not (direct or pending_bank) or r["vip_through"] or r["square_invoice_id"] or r["payment_confirmed_at"] or r["source"] == web_checkout.SOURCE:
+    if not r or not (direct or pending_bank) or r["vip_through"] or r["special_meal_count"] is not None or r["square_invoice_id"] or r["payment_confirmed_at"] or r["source"] == web_checkout.SOURCE:
         raise ValueError("この予約は人数変更の対象外です")
     if data.get("expected_party_size") != r["party_size"] or data.get("expected_visit_at") != r["visit_at"] or data.get("expected_amount") != r["amount"]:
         raise ValueError("予約が更新されています。再読み込みしてください")
@@ -3756,8 +3770,11 @@ class Handler(
                         assigned,_ = vip_slots.counter_assignments(sys.modules[__name__],c,day,time_text)
                         if num in assigned:
                             raise ValueError("予約済みの席はブロックできません")
-                    elif c.execute("SELECT 1 FROM reservations WHERE substr(visit_at,1,10)=? AND (substr(visit_at,12,5)=? OR vip_through=1) AND seating_area=? AND status IN (?,?,?,?)", (day, time_text, area, *ACTIVE_STATUSES)).fetchone():
-                        raise ValueError("予約済みの個室はブロックできません")
+                    else:
+                        room_min = 4 if area == "PRIVATE3" else 2
+                        available, _ = availability_check(c, area, f"{day}T{time_text}", room_min, restore_existing=True)
+                        if not available:
+                            raise ValueError("予約済みの個室はブロックできません")
                     c.execute("INSERT INTO seat_blocks(visit_date,time_text,seating_area,seat_number,note,created_at) VALUES(?,?,?,?,?,?)", (day,time_text,area,num,str(x.get("note") or "")[:200],now_iso()))
                 c.commit()
                 return self.send_json({"ok": True, "created": len(items)})
@@ -4296,7 +4313,17 @@ class Handler(
                 or None
             )
 
-            dur = 150  # Ordinary reservations cannot hold extra sittings via client input.
+            dur = 150
+            special_meals = x.get("special_meal_count")
+            special = special_meals is not None or "special_end_time" in x
+            if special:
+                if (not direct or area not in ROOMS or rnd is not None
+                        or type(special_meals) is not int or not 1 <= special_meals <= int(x["party_size"])):
+                    return self.send_json({"error": "特別枠の個室・人数・料理数を確認してください"}, 400)
+                try:
+                    dur = special_slot_duration(x["visit_at"], x.get("special_end_time"))
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
 
             party = int(
                 x["party_size"]
@@ -4310,13 +4337,13 @@ class Handler(
             time_specified = x.get("time_specified") is True
             through = False
             approved_exception = approved_staff_time_exception(x, direct)
-            course = bookable_course(day) if time_specified or staff_slot_allowed(day, time_text) else None
+            course = bookable_course(day) if special or time_specified or staff_slot_allowed(day, time_text) else None
             today_jp = datetime.now(timezone(timedelta(hours=9))).date()
             same_day_phone = not direct and day == today_jp
             same_day_direct = direct or same_day_phone
             if not course or not 1 <= party <= 20:
                 return self.send_json({"error": "この来店日に予約可能なコース・人数がありません"}, 400)
-            amount = course[1] * party
+            amount = course[1] * (special_meals if special else party)
 
             c = con()
 
@@ -4337,7 +4364,17 @@ class Handler(
                     if linked_customer is not None and not c.execute("SELECT id FROM customers WHERE id=?", (linked_customer,)).fetchone():
                         raise ValueError("顧客が見つかりません")
                 booking_blocks.ensure_allowed(c, x.get("phone"), x.get("email"), linked_customer, staff=True)
-                if time_specified and not october_private_time(x["visit_at"], area) and not approved_exception:
+                if special:
+                    guest_key = " ".join(x["guest_name"].split()).casefold()
+                    existing_names = c.execute(
+                        "SELECT guest_name FROM reservations WHERE substr(visit_at,1,10)=? AND status IN (?,?,?,?)",
+                        (day.isoformat(), *ACTIVE_STATUSES),
+                    )
+                    if any(" ".join(row["guest_name"].split()).casefold() == guest_key for row in existing_names):
+                        ok, msg = False, "同じ日に同名の予約があります。既存予約を確認してください"
+                    else:
+                        ok, msg = availability_check(c, area, x["visit_at"], party, None, dur, special_slot=True)
+                elif time_specified and not october_private_time(x["visit_at"], area) and not approved_exception:
                     if time_text != "20:30" and not booking_policy.approved_customer(c, linked_customer):
                         raise ValueError("時間指定・通し予約は承認済みVIP顧客の選択が必要です。直接予約から顧客を選択してください。")
                     area,dur,through = vip_slots.staff_slot(sys.modules[__name__],c,area,x["visit_at"],party)
@@ -4420,7 +4457,7 @@ class Handler(
 
             if not same_day_direct:
                 payment_terms.register(c, cur.lastrowid, ts)
-            c.execute("UPDATE reservations SET confirmation_note=? WHERE id=?", (confirmation_note, cur.lastrowid))
+            c.execute("UPDATE reservations SET confirmation_note=?,special_meal_count=? WHERE id=?", (confirmation_note, special_meals, cur.lastrowid))
             c.execute("UPDATE reservations SET vip_through=?,vip_booking=?,customer_id=? WHERE id=?",(int(through),int(booking_policy.approved_customer(c,linked_customer)),linked_customer,cur.lastrowid))
 
             if not direct and request_id:

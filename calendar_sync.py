@@ -53,6 +53,9 @@ def event_body(row, namespace):
     paid = bool(row.get('payment_confirmed_at'))
     payment = '決済済み' if paid else ('事前決済なし・当日支払い' if row.get('source') in ('DIRECT', 'CONCIERGE_LINE') else '決済未確認')
     details = [f"予約番号：{row['id']}", f"人数：{row['party_size']}名", f'席：{area}', f"コース：{clean(row.get('course_name'))}", f'決済：{payment}', f'予約状態：{status}']
+    if row.get('special_meal_count') is not None:
+        meals = row['special_meal_count']
+        details.append(f"特別枠：料理{meals}人前／席のみ{row['party_size'] - meals}名")
     for key, label in [('celebration_items', 'お祝い'), ('plate_message', 'プレート'), ('guest_note', 'ご要望')]:
         if row.get(key):
             details.append(f'{label}：{clean(row[key])}')

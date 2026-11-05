@@ -69,7 +69,7 @@ def check_booking(app, c, r):
             and not r['payment_source'] and not r['square_invoice_id'] and not r['square_order_id'])
     if not (r['status'] == 'CONFIRMED' or bank):
         raise ChangeError('この予約は人数変更できません。カード決済中の場合は決済を完了してください。')
-    if r['vip_through'] or r['seating_area'] not in ('COUNTER', *app.ROOMS):
+    if r['vip_through'] or r['special_meal_count'] is not None or r['seating_area'] not in ('COUNTER', *app.ROOMS):
         raise ChangeError('この予約の人数変更は店舗へお問い合わせください。')
     if app.reservation_changes.records(c, r['id']):
         raise ChangeError('店舗で差額請求を手配中です。人数変更は店舗へお問い合わせください。')
