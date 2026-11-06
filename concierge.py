@@ -162,7 +162,7 @@ def configure(db, data):
                     put(c, 'enabled', '1')
                 elif action == 'disable':
                     put(c, 'enabled', '0')
-                    c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE channel!='instagram' AND kind!='owner-new-booking' AND state='pending'")
+                    c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE channel!='instagram' AND kind NOT IN ('owner-new-booking','refund-approval','refund-approval-result') AND state='pending'")
                 elif action == 'catalog':
                     new = {}
                     for key, maximum in [('crab', 100), ('origin', 100), ('arrival_date', 10), ('menu', 3000), ('notes', 1000), ('sake', 150), ('menu_en', 3000)]:
@@ -515,7 +515,8 @@ def deliver(db):
                     if not guest_service.validate_delivery(c,row['id']):
                         with c:c.execute("UPDATE concierge_outbox SET state='cancelled' WHERE id=?",(row['id'],))
                         continue
-                if time.time() - row['created'] > 23*3600:
+                retry_window = 900 if row['kind'] == 'refund-approval' else 23*3600
+                if time.time() - row['created'] > retry_window:
                     with c:
                         c.execute("UPDATE concierge_outbox SET state='failed',error='retry window expired' WHERE id=?", (row['id'],))
                         c.execute("UPDATE concierge_requests SET status='回答送信失敗' WHERE delivery_id=?", (row['id'],))

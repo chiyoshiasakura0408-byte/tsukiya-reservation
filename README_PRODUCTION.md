@@ -46,11 +46,9 @@
 Square Bookings APIは予約の作成・更新を扱えますが、カウンター8席を複数組に分ける「残席」概念は飲食店向けではないため、席数制御は本システムを正とします。Squareネイティブ予約から入った予約は一旦「未割当」として取り込み、席割りを確認する運用が安全です。
 
 
-## Refund approval gate (2026-10-07)
+## Refund approval gate
 
-Cancellation releases seats but no longer authorizes a new card refund. Both guest and staff cancellations create `AWAITING_APPROVAL`. The payment console shows an owner approval dialog with guest, reservation, cancellation reason, fee and amount. Approval requires the existing staff session plus a separate owner-only password; this is an additional password, not MFA.
-
-Set `REFUND_APPROVAL_SECRET` in Render's secret environment settings to a unique randomly generated password of at least 20 characters, different from `ADMIN_TOKEN` and the staff PIN. Deliver it only to the owner through a secure channel, not chat, source code or a shared iPad password store. With the setting absent, short or reused, approval fails closed and card refunds remain waiting. No credential is generated or set by this code change. Five failed owner-password attempts block approval for 15 minutes within the running process; this counter resets on restart and does not replace perimeter rate limiting.
+Both guest and staff cancellations create `AWAITING_APPROVAL` for eligible card payments. The payment console sends an approval request showing the reservation and exact refund amount to the paired owner’s personal LINE. Only a signed postback from that owner in a direct chat can approve it, within 15 minutes. Configure the existing owner LINE pairing, `LINE_CHANNEL_SECRET`, and `LINE_CHANNEL_ACCESS_TOKEN` before use.
 
 Approval records owner label, time and exact amount in the refund row. Repeated approval is rejected; amount mismatch requires a refresh. The existing worker verifies Square payment/amount/location and reuses the persisted idempotency key. Legacy unsubmitted `QUEUED` rows move to approval waiting. Legacy `SUBMITTING` rows without an approval are not resubmitted: they become manual review because Square may already have received them. Existing `PENDING` rows only query the known refund result. Never restart an uncertain refund under a new key.
 

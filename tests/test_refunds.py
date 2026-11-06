@@ -1,4 +1,9 @@
+import base64
+import hashlib
+import hmac
 import json
+import os
+import time
 import http.client
 import threading
 from http.server import ThreadingHTTPServer
@@ -12,9 +17,8 @@ import refunds
 
 class RefundTests(unittest.TestCase):
     def setUp(self):
-        refunds.AUTH_FAILURES.clear()
         self.tmp=tempfile.TemporaryDirectory()
-        self.patches=[patch.object(run,'DB',Path(self.tmp.name)/'db'),patch.object(run,'ADMIN_TOKEN','secret'),patch.object(run,'SQUARE_LOCATION_ID','loc'),patch.object(run,'SMTP_HOST',''),patch.object(run,'REFUND_APPROVAL_SECRET','owner-only-test-secret-long')]
+        self.patches=[patch.object(run,'DB',Path(self.tmp.name)/'db'),patch.object(run,'ADMIN_TOKEN','secret'),patch.object(run,'SQUARE_LOCATION_ID','loc'),patch.object(run,'SMTP_HOST','')]
         for p in self.patches:p.start()
         self.day=(datetime.now(timezone(timedelta(hours=9)))+timedelta(days=10)).isoformat()
         c=run.con();c.execute("INSERT INTO reservations(source,guest_name,email,visit_at,party_size,amount,status,payment_source,square_invoice_id,created_at,updated_at) VALUES('WEB','Test','a@example.com',?,2,120000,'CONFIRMED','SQUARE','inv','created','updated')",(self.day,));c.commit();self.r=dict(c.execute('SELECT * FROM reservations').fetchone());c.close()
@@ -26,7 +30,15 @@ class RefundTests(unittest.TestCase):
     def job(self):
         c=run.con();r=c.execute('SELECT * FROM cancellation_refunds').fetchone();c.close();return dict(r) if r else None
     def approve(self):
-        self.assertEqual(refunds.approve(run,self.r["id"],run.REFUND_APPROVAL_SECRET,120000)[0],200)
+        self.assertEqual(self.approve_amount(120000), 200)
+
+    def approve_amount(self, amount):
+        c = run.con()
+        try:
+            with c:
+                return refunds.approve(c, self.r["id"], amount, run.now_iso())[0]
+        finally:
+            c.close()
 
     def fake(self,path,body=None):
         if path=='/v2/invoices/inv':return {'invoice':{'status':'PAID','order_id':'ord'}}
@@ -122,26 +134,12 @@ class RefundTests(unittest.TestCase):
             sq.assert_not_called()
         self.assertEqual(self.job()['status'],'AWAITING_APPROVAL')
 
-    def test_staff_secret_wrong_amount_and_duplicate_approval(self):
+    def test_wrong_amount_and_duplicate_approval(self):
         run.customer_cancellation(self.token,True,True,0)
-        self.assertEqual(refunds.approve(run,self.r['id'],run.STAFF_LOGIN_PIN,120000)[0],403)
-        self.assertEqual(refunds.approve(run,self.r['id'],run.ADMIN_TOKEN,120000)[0],403)
-        self.assertEqual(refunds.approve(run,self.r['id'],run.REFUND_APPROVAL_SECRET,1)[0],409)
+        self.assertEqual(self.approve_amount(1),409)
         self.approve()
-        self.assertEqual(refunds.approve(run,self.r['id'],run.REFUND_APPROVAL_SECRET,120000)[0],409)
+        self.assertEqual(self.approve_amount(120000),409)
         self.assertEqual(self.job()['approved_by'],'朝倉')
-
-    def test_missing_secret_fails_closed(self):
-        run.customer_cancellation(self.token,True,True,0)
-        with patch.object(run,'REFUND_APPROVAL_SECRET',''):
-            self.assertEqual(refunds.approve(run,self.r['id'],'',120000)[0],503)
-        self.assertEqual(self.job()['status'],'AWAITING_APPROVAL')
-
-    def test_approval_attempts_are_rate_limited(self):
-        run.customer_cancellation(self.token,True,True,0)
-        for _ in range(5):
-            self.assertEqual(refunds.approve(run,self.r['id'],'wrong',120000)[0],403)
-        self.assertEqual(refunds.approve(run,self.r['id'],run.REFUND_APPROVAL_SECRET,120000)[0],429)
 
     def test_legacy_queue_waits_and_ambiguous_submission_not_resent(self):
         run.customer_cancellation(self.token,True,True,0)
@@ -156,24 +154,51 @@ class RefundTests(unittest.TestCase):
             sq.assert_not_called()
         self.assertEqual(self.job()['status'],'MANUAL')
 
-    def test_http_approval_requires_both_staff_session_and_owner_secret(self):
+    @patch.dict(os.environ, {'LINE_CHANNEL_SECRET':'test-line-secret','LINE_CHANNEL_ACCESS_TOKEN':'test-token'})
+    def test_http_request_only_queues_line_and_signed_owner_postback_approves(self):
         run.customer_cancellation(self.token,True,True,0)
+        owner = 'U' + 'a'*32
+        c = run.concierge.connect(run.DB)
+        with c:
+            run.concierge.put(c, 'owner', owner)
+        c.close()
         server=ThreadingHTTPServer(('127.0.0.1',0),run.Handler)
         threading.Thread(target=server.serve_forever,daemon=True).start()
-        def request(auth, action, secret):
+
+        def request(auth, action):
             conn=http.client.HTTPConnection('127.0.0.1',server.server_port,timeout=3)
             headers={'Content-Type':'application/json'}
             if auth: headers['x-admin-token']=run.ADMIN_TOKEN
-            if action: headers['X-Tsukiya-Action']='approve-refund'
-            conn.request('POST',f'/api/refunds/{self.r["id"]}/approve',json.dumps({'secret':secret,'amount':120000}),headers)
+            if action: headers['X-Tsukiya-Action']='request-refund-approval'
+            conn.request('POST',f'/api/refunds/{self.r["id"]}/approval-request',json.dumps({'amount':120000}),headers)
             response=conn.getresponse();status=response.status;response.read();conn.close();return status
+
+        def postback(event_id, user, data, source_type='user', valid_signature=True):
+            raw=json.dumps({'events':[{'type':'postback','webhookEventId':event_id,
+                 'source':{'type':source_type,'userId':user},'postback':{'data':data}}]}).encode()
+            signature=base64.b64encode(hmac.new(b'test-line-secret',raw,hashlib.sha256).digest()).decode()
+            return run.line_bot.receive(run.DB,raw,signature if valid_signature else 'invalid')[0]
+
         try:
-            self.assertEqual(request(False,True,run.REFUND_APPROVAL_SECRET),401)
-            self.assertEqual(request(True,False,run.REFUND_APPROVAL_SECRET),403)
-            self.assertEqual(request(True,True,run.STAFF_LOGIN_PIN),403)
+            self.assertEqual(request(False,True),401)
+            self.assertEqual(request(True,False),403)
+            self.assertEqual(request(True,True),202)
+            self.assertEqual(request(True,True),429)
+            c = run.concierge.connect(run.DB)
+            row=c.execute("SELECT user_id,payload FROM concierge_outbox WHERE kind='refund-approval'").fetchone()
+            c.close()
+            self.assertEqual(row['user_id'],owner)
+            data=json.loads(row['payload'])[0]['template']['actions'][0]['data']
+            self.assertEqual(postback('invalid',owner,data,valid_signature=False),403)
+            self.assertEqual(postback('staff','U'+'b'*32,data),200)
+            self.assertEqual(postback('group',owner,data,'group'),200)
+            self.assertEqual(postback('expired',owner,data.rsplit(':',1)[0]+':'+str(int(time.time())-901)),200)
+            self.assertEqual(self.job()['status'],'AWAITING_APPROVAL')
             with patch.object(run,'square') as sq:
-                self.assertEqual(request(True,True,run.REFUND_APPROVAL_SECRET),200)
+                self.assertEqual(postback('approve',owner,data),200)
+                self.assertEqual(postback('approve',owner,data),200)
                 sq.assert_not_called()
+            self.assertEqual(self.job()['status'],'QUEUED')
             with patch.object(run,'square',side_effect=self.fake):
                 refunds.process(run)
             self.assertEqual(self.job()['status'],'PENDING')

@@ -164,8 +164,10 @@ class CheckoutTest(unittest.TestCase):
   def gateway(path,body=None,method=None):
    if path=='/v2/refunds':refund_calls.append(body);return {'refund':{'id':'test-refund','status':'COMPLETED'}}
    return original(path,body,method)
-  with patch.object(run,'REFUND_APPROVAL_SECRET','owner-only-checkout-test-secret'),patch.object(refunds,'notify'),patch.object(run,'square',side_effect=gateway):
-   self.assertEqual(refunds.approve(run,r['id'],run.REFUND_APPROVAL_SECRET,132000)[0],200)
+  with patch.object(refunds,'notify'),patch.object(run,'square',side_effect=gateway):
+   c=run.con()
+   with c:self.assertEqual(refunds.approve(c,r['id'],132000,run.now_iso())[0],200)
+   c.close()
    refunds.process(run);refunds.process(run)
   self.assertEqual(len(refund_calls),1);self.assertEqual(refund_calls[0]['payment_id'],next(iter(self.payments.values()))['id'])
 

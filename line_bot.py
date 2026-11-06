@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import sqlite3
+import refunds
 import line_receipts
 import line_reservations
 import concierge
@@ -84,6 +85,7 @@ def receive(db, raw, signature):
                     c.execute('INSERT INTO line_sources VALUES (?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET last_seen=excluded.last_seen, active=excluded.active',
                               (source_id, kind, now, active))
             claimed = register_inventory_mention(c, events)
+            claimed.update(e["webhookEventId"] for e in new_events if refunds.line_approval(c, e, now))
             # Question requests are exclusively handled by the internal reply API,
             # never interpreted as receipts, reservations, or inventory commands.
             staff_ids = {concierge.setting(c, 'owner')}

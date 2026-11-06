@@ -6,14 +6,10 @@ import concierge
 import json
 import threading
 import uuid
-import hmac
 import time
-from collections import deque
 from email.message import EmailMessage
 
 LOCK = threading.Lock()
-AUTH_LOCK = threading.Lock()
-AUTH_FAILURES = deque()
 DELAY = 'カード明細への反映には通常さらに2〜7営業日ほどかかる場合があります。'
 GUIDE = '''残高不足の場合の対応手順：
 1. 新しいカード返金は square-jp@help-messaging.squareup.com へ自動問い合わせ（決済管理に送信状況を表示）。登録メールとの一致確認を求められた場合は店舗で対応。
@@ -88,39 +84,76 @@ def public(c, rid):
     r = c.execute('SELECT fee,amount,status FROM cancellation_refunds WHERE reservation_id=?',(rid,)).fetchone()
     return dict(r) if r else {'fee':0,'amount':0,'status':'MANUAL'}
 
-def approval_configured(app):
-    secret = app.REFUND_APPROVAL_SECRET
-    return len(secret) >= 20 and secret not in (app.ADMIN_TOKEN, app.STAFF_LOGIN_PIN)
+def approval_owner(c):
+    owner = concierge.setting(c, 'owner')
+    return owner if re.fullmatch(r'U[0-9a-f]{32}', owner) else ''
 
-def approve(app, rid, supplied, expected_amount):
-    if not approval_configured(app):
-        return 503, {'error':'朝倉専用の返金承認パスワードが未設定です。返金は停止しています。'}
-    with AUTH_LOCK:
-        now = time.monotonic()
-        while AUTH_FAILURES and AUTH_FAILURES[0] <= now - 900:
-            AUTH_FAILURES.popleft()
-        if len(AUTH_FAILURES) >= 5:
-            return 429, {'error':'承認認証の試行が多すぎます。15分後に再試行してください。'}
-        if not isinstance(supplied, str) or not hmac.compare_digest(supplied.encode(), app.REFUND_APPROVAL_SECRET.encode()):
-            AUTH_FAILURES.append(now)
-            return 403, {'error':'返金承認パスワードが違います。'}
-    c = app.con()
-    try:
-        c.execute('BEGIN IMMEDIATE')
-        job = c.execute('SELECT * FROM cancellation_refunds WHERE reservation_id=?',(rid,)).fetchone()
-        r = c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone()
-        if not job or not r:
-            return 404, {'error':'返金対象が見つかりません。'}
-        if (job['status'] != 'AWAITING_APPROVAL' or r['status'] != 'CANCELLED'
-                or r['payment_source'] != 'SQUARE' or job['amount'] <= 0
-                or type(expected_amount) is not int or job['amount'] != expected_amount
-                or job['payload'] or job['refund_id']):
-            return 409, {'error':'返金状況または金額が変わりました。再読み込みして確認してください。'}
-        c.execute("UPDATE cancellation_refunds SET status='QUEUED', approved_at=?, approved_by='朝倉', approved_amount=amount WHERE reservation_id=?",(app.now_iso(),rid))
-        c.commit()
-        return 200, {'ok':True,'status':'QUEUED'}
-    finally:
-        c.close()
+
+def approval_target(c, rid, expected_amount):
+    job = c.execute('SELECT * FROM cancellation_refunds WHERE reservation_id=?',(rid,)).fetchone()
+    r = c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone()
+    if not job or not r:
+        return 404, {'error':'返金対象が見つかりません。'}
+    if (job['status'] != 'AWAITING_APPROVAL' or r['status'] != 'CANCELLED'
+            or r['payment_source'] != 'SQUARE' or job['amount'] <= 0
+            or type(expected_amount) is not int or job['amount'] != expected_amount
+            or job['payload'] or job['refund_id']):
+        return 409, {'error':'返金状況または金額が変わりました。再読み込みして確認してください。'}
+    return 200, r
+
+
+def request_approval(c, rid, expected_amount):
+    owner = approval_owner(c)
+    if not owner:
+        return 503, {'error':'朝倉さんの個人LINEが未連携です。'}
+    status, result = approval_target(c, rid, expected_amount)
+    if status != 200:
+        return status, result
+    now = int(time.time())
+    prefix = f'refund-approve:{rid}:{expected_amount}:'
+    recent = c.execute("""SELECT 1 FROM concierge_outbox WHERE kind='refund-approval'
+        AND user_id=? AND created>? AND state IN ('pending','accepted')
+        AND json_extract(payload, '$[0].template.actions[0].data') GLOB ?""",
+        (owner, now-60, prefix+'*')).fetchone()
+    if recent:
+        return 429, {'error':'承認依頼は送信受付済みです。個人LINEをご確認ください。'}
+    summary = f"予約 #{rid} {result['guest_name'][:40]} 様\n返金額：{expected_amount:,}円"
+    message = {'type': 'template', 'altText': 'つきや・返金承認依頼',
+               'template': {'type': 'buttons',
+                            'text': summary + '\n元のカードへの返金を承認します。有効期限15分。',
+                            'actions': [{'type': 'postback', 'label': 'この金額の返金を承認',
+                                         'data': prefix+str(now)}]}}
+    concierge.enqueue(c, owner, [message], channel='owner', kind='refund-approval')
+    return 202, {'ok':True}
+
+
+def approve(c, rid, expected_amount, now_iso):
+    status, result = approval_target(c, rid, expected_amount)
+    if status != 200:
+        return status, result
+    c.execute("UPDATE cancellation_refunds SET status='QUEUED', approved_at=?, approved_by='朝倉', approved_amount=amount WHERE reservation_id=?", (now_iso,rid))
+    return 200, {'ok':True,'status':'QUEUED'}
+
+
+def line_approval(c, event, now_iso):
+    if event['type'] != 'postback' or not isinstance(event.get('postback'), dict):
+        return False
+    data = event['postback'].get('data')
+    if not isinstance(data, str) or not data.startswith('refund-approve:'):
+        return False
+    owner = approval_owner(c)
+    source = event.get('source', {})
+    if not owner or source.get('type') != 'user' or source.get('userId') != owner:
+        return True
+    match = re.fullmatch(r'refund-approve:(\d{1,18}):(\d{1,18}):(\d{1,12})', data)
+    if not match or not 0 <= time.time() - int(match[3]) < 900:
+        message = '承認依頼の有効期限が切れました。決済管理画面から再度依頼してください。'
+    else:
+        status, result = approve(c, int(match[1]), int(match[2]), now_iso)
+        message = '返金を承認しました。処理状況は決済管理画面でご確認ください。' if status == 200 else result['error']
+    concierge.enqueue(c, owner, [{'type':'text', 'text':message}], channel='owner', kind='refund-approval-result')
+    return True
+
 
 def update(app, rid, **values):
     c=app.con()

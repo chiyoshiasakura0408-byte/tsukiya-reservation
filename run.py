@@ -63,7 +63,6 @@ DB = DATA_DIR / "tsukiya.sqlite"
 
 PORT = int(os.getenv("PORT", "10000"))
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
-REFUND_APPROVAL_SECRET = os.getenv("REFUND_APPROVAL_SECRET", "")
 STAFF_LOGIN_PIN = "7777"
 SESSION_COOKIE = "tsukiya_session"
 SESSION_SECONDS = 12 * 60 * 60
@@ -2693,10 +2692,11 @@ class Handler(
         if p == "/api/refunds":
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
-            c = con()
+            c = concierge.connect(DB)
             rows = [dict(r) for r in c.execute("SELECT f.*,r.guest_name,r.visit_at,r.cancellation_reason,i.state AS support_inquiry_status,i.sent AS support_inquiry_sent_at FROM cancellation_refunds f JOIN reservations r ON r.id=f.reservation_id LEFT JOIN refund_support_inquiries i ON i.reservation_id=f.reservation_id ORDER BY f.created_at DESC")]
+            approval_configured = bool(refunds.approval_owner(c) and os.getenv("LINE_CHANNEL_SECRET") and os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
             c.close()
-            return self.send_json({"refunds": rows, "action_required_count": refunds.action_required_count(rows), "guide": refunds.GUIDE, "approval_configured": refunds.approval_configured(sys.modules[__name__])}, 200, {"Cache-Control": "no-store"})
+            return self.send_json({"refunds": rows, "action_required_count": refunds.action_required_count(rows), "guide": refunds.GUIDE, "approval_configured": approval_configured}, 200, {"Cache-Control": "no-store"})
         if p == "/cancel-reservation":
             return self.send_html((BASE / "public" / "cancel.html").read_text(encoding="utf-8"), loader=False)
         if p == "/loading-test":
@@ -3960,11 +3960,11 @@ class Handler(
             reconcile_reservations()
             return self.send_json({"ok": True})
 
-        approval_match = re.fullmatch(r"/api/refunds/(\d+)/approve", p)
+        approval_match = re.fullmatch(r"/api/refunds/(\d+)/approval-request", p)
         if approval_match:
             if not self.auth():
                 return self.send_json({"error":"unauthorized"}, 401)
-            if self.headers.get('X-Tsukiya-Action') != 'approve-refund':
+            if self.headers.get('X-Tsukiya-Action') != 'request-refund-approval':
                 return self.send_json({"error":"invalid request"}, 403)
             if int(self.headers.get('Content-Length', '0')) > 4096:
                 return self.send_json({"error":"入力が長すぎます"}, 413)
@@ -3972,7 +3972,15 @@ class Handler(
                 data = self.read_json()
                 if not isinstance(data, dict):
                     raise ValueError()
-                status, result = refunds.approve(sys.modules[__name__], int(approval_match[1]), data.get('secret'), data.get('amount'))
+                if not (os.getenv("LINE_CHANNEL_SECRET") and os.getenv("LINE_CHANNEL_ACCESS_TOKEN")):
+                    return self.send_json({"error":"返金承認用のLINEが未設定です。"}, 503)
+                c = concierge.connect(DB)
+                try:
+                    with c:
+                        c.execute("BEGIN IMMEDIATE")
+                        status, result = refunds.request_approval(c, int(approval_match[1]), data.get('amount'))
+                finally:
+                    c.close()
             except (ValueError, UnicodeError):
                 return self.send_json({"error":"入力内容を確認してください"}, 400)
             return self.send_json(result, status)
