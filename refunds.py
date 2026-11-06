@@ -4,11 +4,13 @@ import refund_support
 import re
 import sqlite3
 import concierge
+from contextlib import closing
 import json
 import threading
 import uuid
 import time
 from email.message import EmailMessage
+from email.utils import parseaddr
 
 LOCK = threading.Lock()
 DELAY = 'カード明細への反映には通常さらに2〜7営業日ほどかかる場合があります。'
@@ -115,8 +117,10 @@ def enqueue(c, r, fee, now):
     paid = r['payment_source'] in ('SQUARE', 'BANK')
     amount = max(0, r['amount'] - fee) if paid else 0
     status = ('AWAITING_APPROVAL' if r['payment_source']=='SQUARE' else 'MANUAL') if amount else 'NONE'
-    c.execute('INSERT OR IGNORE INTO cancellation_refunds(reservation_id,fee,amount,status,request_key,created_at) VALUES(?,?,?,?,?,?)',
+    created = c.execute('INSERT OR IGNORE INTO cancellation_refunds(reservation_id,fee,amount,status,request_key,created_at) VALUES(?,?,?,?,?,?)',
               (r['id'], fee, amount, status, str(uuid.uuid4()), now))
+    if created.rowcount and r['payment_source'] == 'SQUARE' and amount > 0:
+        c.execute("INSERT INTO refund_notices VALUES(?,'DELAY_24H','guest','WAITING')", (r['id'],))
     refund_support.enqueue(c, r, amount)
 
 def public(c, rid):
@@ -241,6 +245,65 @@ def notify(app, job, reservation, stage):
         c=app.con(); c.execute('UPDATE refund_notices SET status=? WHERE reservation_id=? AND stage=? AND audience=?',(result,job['reservation_id'],stage,audience)); c.commit(); c.close()
         if audience=='guest' and result=='SENT':email_sms.accepted(app,reservation,msg,'refund:'+stage)
 
+def send_delay_notice(app, reservation):
+    if app.SQUARE_ENV != 'production' or not all((app.SMTP_HOST, app.SMTP_USER, app.SMTP_PASS, app.MAIL_FROM)):
+        return
+    recipient = reservation['email'] or ''
+    if parseaddr(recipient)[1] != recipient or '@' not in recipient or any(ch in recipient for ch in '\r\n'):
+        return
+
+    rid = reservation['id']
+    with closing(app.con()) as c, c:
+        refund = c.execute("""
+            SELECT f.amount, f.fee FROM cancellation_refunds f
+            JOIN refund_support_inquiries i ON i.reservation_id=f.reservation_id AND i.state='SENT'
+            JOIN reservations r ON r.id=f.reservation_id
+            LEFT JOIN refund_followups d ON d.reservation_id=f.reservation_id
+            WHERE f.reservation_id=? AND r.status='CANCELLED' AND r.payment_source='SQUARE'
+              AND f.approved_at IS NOT NULL AND f.approved_amount=f.amount AND f.amount>0
+              AND f.status IN ('MANUAL','FAILED','REJECTED')
+              AND julianday(f.approved_at) <= julianday('now','-24 hours')
+              AND d.completed_at IS NULL
+        """, (rid,)).fetchone()
+        if not refund:
+            return
+        claimed = c.execute("""
+            UPDATE refund_notices SET status='SENDING'
+            WHERE reservation_id=? AND stage='DELAY_24H' AND audience='guest' AND status='WAITING'
+        """, (rid,)).rowcount
+    if not claimed:
+        return
+
+    msg = EmailMessage()
+    msg['From'] = app.mail_sender()
+    msg['To'] = recipient
+    msg['Reply-To'] = 'chiyoshi.a.0408@icloud.com'
+    msg['Bcc'] = msg['Reply-To']
+    msg['Subject'] = f'【西天満つきや】返金状況のご案内（予約 #{rid}）'
+    msg['Message-ID'] = f'<refund-delay-{rid}@tsukiya-reservation.onrender.com>'
+    amount = refund['amount']
+    refund_text = (f'先日お支払いいただきました、{amount:,}円につきましては、当店より全額返金の手続きを行っております。'
+                   if not refund['fee'] else f'当店より{amount:,}円の返金手続きを行っております。')
+    msg.set_content(
+        f"{reservation['guest_name']}様\n\n西天満つきやです。\n\n{refund_text}"
+        'お待たせしており、ご心配をおかけし申し訳ございません。\n\n'
+        'お支払いに使用されたカードへの返金手続きについて決済会社からの連絡待ちとなっております。\n\n'
+        '返金の見通しが分かり次第、当店から改めてご連絡いたします。'
+        '現時点でお客様にお手続きいただくことはございません。\n\n西天満つきや\n朝倉千勝'
+    )
+    result = 'SENT'
+    try:
+        with app.smtplib.SMTP(app.SMTP_HOST, app.SMTP_PORT, timeout=30) as smtp:
+            smtp.starttls()
+            smtp.login(app.SMTP_USER, app.SMTP_PASS)
+            smtp.send_message(msg)
+    except Exception:
+        result = 'UNKNOWN'
+    with closing(app.con()) as c, c:
+        c.execute("UPDATE refund_notices SET status=? WHERE reservation_id=? AND stage='DELAY_24H' AND audience='guest'",
+                  (result, rid))
+
+
 def process(app):
     if not LOCK.acquire(blocking=False): return
     try:
@@ -299,6 +362,7 @@ def process(app):
                 update(app,rid,status='PENDING' if job['status']=='PENDING' else 'MANUAL',error=str(exc)[:1800])
             c=app.con(); current=dict(c.execute('SELECT * FROM cancellation_refunds WHERE reservation_id=?',(rid,)).fetchone()); c.close()
             notify(app,current,r,current['status'])
+            send_delay_notice(app, r)
     finally: LOCK.release()
 
 
