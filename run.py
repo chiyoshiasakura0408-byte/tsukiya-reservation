@@ -2693,7 +2693,7 @@ class Handler(
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
             c = concierge.connect(DB)
-            rows = [dict(r) for r in c.execute("SELECT f.*,r.guest_name,r.visit_at,r.cancellation_reason,i.state AS support_inquiry_status,i.sent AS support_inquiry_sent_at FROM cancellation_refunds f JOIN reservations r ON r.id=f.reservation_id LEFT JOIN refund_support_inquiries i ON i.reservation_id=f.reservation_id ORDER BY f.created_at DESC")]
+            rows = [dict(r) for r in c.execute("SELECT f.*,r.guest_name,r.visit_at,r.cancellation_reason,i.state AS support_inquiry_status,i.sent AS support_inquiry_sent_at,d.completed_at AS followup_completed_at FROM cancellation_refunds f JOIN reservations r ON r.id=f.reservation_id LEFT JOIN refund_support_inquiries i ON i.reservation_id=f.reservation_id LEFT JOIN refund_followups d ON d.reservation_id=f.reservation_id ORDER BY f.created_at DESC")]
             approval_configured = bool(refunds.approval_owner(c) and os.getenv("LINE_CHANNEL_SECRET") and os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
             c.close()
             return self.send_json({"refunds": rows, "action_required_count": refunds.action_required_count(rows), "guide": refunds.GUIDE, "approval_configured": approval_configured}, 200, {"Cache-Control": "no-store"})
@@ -3959,6 +3959,23 @@ class Handler(
                 return self.send_json({"error": "unauthorized"}, 401)
             reconcile_reservations()
             return self.send_json({"ok": True})
+
+        followup_match = re.fullmatch(r"/api/refunds/(\d{1,18})/followup-complete", p)
+        if followup_match:
+            if not self.auth():
+                return self.send_json({"error":"unauthorized"}, 401)
+            if self.headers.get('X-Tsukiya-Action') != 'complete-refund-followup':
+                return self.send_json({"error":"invalid request"}, 403)
+            c = con()
+            try:
+                with c:
+                    c.execute("BEGIN IMMEDIATE")
+                    completed = refunds.complete_followup(c, int(followup_match[1]), now_iso())
+            finally:
+                c.close()
+            if not completed:
+                return self.send_json({"error":"確認対象の返金が見つかりません。"}, 409)
+            return self.send_json({"ok":True})
 
         approval_match = re.fullmatch(r"/api/refunds/(\d+)/approval-request", p)
         if approval_match:

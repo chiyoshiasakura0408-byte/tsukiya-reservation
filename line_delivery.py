@@ -13,6 +13,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import line_bot
 import bank_transfer
+import refunds
 
 JST = timezone(timedelta(hours=9))
 LOCK = threading.Lock()
@@ -434,7 +435,7 @@ def deliver(db, port, admin, base_url, day=None):
                     payload = json.loads(row['payload'])
                 else:
                     api('info')  # Validate token before generating the screenshot.
-                    payload = {'to':TARGET,'messages':briefing_text_messages(db,day,base_url) + [capture(db,day,port,admin,base_url,session) for session in BRIEFING_SESSIONS] + [printable_message(db,day,base_url)] + bank_transfer.accounting_digest(db,base_url)}
+                    payload = {'to':TARGET,'messages':briefing_text_messages(db,day,base_url) + [capture(db,day,port,admin,base_url,session) for session in BRIEFING_SESSIONS] + [printable_message(db,day,base_url)] + bank_transfer.accounting_digest(db,base_url) + refunds.accounting_digest(db,base_url)}
                     c.execute("UPDATE line_deliveries SET payload=?,state='READY',updated=? WHERE day=?", (json.dumps(payload),time.time(),day))
                     c.commit()
                 push_briefing_payload(payload,row['retry_key'])

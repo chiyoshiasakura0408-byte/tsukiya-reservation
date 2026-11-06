@@ -2,6 +2,7 @@
 import email_sms
 import refund_support
 import re
+import sqlite3
 import concierge
 import json
 import threading
@@ -23,6 +24,42 @@ LABELS = {'QUEUED':'返金受付', 'SUBMITTING':'返金結果確認中', 'PENDIN
 LABELS['AWAITING_APPROVAL'] = '朝倉承認待ち'
 
 ACTION_REQUIRED = frozenset(('AWAITING_APPROVAL', 'MANUAL', 'FAILED', 'REJECTED'))
+
+FOLLOWUP_STATES = ('AWAITING_APPROVAL', 'QUEUED', 'SUBMITTING', 'PENDING', 'MANUAL', 'FAILED', 'REJECTED')
+FOLLOWUP_WHERE = "f.amount > 0 AND f.status IN (" + ",".join("?" for _ in FOLLOWUP_STATES) + ")"
+
+
+def accounting_digest(db, base_url):
+    c = sqlite3.connect(db)
+    try:
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='refund_followups'").fetchone():
+            return []
+        rows = c.execute(f"""SELECT f.reservation_id,f.amount,f.status
+            FROM cancellation_refunds f LEFT JOIN refund_followups done USING(reservation_id)
+            WHERE {FOLLOWUP_WHERE} AND done.completed_at IS NULL
+            ORDER BY f.created_at,f.reservation_id""", FOLLOWUP_STATES).fetchall()
+    finally:
+        c.close()
+    if not rows:
+        return []
+    lines = ['【返金対応・朝の確認依頼】', f'確認が必要な返金 {len(rows)}件']
+    lines.extend(f'予約 #{rid}／{amount:,}円／{LABELS[status]}' for rid,amount,status in rows[:25])
+    if len(rows) > 25:
+        lines.append(f'ほか {len(rows)-25}件')
+    lines.extend(('決済管理で進捗を確認し、対応が終わったら「対応完了」を押してください。',
+                  base_url.rstrip('/') + '/#refundPanel'))
+    return [{'type':'text', 'text':'\n'.join(lines)}]
+
+
+def complete_followup(c, rid, now_iso):
+    if c.execute('SELECT 1 FROM refund_followups WHERE reservation_id=?', (rid,)).fetchone():
+        return True
+    if not c.execute("SELECT 1 FROM cancellation_refunds f WHERE f.reservation_id=? AND " + FOLLOWUP_WHERE,
+                     (rid, *FOLLOWUP_STATES)).fetchone():
+        return False
+    c.execute('INSERT INTO refund_followups VALUES (?,?)', (rid,now_iso))
+    return True
+
 
 def action_required_count(rows):
     return sum(1 for row in rows if row['amount'] > 0 and row['status'] in ACTION_REQUIRED)
@@ -70,6 +107,8 @@ def schema(c):
     c.execute('''CREATE TABLE IF NOT EXISTS refund_notices(
         reservation_id INTEGER NOT NULL, stage TEXT NOT NULL, audience TEXT NOT NULL,
         status TEXT NOT NULL, PRIMARY KEY(reservation_id,stage,audience))''')
+    c.execute("""CREATE TABLE IF NOT EXISTS refund_followups (
+        reservation_id INTEGER PRIMARY KEY, completed_at TEXT NOT NULL)""")
     refund_support.schema(c)
 
 def enqueue(c, r, fee, now):

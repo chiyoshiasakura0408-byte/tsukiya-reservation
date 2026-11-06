@@ -134,6 +134,24 @@ class RefundTests(unittest.TestCase):
             sq.assert_not_called()
         self.assertEqual(self.job()['status'],'AWAITING_APPROVAL')
 
+    def test_accounting_followup_stops_after_completion_without_changing_refund(self):
+        run.customer_cancellation(self.token, True, True, 0)
+        base = 'https://example.invalid'
+        digest = refunds.accounting_digest(run.DB, base)[0]['text']
+        self.assertIn(f'予約 #{self.r["id"]}／120,000円', digest)
+        self.assertNotIn(self.r['guest_name'], digest)
+        before = self.job()
+        c = run.con()
+        try:
+            with c:
+                self.assertTrue(refunds.complete_followup(c, self.r['id'], run.now_iso()))
+                self.assertTrue(refunds.complete_followup(c, self.r['id'], run.now_iso()))
+                self.assertFalse(refunds.complete_followup(c, 999, run.now_iso()))
+        finally:
+            c.close()
+        self.assertEqual(self.job(), before)
+        self.assertEqual(refunds.accounting_digest(run.DB, base), [])
+
     def test_wrong_amount_and_duplicate_approval(self):
         run.customer_cancellation(self.token,True,True,0)
         self.assertEqual(self.approve_amount(1),409)
