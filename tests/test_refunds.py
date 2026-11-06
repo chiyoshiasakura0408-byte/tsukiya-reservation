@@ -197,7 +197,14 @@ class RefundTests(unittest.TestCase):
             with patch.object(run,'square') as sq:
                 self.assertEqual(postback('approve',owner,data),200)
                 self.assertEqual(postback('approve',owner,data),200)
+                approved_at = self.job()['approved_at']
+                self.assertEqual(postback('second-tap',owner,data),200)
+                self.assertEqual(self.job()['approved_at'],approved_at)
                 sq.assert_not_called()
+            c = run.concierge.connect(run.DB)
+            reply = c.execute("SELECT payload FROM concierge_outbox WHERE kind='refund-approval-result' ORDER BY rowid DESC LIMIT 1").fetchone()
+            c.close()
+            self.assertIn('この返金は承認済みです', json.loads(reply['payload'])[0]['text'])
             self.assertEqual(self.job()['status'],'QUEUED')
             with patch.object(run,'square',side_effect=self.fake):
                 refunds.process(run)

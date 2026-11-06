@@ -146,7 +146,16 @@ def line_approval(c, event, now_iso):
     if not owner or source.get('type') != 'user' or source.get('userId') != owner:
         return True
     match = re.fullmatch(r'refund-approve:(\d{1,18}):(\d{1,18}):(\d{1,12})', data)
-    if not match or not 0 <= time.time() - int(match[3]) < 900:
+    prior = None
+    if match:
+        prior = c.execute(
+            'SELECT 1 FROM cancellation_refunds WHERE reservation_id=? '
+            'AND approved_at IS NOT NULL AND approved_amount=? AND amount=?',
+            (int(match[1]), int(match[2]), int(match[2])),
+        ).fetchone()
+    if prior:
+        message = 'この返金は承認済みです。処理状況は決済管理画面でご確認ください。'
+    elif not match or not 0 <= time.time() - int(match[3]) < 900:
         message = '承認依頼の有効期限が切れました。決済管理画面から再度依頼してください。'
     else:
         status, result = approve(c, int(match[1]), int(match[2]), now_iso)
