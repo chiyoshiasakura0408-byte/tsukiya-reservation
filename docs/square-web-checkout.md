@@ -5,7 +5,7 @@
 ## Implemented
 
 - Japanese and English `/book` use `public/web-checkout.js` when enabled and configured. The existing invoice UI remains the fallback before activation. The bank choice uses its original endpoint; English remains card only. VIP exceptions remain unchanged.
-- `web_checkout.py` creates a 15-minute `WEB_CARD` reservation hold using the existing seat table and `BEGIN IMMEDIATE`. Telephone invoices and Japanese bank transfers retain their paths; new terms are now 24 hours. Already issued legacy terms are not shortened.
+- `web_checkout.py` creates a 10-minute `WEB_CARD` reservation hold using the existing seat table and `BEGIN IMMEDIATE`. Telephone invoices and Japanese bank transfers retain their paths; new terms are now 24 hours. Already issued legacy terms are not shortened.
 - Each session is bound to an opaque secret and a hash of accepted booking input. Server-owned price, currency, location, order and reference are verified. Only SDK `cnon:` tokens and confirmed `CARD` payments can confirm the booking; CASH/EXTERNAL/saved-card sources are rejected.
 - Order and payment idempotency keys, an encrypted exact payment request, a persisted processing lease, API response/Webhook/reconciliation finalization, and a unique payment ID protect retries. Completed requests erase the temporary token. Raw card numbers and CVV never enter the application.
 - Timeouts keep the seat and forbid new payment channels/cancellation while reconciliation replays the exact request/key. Holds not submitted for payment expire. Definitive card declines release the seat.

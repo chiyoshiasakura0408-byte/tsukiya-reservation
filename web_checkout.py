@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from cryptography.fernet import Fernet
 
 SOURCE = 'WEB_CARD'
-HOLD_SECONDS = 5 * 60
+HOLD_SECONDS = 10 * 60
 TERMINAL = ('PAID', 'FAILED', 'EXPIRED', 'CANCELLED')
 LOCKED = ('PAYING', 'UNKNOWN', 'REVIEW')
 DECLINES = {'CARD_DECLINED', 'GENERIC_DECLINE', 'CVV_FAILURE', 'VERIFY_CVV_FAILURE',
