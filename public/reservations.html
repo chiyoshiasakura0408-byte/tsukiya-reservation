@@ -49,6 +49,11 @@ main{max-width:1450px;margin:auto;padding:16px}.pages{display:flex;flex-wrap:wra
   <p>本人連携済みの朝倉さんのLINEから送信してください。予約日時・人数・決済を維持し、移動先の空席と席ブロックを確認します。</p>
   <p>席の例外変更：<code>予約変更 例外 #予約ID カウンター</code>（移動先はカウンター、個室1、個室2、個室3）</p>
   <p>個室の特別枠：<code>予約追加 特別枠 YYYY-MM-DD HH:MM-HH:MM 個室3 3名 料理3人前 お名前</code>（電話番号は末尾に任意で入力）</p>
+  <p>1行に1件ずつ記入すると、複数の指示を上から順に処理します。</p>
+  <label for="ownerBatchJob">複数行の形式エラーになった受付番号</label>
+  <input id="ownerBatchJob" maxlength="16" autocomplete="off">
+  <button type="button" onclick="retryOwnerBatch(this)">受付の再試行・結果確認</button>
+  <pre id="ownerBatchResult" role="status" style="white-space:pre-wrap"></pre>
 </details>
 <section class="card" id="counterCard"><div class="section-heading"><h2>カウンター 8席</h2><div class="section-actions"><button onclick="showBlockControls('COUNTER')">席ブロック</button><button onclick="startDirect('COUNTER')">＋ 直接予約</button></div></div><p class="summary" id="counterSummary"></p><div class="board-scroll counter-scroll"><div id="counter" class="matrix counter"></div></div><p class="hint">右端が1番、左端が8番です。席番号は人数に応じた画面上の自動配置です。</p></section>
 <section class="card" id="roomCard"><div class="section-heading"><h2>個室 3室</h2><div class="section-actions"><button onclick="showBlockControls('PRIVATE')">席ブロック</button><button onclick="startDirect('PRIVATE')">＋ 直接予約</button></div></div><p class="summary" id="roomSummary"></p><div class="board-scroll"><div id="rooms" class="matrix rooms"></div></div></section>
@@ -169,6 +174,21 @@ async function updateCourse(){const seq=++courseSeq,date=$('visitDate').value,pa
 function chooseSuggestion(i){const s=(window.currentSuggestions||[])[i];if(!s)return;$('visitDate').value=s.visit_at.slice(0,10);$('visitTime').value=s.visit_at.slice(11,16);$('customTimeField').hidden=true;$('area').value=s.seating_area==='COUNTER'?'COUNTER':'PRIVATE';syncFromForm();showSelectedSeats()}
 async function addReservation(){if(directSubmitted||phoneSubmitting)return;if(entryMode==='phone'&&!directRequestId)directRequestId=crypto.randomUUID();if(entryMode==='direct'&&!$('email').validity.valid){$('notice').textContent='メールアドレスを確認してください';return}const body={time_specified:$('visitTime').value==='custom',guest_name:$('name').value.trim(),email:$('email').value.trim(),customer_id:linkedCustomerId,request_id:directRequestId,phone:$('phone').value.trim(),party_size:Number($('party').value),visit_at:`${$('visitDate').value}T${selectedTime()}`,seating_area:$('area').value,counter_round:$('area').value==='COUNTER'?($('visitTime').value==='18:00'?1:2):null,duration_minutes:150,guest_note:$('phoneNote').value.trim(),confirmation_note:$('confirmationNote').value.trim(),celebration_items:[...document.querySelectorAll('[data-celebration].active')].map(b=>b.dataset.celebration),plate_message:$('plateMessage').value.trim()};try{phoneSubmitting=true;$('submitPhone').disabled=true;const r=await api(entryMode==='direct'?'/api/reservations/direct':'/api/reservations/phone',{method:'POST',body:JSON.stringify(body)});if(entryMode==='direct'||r.source==='DIRECT'){directSubmitted=true;$('submitPhone').textContent='登録済み';const sent=!!r.confirmation_sent_at;$('notice').textContent=`${r.guest_name}様の直接予約 #${r.id} を確定しました。${sent?'確定メールを送信しました。':!r.email?'メール未登録のため通知は送信していません。':'確定メールは未送信または送信要確認です。決済管理で送信状況を確認してください。'}前受け請求は送信していません。`;$('boardMessage').textContent=$('notice').textContent;await load();return;}$('notice').textContent=`${r.guest_name}様の電話予約 #${r.id} を登録しました。`+(r.status==='INVOICED'?(r.email?'Square請求書を発行し、メール送信を手配しました。':r.invoice_sms_status==='QUEUED'?'Square請求書を発行し、SMS送信を受け付けました。':'Square請求書は発行済みですが、SMS送信は要確認です。決済管理で確認してください。'):r.status==='ERROR'?'請求書の自動発行に失敗しました。予約は保存済みです。決済管理でこの予約のSquare請求を再試行してください。':'請求処理中です。決済管理でこの予約を確認してください。');$('boardMessage').textContent=$('notice').textContent;directRequestId=null;for(const id of ['name','phone','email','phoneNote','confirmationNote','plateMessage'])$(id).value='';document.querySelectorAll('[data-celebration].active').forEach(b=>toggleCelebration(b));await load()}catch(e){$('notice').textContent=e.message;checkAvailability()}finally{phoneSubmitting=false;$('submitPhone').disabled=directSubmitted||phoneSubmitting}}
 
+async function retryOwnerBatch(button){
+  button.disabled=true;
+  const status=$('ownerBatchResult');
+  try{
+    const result=await api('/api/line/reservations/retry-owner-batch',{
+      method:'POST',headers:{'X-Tsukiya-Action':'line-booking'},
+      body:JSON.stringify({job_id:$('ownerBatchJob').value.trim()})
+    });
+    status.textContent=result.items.length
+      ? result.items.map(item=>item.result||'処理待ち').join('\n\n')
+      : '再試行を受け付けました。処理後に同じボタンで結果を確認できます。';
+    if(result.items.some(item=>item.reservation_id))await load();
+  }catch(e){status.textContent=e.message}
+  finally{button.disabled=false}
+}
 async function approveRoomException(button){button.disabled=true;try{const response=await fetch('/api/line/reservations/room-exception',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Tsukiya-Action':'line-booking'},body:JSON.stringify({item_id:$('roomExceptionItem').value.trim()})});const result=await response.json();if(!response.ok)throw Error(result.error||'例外登録に失敗しました');$('roomExceptionResult').textContent=result.result||'処理結果を確認してください';await load()}catch(e){$('roomExceptionResult').textContent=e.message}finally{button.disabled=false}}
 async function logout(){await fetch('/api/logout',{method:'POST',credentials:'same-origin'});location.href='/login'}
 const snapshotParams=new URLSearchParams(location.search),snapshotMode=snapshotParams.get('snapshot')==='1';const japanToday=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());const requestedDay=snapshotParams.get('date');$('day').value=snapshotMode&&/^\d{4}-\d{2}-\d{2}$/.test(requestedDay||'')?requestedDay:japanToday;$('visitDate').value=$('day').value;if(snapshotMode){document.body.classList.add('snapshot');document.body.dataset.snapshotReady='false';toggleDay(false);togglePhone(false)}load();

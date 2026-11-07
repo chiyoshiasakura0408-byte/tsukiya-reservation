@@ -3204,6 +3204,19 @@ class Handler(
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 return self.send_json({"error": str(exc)}, 400)
 
+        if p == "/api/line/reservations/retry-owner-batch":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if self.headers.get("X-Tsukiya-Action") != "line-booking" or self.headers.get("Origin") != APP_BASE_URL.rstrip('/'):
+                return self.send_json({"error": "invalid origin or action"}, 403)
+            try:
+                data = self.read_json()
+                if not isinstance(data, dict):
+                    raise ValueError("入力形式を確認してください")
+                return self.send_json(line_reservations.retry_owner_batch(sys.modules[__name__], data.get("job_id")))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+
         if p == "/api/line/reservations/room-exception":
             if not self.auth():return self.send_json({"error":"unauthorized"},401)
             if self.headers.get("X-Tsukiya-Action") != "line-booking" or self.headers.get("Origin") != APP_BASE_URL.rstrip('/'):

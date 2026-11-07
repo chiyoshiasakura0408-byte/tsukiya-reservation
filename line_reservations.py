@@ -34,6 +34,60 @@ def owner_seat_area(label):
     return "COUNTER" if label == "カウンター" else "PRIVATE" + label[-1]
 
 
+OWNER_SEAT_SYNTAX_ERROR = '「予約変更 例外 #予約ID カウンター」または個室1〜3を指定してください'
+
+
+def owner_commands(text):
+    lines = [line.strip() for line in unicodedata.normalize('NFKC', text).splitlines() if line.strip()]
+    if not lines or not (lines[0].startswith('予約変更 例外') or OWNER_SPECIAL_ADD.fullmatch(lines[0])):
+        return []
+    if len(lines) > 20:
+        raise ValueError('一度に送信できる予約指示は20件までです')
+    payloads = []
+    for index, line in enumerate(lines, 1):
+        move = OWNER_SEAT_MOVE.fullmatch(line)
+        if move:
+            payloads.append({'action': 'change', 'owner_seat_move': True,
+                             'reservation_id': int(move[1]), 'seating_area': owner_seat_area(move[2])})
+            continue
+        add = OWNER_SPECIAL_ADD.fullmatch(line)
+        if not add:
+            raise ValueError(f'{index}行目の形式を確認してください。{OWNER_SEAT_SYNTAX_ERROR}')
+        date, start, end, seat, party, meals, name, phone = add.groups()
+        payloads.append({'action': 'add', 'special': True, 'owner_special_add': True,
+                         'visit_at': date + 'T' + start, 'special_end_time': end,
+                         'seating_area': owner_seat_area(seat), 'party_size': int(party),
+                         'special_meal_count': int(meals), 'guest_name': name,
+                         'phone': phone or '', 'note': ''})
+    return payloads
+
+
+def retry_owner_batch(app, ident):
+    if not isinstance(ident, str) or not re.fullmatch(r'[a-f0-9]{16}', ident):
+        raise ValueError('受付番号を確認してください')
+    c = concierge.connect(app.DB)
+    try:
+        schema(c)
+        with c:
+            c.execute('BEGIN IMMEDIATE')
+            paired = owner(c)
+            job = c.execute('SELECT * FROM line_booking_jobs WHERE id=?', (ident,)).fetchone()
+            if not paired or not job or job['origin'] != 'line' or job['actor'] != paired or job['message_id']:
+                raise ValueError('朝倉さんがLINEから送信した予約指示を確認できません')
+            items = c.execute('SELECT state,reservation_id,result FROM line_booking_items WHERE job_id=? ORDER BY rowid',
+                              (ident,)).fetchall()
+            if len(owner_commands(job['text'])) < 2:
+                raise ValueError('複数行の予約指示の受付を指定してください')
+            if job['state'] == 'pending' or items and job['state'] in ('extracted', 'done', 'failed'):
+                return {'state': job['state'], 'items': [dict(item) for item in items]}
+            if job['state'] != 'failed' or job['error'] != OWNER_SEAT_SYNTAX_ERROR:
+                raise ValueError('複数行の形式エラーで未処理の受付を指定してください')
+            c.execute("UPDATE line_booking_jobs SET state='pending',error=NULL WHERE id=?", (ident,))
+            return {'state': 'pending', 'items': []}
+    finally:
+        c.close()
+
+
 def move_owner_seat(app, c, rid, area):
     r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
     if not r or r["status"] != "CONFIRMED":
@@ -515,33 +569,21 @@ def process_job(app,job):
             with c:c.execute("UPDATE line_booking_jobs SET state='done' WHERE id=?",(job['id'],))
             return
         if not job['message_id'] and job['origin'] == 'line':
-            command = unicodedata.normalize('NFKC', text).strip()
-            move = OWNER_SEAT_MOVE.fullmatch(command)
-            add = OWNER_SPECIAL_ADD.fullmatch(command)
-            if move or add:
-                if move:
-                    payload = {'action':'change', 'owner_seat_move':True,
-                               'reservation_id':int(move[1]), 'seating_area':owner_seat_area(move[2])}
-                else:
-                    date, start, end, seat, party, meals, name, phone = add.groups()
-                    payload = {'action':'add', 'special':True, 'owner_special_add':True,
-                               'visit_at':date+'T'+start, 'special_end_time':end,
-                               'seating_area':owner_seat_area(seat), 'party_size':int(party),
-                               'special_meal_count':int(meals), 'guest_name':name,
-                               'phone':phone or '', 'note':''}
-                ident = job['id']+'-1'
+            payloads = owner_commands(text)
+            if payloads:
+                ids = [f"{job['id']}-{i}" for i in range(1, len(payloads) + 1)]
                 with c:
-                    if not c.execute("UPDATE line_booking_jobs SET state='extracted' WHERE id=? AND state='pending'",
+                    if not c.execute("UPDATE line_booking_jobs SET state='extracted',error=NULL WHERE id=? AND state='pending'",
                                      (job['id'],)).rowcount:
                         return
-                    c.execute("INSERT OR IGNORE INTO line_booking_items(id,job_id,payload) VALUES(?,?,?)",
-                              (ident,job['id'],json.dumps(payload,ensure_ascii=False)))
-                apply_item(app,ident)
+                    c.executemany("INSERT OR IGNORE INTO line_booking_items(id,job_id,payload) VALUES(?,?,?)",
+                                  [(ident, job['id'], json.dumps(payload, ensure_ascii=False))
+                                   for ident, payload in zip(ids, payloads)])
+                for ident in ids:
+                    apply_item(app, ident)
                 with c:
                     c.execute("UPDATE line_booking_jobs SET state='done' WHERE id=? AND state='extracted'", (job['id'],))
                 return
-            if command.startswith('予約変更 例外'):
-                raise ValueError('「予約変更 例外 #予約ID カウンター」または個室1〜3を指定してください')
         if note_dialog(app,c,job):return
         if process_note(app,c,job):return
         follow=re.match(r'^予約補足\s+([a-f0-9]{16}-\d+)\s+(.+)',text,re.S)
@@ -639,7 +681,7 @@ def drain(app):
         c=concierge.connect(app.DB);schema(c)
         try:
             # Resume persisted extracted items after a restart, without replaying writes.
-            pending=[r[0] for r in c.execute("SELECT id FROM line_booking_items WHERE state='pending' LIMIT 20")]
+            pending=[r[0] for r in c.execute("SELECT id FROM line_booking_items WHERE state='pending' ORDER BY rowid LIMIT 20")]
             job=c.execute("SELECT * FROM line_booking_jobs WHERE state='pending' ORDER BY created LIMIT 1").fetchone()
         finally:c.close()
         for ident in pending:apply_item(app,ident)

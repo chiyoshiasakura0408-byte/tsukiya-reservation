@@ -129,6 +129,31 @@ class Tests(unittest.TestCase):
     [('PRIVATE3',3,3,60,'CONFIRMED')])
   finally:c.close()
 
+ def test_retry_previously_rejected_batch_moves_before_adding(self):
+  c=run.con()
+  with c:row,_,_=lb.perform(run,c,item(seating_area='PRIVATE2'))
+  rid=row['id']
+  batch='\n'.join([
+   f'予約変更 例外 #{rid} カウンター',
+   '予約追加 特別枠 2099-11-10 18:00-19:00 個室2 4名 料理4人前 予約客A',
+   '予約追加 特別枠 2099-11-10 19:00-20:00 個室3 3名 料理3人前 予約客B',
+  ])
+  self.signed([self.event('old-batch',batch)])
+  ident=hashlib.sha256(b'old-batch').hexdigest()[:16]
+  with c:c.execute("UPDATE line_booking_jobs SET state='failed',error=? WHERE id=?",
+                   (lb.OWNER_SEAT_SYNTAX_ERROR,ident))
+  with patch.object(lb,'extract') as extract:
+   self.assertEqual(lb.retry_owner_batch(run,ident)['state'],'pending')
+   self.assertEqual(lb.retry_owner_batch(run,ident)['state'],'pending')
+   lb.drain(run)
+   extract.assert_not_called()
+  result=lb.retry_owner_batch(run,ident)
+  self.assertEqual(result['state'],'done')
+  self.assertEqual([i['state'] for i in result['items']],['done','done','done'])
+  self.assertEqual([r[0] for r in c.execute('SELECT seating_area FROM reservations ORDER BY id')],
+                   ['COUNTER','PRIVATE2','PRIVATE3'])
+  c.close()
+
  def test_line_phone_invoice_once_after_commit(self):
   self.signed([self.event()])
   def invoice(row):
