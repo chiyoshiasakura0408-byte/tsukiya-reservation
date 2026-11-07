@@ -7,14 +7,17 @@
   const key = 'tsukiya-web-card-session';
   const legacy = form.onsubmit;
   let configuration, session = null, card = null, busy = false, polling = null;
-  let pending = null, completed = false;
+  let pending = null, completed = false, checking = false;
+  const bankChoice = english ? null : document.getElementById('bankChoice');
   const panel = document.createElement('section');
   panel.className = 'card'; panel.hidden = true;
   panel.setAttribute('aria-label', t('カードのお支払い','Card payment'));
-  panel.innerHTML = '<h2></h2><div data-summary class="summary"></div><p data-timer class="sub"></p><div id="tsukiya-square-card" data-card></div><p data-message class="message" role="status"></p><button data-pay type="button" class="primary"></button> <button data-back type="button"></button>';
+  panel.innerHTML = '<h2></h2><div data-summary class="summary"></div><p data-timer class="sub"></p><div id="tsukiya-square-card" data-card></div><p data-message class="message" role="status"></p><button data-pay type="button" class="primary"></button> <button data-retry type="button" class="primary" hidden></button> <button data-bank type="button" hidden></button> <button data-back type="button"></button>';
   document.getElementById('details').after(panel);
   const q = selector => panel.querySelector(selector);
   q('h2').textContent = t('カードのお支払い','Card payment');
+  q('[data-retry]').textContent = t('別のカードで支払う','Try another card');
+  q('[data-bank]').textContent = '銀行振込に切り替える';
   q('[data-back]').textContent = t('入力に戻る','Back to your details');
   function message(text,error=false) { q('[data-message]').textContent=text; q('[data-message]').className='message'+(error?' error':''); }
   function save() { if (session) sessionStorage.setItem(key,JSON.stringify(session)); }
@@ -25,10 +28,15 @@
     if (!response.ok) { const e = new Error(json.error || t('処理結果をご確認ください。','Please check the payment status.')); e.status=response.status; throw e; }
     return json;
   }
+  function stopPolling() { clearInterval(polling); polling=null; }
   function controls(state) {
     const locked=['PAYING','UNKNOWN','REVIEW'].includes(state);
     q('[data-pay]').disabled=busy || state!=='HOLD';
-    q('[data-back]').hidden=locked || state==='PAID';
+    const canRecover=state==='FAILED' && !!pending && !!configuration?.enabled;
+    q('[data-retry]').hidden=!canRecover;
+    q('[data-bank]').hidden=!canRecover || !bankChoice || bankChoice.disabled;
+    q('[data-retry]').disabled=q('[data-bank]').disabled=busy;
+    q('[data-back]').hidden=locked || state==='PAID' || canRecover;
     form.querySelector('button[type="submit"]').disabled=!!session;
   }
   async function show(result) {
@@ -38,15 +46,27 @@
     q('[data-pay]').textContent=t('¥'+Number(result.amount).toLocaleString()+'を支払う','Pay JPY '+Number(result.amount).toLocaleString());
     controls(result.state);
     if(result.state==='PAID') {
-      clearInterval(polling); q('[data-timer]').textContent='';
+      stopPolling(); q('[data-timer]').textContent='';
       q('[data-card]').hidden=true; q('[data-pay]').hidden=true;
       q('h2').textContent=t('ご予約が確定しました','Your reservation is confirmed');
       message(t('決済が完了しました。予約番号：','Payment completed. Reservation reference: ')+result.reservation_id+t('。確認メールをお送りします。','. We will send a confirmation email.'));
       completed=true;clear(); return;
     }
     if(['FAILED','EXPIRED','CANCELLED'].includes(result.state)) {
-      clearInterval(polling); q('[data-pay]').hidden=true;
-      message(t('決済は完了しておらず、予約は確定していません。入力に戻り、空席を選び直してください。','Payment has not completed and your reservation is not confirmed. Return and select an available table.'),true); return;
+      stopPolling(); q('[data-timer]').textContent='';
+      q('[data-card]').hidden=true; q('[data-pay]').hidden=true;
+      if(result.state==='FAILED') {
+        const decline=result.decline_reason==='CVV_FAILURE'
+          ? t('セキュリティコードをご確認ください。','Please check your card security code.')
+          : t('カードの承認が得られませんでした。別のカードをお試しいただくか、カード発行会社にご確認ください。','Your card was declined. Try another card or contact your card issuer.');
+        const next=pending
+          ? t('ご予約はまだ確定していません。お支払い方法を選ぶと、空席を確認します。','Your reservation is not confirmed. Choose another card to check availability.')
+          : t('ご予約はまだ確定していません。入力に戻って空席を選び直してください。','Your reservation is not confirmed. Return to your details and select an available table.');
+        message(decline+' '+next,true);
+      } else {
+        message(t('決済は完了しておらず、予約は確定していません。入力に戻り、空席を選び直してください。','Payment has not completed and your reservation is not confirmed. Return and select an available table.'),true);
+      }
+      return;
     }
     if(result.state==='REVIEW') message(t('お支払いと予約の照合が必要です。追加のお支払いは行わず、店舗へお問い合わせください。','Your payment and reservation need to be reviewed. Please contact us without making another payment.'),true);
     else if(['PAYING','UNKNOWN'].includes(result.state)) message(t('決済結果を確認中です。重ねて支払わず、この画面でお待ちください。','We are checking the payment result. Please wait here and do not pay again.'));
@@ -54,12 +74,17 @@
     if(!polling) polling=setInterval(check,5000);
   }
   async function check() {
-    if(!session || busy)return;
+    if(!session || busy || checking)return;
+    const active=session, state=active.state;
+    const current=()=>session===active && active.state===state && !busy;
+    checking=true;
     try {
-      const result = session.id ? await api('/api/public/checkouts/'+session.id+'/status',{checkout_secret:session.secret}) : await api('/api/public/checkouts/lookup',{request_id:session.request_id,checkout_secret:session.secret});
-      session.amount=result.amount;await show(result);if(result.state==='HOLD'&&!card)await mount();
+      const result = active.id ? await api('/api/public/checkouts/'+active.id+'/status',{checkout_secret:active.secret}) : await api('/api/public/checkouts/lookup',{request_id:active.request_id,checkout_secret:active.secret});
+      if(!current())return;
+      active.amount=result.amount;await show(result);if(result.state==='HOLD'&&!card)await mount();
     }
-    catch(e){message(t('通信状態を確認しています。再度支払わず、この画面を保持してください。','Checking the connection. Keep this page open and do not pay again.'),true);}
+    catch(e){if(current())message(t('通信状態を確認しています。再度支払わず、この画面を保持してください。','Checking the connection. Keep this page open and do not pay again.'),true);}
+    finally{checking=false;}
   }
   function loadSdk(url) {
     return new Promise((resolve,reject)=>{const s=document.createElement('script');s.src=url;s.onload=resolve;s.onerror=()=>reject(new Error(t('カード画面を読み込めませんでした。時間をおいて再読み込みしてください。','The card form could not be loaded. Please reload later.')));document.head.appendChild(s);});
@@ -90,17 +115,61 @@
       else message(e.message,true);
     } finally { busy=false;if(session)controls(session.state); }
   });
+  async function resetCheckout() {
+    if(card){await card.destroy();card=null;}
+    stopPolling();clear();pending=null;panel.hidden=true;form.hidden=false;
+    q('[data-card]').hidden=false;q('[data-pay]').hidden=false;
+    document.getElementById('submit').disabled=false;
+    selected=null;requestId=null;document.getElementById('details').hidden=true;
+  }
   q('[data-back]').addEventListener('click',async()=>{
-    if(busy || !session || ['PAYING','UNKNOWN','REVIEW'].includes(session.state))return;
+    if(busy || !session || !['HOLD','FAILED','EXPIRED','CANCELLED'].includes(session.state))return;
     busy=true;
     try {
-      if(session.state==='HOLD') await api('/api/public/checkouts/'+session.id+'/cancel',{checkout_secret:session.secret});
-      clearInterval(polling);polling=null;clear();panel.hidden=true;form.hidden=false;
-      if(card){await card.destroy();card=null;}q('[data-card]').hidden=false;q('[data-pay]').hidden=false;
-      document.getElementById('submit').disabled=false;selected=null;requestId=crypto.randomUUID();document.getElementById('details').hidden=true;await load();
-    }catch(e){message(e.message,true);}finally{busy=false;}
+      if(session.state==='HOLD') {
+        const result=await api('/api/public/checkouts/'+session.id+'/cancel',{checkout_secret:session.secret});
+        if(result.state!=='CANCELLED' && result.state!=='EXPIRED'){await show(result);return;}
+      }
+      await resetCheckout();await load();
+    }catch(e){message(e.message,true);}
+    finally{busy=false;if(session)controls(session.state);}
   });
-  window.TsukiyaCheckout={canSelect:()=>{if(session||completed){panel.hidden=false;panel.scrollIntoView({behavior:'smooth'});return false;}return true;}};
+  async function recover(useBank) {
+    if(busy || session?.state!=='FAILED' || !pending || !configuration?.enabled ||
+        (useBank && (!bankChoice || bankChoice.disabled)))return;
+    const {date,seating_area,time,party_size}=pending;
+    const choice=useBank ? bankChoice : document.getElementById('cardChoice');
+    busy=true;controls('FAILED');
+    try {
+      await resetCheckout();
+      if(choice){choice.checked=true;choice.dispatchEvent(new Event('change',{bubbles:true}));}
+      document.getElementById('start').value=date;
+      document.getElementById('party').value=party_size;
+      const days=await load();
+      const day=days?.find(item=>item.date===date);
+      const available=days===availableDays && day?.slots?.[seating_area]?.[time]
+        && document.getElementById('start').value===date
+        && Number(document.getElementById('party').value)===party_size;
+      busy=false;
+      if(available) {
+        choose(date,seating_area,time);
+        const result=document.getElementById('result');
+        result.className='message';
+        result.textContent=useBank
+          ? '銀行振込に切り替えました。内容と振込名義をご確認のうえ、振込のお申し込みへお進みください。'
+          : t('内容をご確認のうえ、別のカードでお支払いにお進みください。','Review your reservation, then continue with another card.');
+      } else if(document.getElementById('start').value===date &&
+                Number(document.getElementById('party').value)===party_size && days) {
+        document.getElementById('calendarStatus').textContent=t('先ほどのお席はご利用いただけません。別の空席をお選びください。','Your previous table is no longer available. Please select another table.');
+      }
+    }catch(e){
+      if(session)message(e.message,true);
+      else document.getElementById('calendarStatus').textContent=e.message;
+    }finally{busy=false;if(session)controls(session.state);}
+  }
+  q('[data-retry]').addEventListener('click',()=>recover(false));
+  q('[data-bank]').addEventListener('click',()=>recover(true));
+  window.TsukiyaCheckout={canSelect:()=>{if(session||completed){panel.hidden=false;panel.scrollIntoView({behavior:'smooth'});return false;}return !busy;}};
   try {
     configuration=await (await fetch('/api/public/checkout-config?language='+(english?'en':'ja'))).json();
     if(configuration.environment==='sandbox'){const banner=document.createElement('p');banner.className='summary';banner.setAttribute('role','note');banner.textContent=t('Sandboxテスト環境です。実際の予約・課金は行われません。架空の情報とSquareテストカードのみでお試しください。','Sandbox test environment. No real booking or charge. Use fictitious details and Square test cards only.');document.querySelector('main').prepend(banner);}
@@ -119,7 +188,7 @@
   }catch(e){configuration=null;message(e.message,true);if(session){panel.hidden=false;form.hidden=true;}}
   form.onsubmit=async event=>{
     const bank=new FormData(form).get('bank_choice')==='on';
-    if(bank || !configuration?.enabled){if(session){event.preventDefault();return;}return legacy.call(form,event);}
+    if(bank || !configuration?.enabled){if(busy||session||completed){event.preventDefault();return;}return legacy.call(form,event);}
     event.preventDefault();if(busy||session||!selected)return;
     busy=true;document.getElementById('submit').disabled=true;
     const data=new FormData(form);
@@ -127,7 +196,7 @@
     pending={...selected,course,request_id:session.request_id,checkout_secret:session.secret,booking_language:english?'en':'ja',payment_method:'CARD',
       attribution:window.TsukiyaAttribution?.data(),guest_name:data.get('guest_name'),email:data.get('email'),phone:data.get('phone'),
       guest_note:data.get('guest_note'),celebration_items:data.getAll('celebration_items'),plate_message:data.get('plate_message'),cancellation_policy_accepted:data.get('cancellation_policy_accepted')==='on'};
-    try {const result=await api('/api/public/checkouts',pending);session.amount=result.amount;await show(result);await mount();panel.scrollIntoView({behavior:'smooth'});}
+    try {const result=await api('/api/public/checkouts',pending);session.amount=result.amount;await show(result);if(result.state==='HOLD')await mount();panel.scrollIntoView({behavior:'smooth'});}
     catch(e){
       if(!session?.id && e.status && e.status<500){clear();document.getElementById('submit').disabled=false;}
       panel.hidden=false;message(e.message,true);if(session&&!polling)polling=setInterval(check,5000);

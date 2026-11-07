@@ -94,7 +94,10 @@ def get_session(c, checkout_id, secret):
 
 
 def response(s):
-    return {k:s[k] for k in ('id', 'reservation_id', 'amount', 'state', 'expires', 'language')}
+    result = {k:s[k] for k in ('id', 'reservation_id', 'amount', 'state', 'expires', 'language')}
+    if s['state'] == 'FAILED':
+        result['decline_reason'] = 'CVV_FAILURE' if s.get('last_error') == 'CVV_FAILURE' else 'CARD_DECLINED'
+    return result
 
 
 def expire(app):
@@ -241,6 +244,7 @@ def submit(app,sid,claimed=False):
         c.execute('UPDATE web_checkouts SET lease_until=?,updated=? WHERE id=?',(time.time()+90,time.time(),sid))
         c.commit()
     finally:c.close()
+    submitting_payment=False
     try:
         body=json.loads(cipher().decrypt(s['encrypted_request'].encode()))
         if not s['order_id']:
@@ -259,21 +263,24 @@ def submit(app,sid,claimed=False):
                 c.execute('UPDATE reservations SET square_order_id=? WHERE id=?',(order['id'],s['reservation_id']))
                 c.commit()
             finally:c.close()
+        submitting_payment=True
         payment=app.square('/v2/payments',body=body)['payment']
+        submitting_payment=False
         finalize(app,payment)
     except Exception as exc:
         # Only explicit terminal declines are safe to release. Network/5xx and
         # even malformed success responses remain UNKNOWN, preserving the key.
         try:codes={e.get('code') for e in json.loads(str(exc)).get('errors',[])}
         except (ValueError,AttributeError,TypeError):codes=set()
-        failed=bool(codes) and codes.issubset(DECLINES)
+        failed=submitting_payment and bool(codes) and codes.issubset(DECLINES)
+        decline_reason = 'CVV_FAILURE' if codes & {'CVV_FAILURE', 'VERIFY_CVV_FAILURE'} else 'CARD_DECLINED'
         c=app.con()
         try:
             c.execute('BEGIN IMMEDIATE')
             current=c.execute('SELECT state FROM web_checkouts WHERE id=?',(sid,)).fetchone()
             if current and current['state'] in ('PAYING','UNKNOWN'):
                 c.execute('UPDATE web_checkouts SET state=?,last_error=?,updated=?,lease_until=?,encrypted_request=CASE WHEN ? THEN NULL ELSE encrypted_request END WHERE id=?',
-                          ('FAILED' if failed else 'UNKNOWN','CARD_DECLINED' if failed else 'RECONCILIATION_REQUIRED',time.time(),time.time()+90,failed,sid))
+                          ('FAILED' if failed else 'UNKNOWN',decline_reason if failed else 'RECONCILIATION_REQUIRED',time.time(),time.time()+90,failed,sid))
                 if failed:
                     c.execute("UPDATE reservations SET status='CANCELLED',cancellation_reason='CARD_DECLINED',cancelled_at=?,updated_at=? WHERE id=? AND status='PENDING'",(app.now_iso(),app.now_iso(),s['reservation_id']))
             c.commit()
