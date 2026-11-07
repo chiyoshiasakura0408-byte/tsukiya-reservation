@@ -91,6 +91,44 @@ class Tests(unittest.TestCase):
   finally:
    c.close()
 
+ def test_owner_seat_move_preserves_paid_booking_and_obeys_blocks(self):
+  c=run.con()
+  with c:
+   row,_,_=lb.perform(run,c,item(seating_area='PRIVATE2'))
+   rid=row['id']
+   c.execute("UPDATE reservations SET source='WEB_CARD',payment_confirmed_at='paid' WHERE id=?",(rid,))
+   before=dict(c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone())
+   for seat in range(1,8):
+    c.execute("INSERT INTO seat_blocks(visit_date,time_text,seating_area,seat_number,note,created_at) VALUES('2099-11-10','18:00','COUNTER',?,'test','now')",(seat,))
+  command=f'予約変更 例外 #{rid} カウンター'
+  with patch.object(lb,'extract') as extract:
+   self.signed([self.event('unauthorized-move',command,actor='U'+'b'*32)])
+   self.signed([self.event('blocked-move',command)])
+   lb.drain(run)
+   self.assertEqual(dict(c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone()),before)
+   with c:c.execute("DELETE FROM seat_blocks")
+   self.signed([self.event('authorized-move',command)])
+   lb.drain(run)
+   extract.assert_not_called()
+  after=dict(c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone());c.close()
+  self.assertEqual((after['seating_area'],after['counter_round']),('COUNTER',1))
+  for key in before.keys()-{'seating_area','counter_round','updated_at'}:
+   self.assertEqual(after[key],before[key],key)
+
+ def test_explicit_owner_special_add_allows_three_in_room_three(self):
+  command='予約追加 特別枠 2099-11-10 19:00-20:00 個室③ 3名 料理3人前 試験'
+  with patch.object(lb,'extract') as extract,patch.object(run,'make_invoice') as invoice:
+   self.signed([self.event('owner-special-1',command),self.event('owner-special-2',command)])
+   lb.drain(run)
+   extract.assert_not_called()
+   invoice.assert_not_called()
+  c=run.con()
+  try:
+   self.assertEqual([tuple(row) for row in c.execute(
+    'SELECT seating_area,party_size,special_meal_count,duration_minutes,status FROM reservations')],
+    [('PRIVATE3',3,3,60,'CONFIRMED')])
+  finally:c.close()
+
  def test_line_phone_invoice_once_after_commit(self):
   self.signed([self.event()])
   def invoice(row):

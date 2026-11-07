@@ -23,6 +23,43 @@ ROOM_EXCEPTION = re.compile(r'^(?:予約)?例外(?:として)?(?:\s+([a-f0-9]{16
 PREFIX = re.compile(r'^(予約追記|予約追加|予約変更|人数変更|予約取消|予約キャンセル|予約補足|予約再試行|予約)(?:\s|[：:、,]|$)')
 
 SPECIAL_ADD = re.compile(r"^予約追加[\s:：、,]+特別枠")
+OWNER_SEAT_MOVE = re.compile(r"予約変更 例外 #(\d{1,12}) (カウンター|個室[123])")
+OWNER_SPECIAL_ADD = re.compile(
+    r"予約追加 特別枠 (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})-(\d{2}:\d{2}) "
+    r"(個室[123]) ([2-8])名 料理([1-8])人前 (\S{1,80})(?: (\+?[0-9-]{8,20}))?"
+)
+
+
+def owner_seat_area(label):
+    return "COUNTER" if label == "カウンター" else "PRIVATE" + label[-1]
+
+
+def move_owner_seat(app, c, rid, area):
+    r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+    if not r or r["status"] != "CONFIRMED":
+        raise ValueError("確定済みの予約IDを確認してください")
+    before = dict(r)
+    if area == r["seating_area"]:
+        return before, before, "change"
+    when = app.parse_dt(r["visit_at"])
+    if when <= datetime.now(JST).replace(tzinfo=None) or r["vip_through"]:
+        raise ValueError("過去の予約・通し予約は席の例外変更の対象外です")
+    duration = int(r["duration_minutes"] or 150)
+    round_number = None
+    if area == "COUNTER":
+        round_number = {"18:00": 1, "20:30": 2}.get(when.strftime("%H:%M"))
+        if round_number is None or duration > 150:
+            raise ValueError("カウンターの変更先は18:00または20:30開始、150分以内に限ります")
+    ok, reason = app.availability_check(
+        c, area, r["visit_at"], r["party_size"], round_number, duration, rid,
+        allow_room_exception=True, restore_existing=True, special_slot=True,
+    )
+    if not ok:
+        raise ValueError(reason)
+    c.execute("UPDATE reservations SET seating_area=?,counter_round=?,updated_at=? WHERE id=?",
+              (area, round_number, app.now_iso(), rid))
+    return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()), before, "change"
+
 
 def schema(c):
     c.execute('CREATE TABLE IF NOT EXISTS line_room_exceptions(item_id TEXT PRIMARY KEY,actor TEXT NOT NULL,created REAL NOT NULL)')
@@ -215,7 +252,7 @@ def perform(app,c,x,allow_room_exception=False):
         base={**before,**{k:v for k,v in x.items() if v not in ('',None,[])}}
         if action=='party' and x.get('party_size') is None:raise ValueError('変更後の人数が必要です')
     area=base['seating_area']; visit=base['visit_at']; party=base['party_size']
-    exception=not special and allow_room_exception and area=='PRIVATE3' and 2<=party<=3
+    exception=allow_room_exception and area=='PRIVATE3' and 2<=party<=3
     if not exception and not app.public_party_allowed('PRIVATE1' if area=='PRIVATE' and party<=4 else 'PRIVATE3' if area=='PRIVATE' else area,party):raise ValueError('席種と人数が既存ルールに合いません')
     when=datetime.fromisoformat(visit)
     if when<=datetime.now(JST).replace(tzinfo=None):raise ValueError('過去の予約は処理できません')
@@ -295,7 +332,12 @@ def apply_item(app,ident):
         x=json.loads(item['payload'])
         try:
             approved=c.execute('SELECT 1 FROM line_room_exceptions WHERE item_id=? AND actor=?',(ident,owner(c))).fetchone()
-            row,before,action=perform(app,c,x,allow_room_exception=bool(approved))
+            owner_command = item['origin'] == 'line' and item['actor'] == owner(c) and bool(item['actor'])
+            if x.get('owner_seat_move') and owner_command:
+                row,before,action=move_owner_seat(app,c,x['reservation_id'],x['seating_area'])
+            else:
+                row,before,action=perform(app,c,x,allow_room_exception=bool(approved) or (
+                    owner_command and x.get('owner_special_add') is True))
             sync,done=sync_state(c,row)
             title={'add':'予約登録成功','change':'予約変更成功','party':'人数変更成功','cancel':'予約取消成功','duplicate':'登録済み（重複登録なし）'}[action]
             text=f"【{title}】\n{row['guest_name']}様\n{row['visit_at'].replace('T',' ')} / {row['party_size']}名\n{'本店・' if row['seating_area']=='COUNTER' else '別邸・'}{app.seating_label(row)}\n予約ID：{row['id']}\n予約区分：{'電話予約・請求処理待ち' if row['source']=='PHONE' and row['status']=='PENDING' else '電話予約' if row['source']=='PHONE' else '直接予約'}\nGoogleカレンダー：{sync}"
@@ -472,6 +514,34 @@ def process_job(app,job):
             approve_room_exception(app,ident,job['actor'],job['group_id'])
             with c:c.execute("UPDATE line_booking_jobs SET state='done' WHERE id=?",(job['id'],))
             return
+        if not job['message_id'] and job['origin'] == 'line':
+            command = unicodedata.normalize('NFKC', text).strip()
+            move = OWNER_SEAT_MOVE.fullmatch(command)
+            add = OWNER_SPECIAL_ADD.fullmatch(command)
+            if move or add:
+                if move:
+                    payload = {'action':'change', 'owner_seat_move':True,
+                               'reservation_id':int(move[1]), 'seating_area':owner_seat_area(move[2])}
+                else:
+                    date, start, end, seat, party, meals, name, phone = add.groups()
+                    payload = {'action':'add', 'special':True, 'owner_special_add':True,
+                               'visit_at':date+'T'+start, 'special_end_time':end,
+                               'seating_area':owner_seat_area(seat), 'party_size':int(party),
+                               'special_meal_count':int(meals), 'guest_name':name,
+                               'phone':phone or '', 'note':''}
+                ident = job['id']+'-1'
+                with c:
+                    if not c.execute("UPDATE line_booking_jobs SET state='extracted' WHERE id=? AND state='pending'",
+                                     (job['id'],)).rowcount:
+                        return
+                    c.execute("INSERT OR IGNORE INTO line_booking_items(id,job_id,payload) VALUES(?,?,?)",
+                              (ident,job['id'],json.dumps(payload,ensure_ascii=False)))
+                apply_item(app,ident)
+                with c:
+                    c.execute("UPDATE line_booking_jobs SET state='done' WHERE id=? AND state='extracted'", (job['id'],))
+                return
+            if command.startswith('予約変更 例外'):
+                raise ValueError('「予約変更 例外 #予約ID カウンター」または個室1〜3を指定してください')
         if note_dialog(app,c,job):return
         if process_note(app,c,job):return
         follow=re.match(r'^予約補足\s+([a-f0-9]{16}-\d+)\s+(.+)',text,re.S)
