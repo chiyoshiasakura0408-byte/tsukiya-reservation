@@ -16,10 +16,10 @@
     </svg>
     <h2 id="guest-passkeys-heading">${t('まいど おおきに', '「Maido Ookini！」')}</h2>
     ${en ? '<p class="guest-passkeys-subtitle">- Welcome Back -</p>' : ''}
-    <p>${t('以前ご予約いただいたお客様は、端末の認証で登録情報を呼び出せます。', 'Returning guests can securely retrieve their saved information using their device’s authentication.')}</p>
+    <p>${t('パスキーを登録されたお客様は登録情報を呼び出せます。', 'Returning guests can securely retrieve their saved information using their device’s authentication.')}</p>
     <button type="button" class="primary" data-retrieve>${t('登録情報を呼び出す', 'Retrieve My Information')}</button>
     <p class="sub">${t('Face ID・指紋認証・端末のPINなどに対応', 'Face ID · Fingerprint · Device PIN')}</p>
-    <button type="button" data-first>${t('初めてご予約のお客様', 'First-Time Guests')}</button>
+    ${en ? '<button type="button" data-first>First-Time Guests</button>' : ''}
     <p data-feedback role="status" aria-live="polite"></p>
     <details data-setup>
       <summary>${t('パスキーを登録・再登録する', 'Set up or replace a passkey')}</summary>
@@ -136,7 +136,7 @@
     }
     filled = {};
   }
-  query('[data-first]').addEventListener('click', () => {
+  query('[data-first]')?.addEventListener('click', () => {
     clearAutofill();
     status('');
     focusBooking();
@@ -152,7 +152,8 @@
       && new URLSearchParams(location.search).get('device-test') === '1') {
     const retrieveButton = query('[data-retrieve]');
     retrieveButton.hidden = true;
-    query('[data-first]').hidden = true;
+    const firstButton = query('[data-first]');
+    if (firstButton) firstButton.hidden = true;
     query('[data-setup]').hidden = true;
     const registerButton = document.createElement('button');
     registerButton.type = 'button';
