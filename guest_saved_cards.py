@@ -12,7 +12,11 @@ SAVE_LOCKS = tuple(Lock() for _ in range(16))
 
 
 def enabled():
-    return os.getenv("GUEST_SAVED_CARDS_ENABLED") == "1"
+    flag = os.getenv("GUEST_SAVED_CARDS_ENABLED")
+    if flag is not None:
+        return flag == "1"
+    from guest_email_enrollment import secret_for_origin
+    return bool(secret_for_origin(os.getenv("APP_BASE_URL", "").rstrip("/")))
 
 
 def schema(db):
@@ -31,7 +35,7 @@ def grant(app, db, secret, row, credential_id, now, *, save_for=None):
     }, now, 1200)
 
 
-def authorize(app, db, token, reservation=None, *, saving=False):
+def authorize(app, db, token, reservation=None, *, saving=False, require_scoped=False):
     settings = guest_passkeys.configuration(app)
     if not enabled() or not settings or not isinstance(token, str) or not guest_passkeys.TOKEN.fullmatch(token):
         raise guest_passkeys.Rejected()
@@ -42,6 +46,8 @@ def authorize(app, db, token, reservation=None, *, saving=False):
     if not attempt:
         raise guest_passkeys.Rejected()
     data = json.loads(attempt["payload"])
+    if require_scoped and data.get("save_for") is None:
+        raise guest_passkeys.Rejected()
     if data.get("save_for") is not None and (
         not saving or not reservation or data["save_for"] != reservation["id"]
     ):

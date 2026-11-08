@@ -207,9 +207,9 @@ def payment_event(app,event):
     finally:c.close()
 
 
-def send_email(app,to,body,reservation=None):
+def send_email(app,to,body,reservation=None,*,subject=None):
     if not all((app.SMTP_HOST,app.SMTP_USER,app.SMTP_PASS,app.MAIL_FROM)):raise RuntimeError('SMTP not configured')
-    message=EmailMessage();message['From']=app.mail_sender();message['To']=to;message['Subject']='西天満つきやからのご案内 / Tsukiya at Nishi-Tenma';message.set_content(body)
+    message=EmailMessage();message['From']=app.mail_sender();message['To']=to;message['Subject']=subject or '西天満つきやからのご案内 / Tsukiya at Nishi-Tenma';message.set_content(body)
     with smtplib.SMTP(app.SMTP_HOST,app.SMTP_PORT,timeout=20) as smtp:
         smtp.starttls();smtp.login(app.SMTP_USER,app.SMTP_PASS);smtp.send_message(message)
     if reservation is not None:email_sms.accepted(app,reservation,message,'guest-service')

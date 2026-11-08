@@ -108,8 +108,15 @@
         };
       }
       if (saveIntent?.id === session.id) {
-        paidCard = {...saveIntent, secret:session.secret};
-        finishCardSave();
+        if (document.body.hasAttribute('data-passkey-email-only') && !saveIntent.grant) {
+          const status = q('[data-card-save-result]');
+          status.hidden = false;
+          status.textContent = t('別メールのリンクからパスキーを登録すると、今回のカードを保存できます。',
+            'Set up your passkey using the link in the separate email to save this card.');
+        } else {
+          paidCard = {...saveIntent, secret:session.secret};
+          finishCardSave();
+        }
       }
       saveIntent = null;
       completed=true;clear(); return;

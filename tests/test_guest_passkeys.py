@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from contextlib import closing
@@ -57,6 +58,9 @@ class PasskeyTests(unittest.TestCase):
 
     def enroll(self, ref="100", email="one@example.test", label=b"credential-one", **options):
         start = self.registration_options(ref, email)
+        return self.complete_registration(start, label, **options)
+
+    def complete_registration(self, start, label=b"credential-one", **options):
         key = ec.generate_private_key(ec.SECP256R1())
         public = key.public_key().public_numbers()
         cose = cbor2.dumps({1: 2, 3: -7, -1: 1, -2: public.x.to_bytes(32), -3: public.y.to_bytes(32)})
@@ -82,6 +86,31 @@ class PasskeyTests(unittest.TestCase):
                 "signature": encode(signature), "userHandle": handle,
             },
         }}
+
+    def test_second_email_only_after_confirmation_and_single_use(self):
+        import guest_email_enrollment as email
+        with patch.object(run, "APP_BASE_URL", self.origin), patch.object(pk, "configuration", return_value=self.settings), patch.dict(
+            os.environ, {"GUEST_EMAIL_ENROLLMENT_ENABLED": "1", "CHECKOUT_TOKEN_ENCRYPTION_KEY": "x"*44}
+        ), patch.object(run.guest_service, "send_email") as delivery:
+            email.send(run, 100)
+            delivery.assert_not_called()
+            with closing(run.con()) as db, db:
+                db.execute("UPDATE reservations SET confirmation_sent_at='now' WHERE id=100")
+            email.send(run, 100)
+            email.send(run, 100)
+            delivery.assert_called_once()
+            self.assertEqual(delivery.call_args.args[1], "one@example.test")
+            token = delivery.call_args.args[2].split("/passkey-enroll#",1)[1].splitlines()[0]
+            with self.assertRaises(pk.Rejected):
+                self.call("verify", reference="100", email="one@example.test", phone="09011112222")
+            invite = self.call("email-options", token=token)
+            second_tab = self.call("email-options", token=token)
+            account = self.complete_registration(invite)
+            with self.assertRaises(pk.Rejected):
+                self.call("email-options", token=token)
+            with self.assertRaises(pk.Rejected):
+                self.complete_registration(second_tab, b"replacement")
+            self.assertEqual(self.call("login", **self.signed_login(*account))["guest_name"], "Guest One")
 
     def test_signed_authentication_and_replay(self):
         params = self.signed_login(*self.enroll())

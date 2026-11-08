@@ -1,6 +1,7 @@
 import email_sms
 import web_checkout
 import guest_passkeys
+import guest_email_enrollment
 import staff_mfa
 import reservation_changes
 import customer_party
@@ -2214,6 +2215,11 @@ def deliver_confirmation(reservation, retry_failed=False):
                     ok, error = send_confirmation(row)
                     c.execute("UPDATE reservations SET confirmation_email_status=?,confirmation_sent_at=?,last_error=? WHERE id=?", ("SENT" if ok else "ERROR", now_iso() if ok else None, None if ok else error, rid))
                     c.commit()
+                    if ok:
+                        try:
+                            guest_email_enrollment.send(sys.modules[__name__], rid)
+                        except Exception as exc:
+                            print(f"guest-email-enrollment: {type(exc).__name__}", flush=True)
             return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
         finally:
             c.close()
@@ -2439,7 +2445,7 @@ class Handler(
         if 'aria-label="管理画面"' in text:
             text += "<script>" + (BASE / "public" / "refund-badge.js").read_text() + "</script>"
             text += "<script>" + (BASE / "public" / "party-adjustments.js").read_text() + "</script>"
-        payment_page = urlparse(self.path).path in ("/book", "/book-en", "/book.html", "/book-en.html")
+        payment_page = urlparse(self.path).path in ("/book", "/book-en", "/book.html", "/book-en.html", "/passkey-enroll")
         if payment_page:
             text, payment_nonce = web_checkout.secure_page(text)
         b = text.encode("utf-8")
@@ -2773,6 +2779,11 @@ class Handler(
             if requested: self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
             self.end_headers(); self.wfile.write(b[start:end+1]); return
 
+        if p == "/passkey-enroll":
+            if not guest_passkeys.configuration(sys.modules[__name__]) or not guest_email_enrollment.secret_for_origin(APP_BASE_URL):
+                return self.send_error(404)
+            return self.send_html((BASE / "public" / "passkey-enroll.html").read_text(encoding="utf-8"), loader=False)
+
         if p in ("/book", "/book-test"):
             if p == "/book-test" and not self.auth():
                 return self.redirect("/login")
@@ -2783,6 +2794,8 @@ class Handler(
                 page = page.replace("selected.party_size*selected.price_per_person", "1")
                 page = page.replace("/api/public/reservations", "/api/test/reservations")
             if p == "/book" and guest_passkeys.configuration(sys.modules[__name__]):
+                if guest_email_enrollment.secret_for_origin(APP_BASE_URL):
+                    page = page.replace("<body>", '<body data-passkey-email-only>', 1)
                 page = page.replace("</head>", '<link rel="stylesheet" href="/guest-passkeys.css">\n'
                                     '<script defer src="/guest-passkeys.js"></script>\n</head>', 1)
             return self.send_html(page)

@@ -283,6 +283,26 @@ def save_paid_card(app, sid, secret, grant):
         c.close()
 
 
+
+def save_enrolled_card(app, reservation_id, grant):
+    if type(reservation_id) is not int or not 0 < reservation_id < 10**18:
+        raise guest_passkeys.Rejected()
+    c = app.con()
+    try:
+        reservation = c.execute("SELECT * FROM reservations WHERE id=? AND status='CONFIRMED'",
+                                (reservation_id,)).fetchone()
+        checkout = c.execute("""SELECT * FROM web_checkouts WHERE reservation_id=?
+            AND state='PAID' AND environment=? AND card_save_consent=1""",
+            (reservation_id, app.SQUARE_ENV)).fetchone()
+        if not reservation or not checkout:
+            raise guest_passkeys.Rejected()
+        customer = guest_saved_cards.authorize(app, c, grant, reservation, saving=True, require_scoped=True)
+        with guest_saved_cards.SAVE_LOCKS[customer["id"] % len(guest_saved_cards.SAVE_LOCKS)], c:
+            guest_saved_cards.save(app, c, customer, checkout)
+        return {"ok": True}
+    finally:
+        c.close()
+
 def submit(app,sid,claimed=False):
     c=app.con()
     try:

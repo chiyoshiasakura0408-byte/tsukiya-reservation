@@ -150,6 +150,11 @@
     status(t('このブラウザでは端末認証を利用できません。予約情報は手入力できます。', 'Device authentication is unavailable in this browser. You can still enter your details manually.'));
     return;
   }
+  if (document.body.hasAttribute('data-passkey-email-only')) {
+    setup.hidden = true;
+    query('[data-retrieve]').addEventListener('click', () => run(() => retrieve(false)));
+    return;
+  }
   window.TsukiyaPasskeySetup = (container, details) => {
     const request = query('[data-request]');
     for (const name of ['reference', 'email', 'phone']) {

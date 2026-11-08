@@ -7,6 +7,7 @@ import re
 import secrets
 import sqlite3
 import time
+import guest_email_enrollment as email_enrollment
 from contextlib import closing
 from urllib.parse import urlsplit
 
@@ -34,6 +35,10 @@ class Rejected(Exception):
 def configuration(app):
     origin = app.APP_BASE_URL
     url = urlsplit(origin)
+    email_secret = email_enrollment.secret_for_origin(origin)
+    if (email_secret and origin == "https://" + (url.hostname or "")
+            and all((app.SMTP_HOST, app.SMTP_USER, app.SMTP_PASS, app.MAIL_FROM))):
+        return origin, url.hostname, email_secret
     secret = os.getenv("GUEST_PASSKEY_SECRET", "")
     if (os.getenv("GUEST_PASSKEY_ENABLED") == "1" and len(secret) >= 32
             and url.scheme == "https" and url.hostname and url.netloc == url.hostname
@@ -85,6 +90,7 @@ def connect(app):
             PRIMARY KEY (bucket, window)
         );
     """)
+    email_enrollment.schema(db)
     return db
 
 
@@ -206,6 +212,10 @@ def prepare_registration(app, db, secret, rp, data, now):
     account = db.execute("SELECT user_handle FROM guest_passkey_accounts WHERE customer_id=?",
                          (row["id"],)).fetchone()
     handle = bytes(account["user_handle"]) if account else secrets.token_bytes(32)
+    return registration_options(db, secret, rp, pending, handle, now)
+
+
+def registration_options(db, secret, rp, pending, handle, now):
     options = generate_registration_options(
         rp_id=rp, rp_name="Nishitenma Tsukiya", user_id=handle,
         user_name="Tsukiya booking guest", timeout=120000,
@@ -215,8 +225,27 @@ def prepare_registration(app, db, secret, rp, data, now):
     ticket = issue(db, secret, "register", {
         "challenge": options.challenge.hex(), "handle": handle.hex(),
         "reservation_id": pending["reservation_id"], "identity": pending["identity"],
+        "email_invite": pending.get("email_invite"),
     }, now, 180)
     return {"ticket": ticket, "options": json.loads(options_to_json(options))}
+
+
+
+def prepare_email_registration(app, db, secret, rp, data, now):
+    token = value(data, "token", TOKEN)
+    key = digest(secret, "email-invite", token)
+    invite = db.execute("SELECT * FROM guest_email_invites WHERE token_hash=? AND used=0 AND expires>?",
+                        (key, now)).fetchone()
+    if not invite:
+        raise Rejected()
+    row = identity(app, db, invite["reservation_id"])
+    if not row or fingerprint(app, secret, row) != invite["identity"]:
+        raise Rejected()
+    if db.execute("SELECT 1 FROM guest_passkey_accounts WHERE customer_id=?", (row["id"],)).fetchone():
+        raise Rejected()
+    return registration_options(db, secret, rp, {
+        "reservation_id": invite["reservation_id"], "identity": invite["identity"], "email_invite": key,
+    }, secrets.token_bytes(32), now)
 
 
 def same_context(raw):
@@ -238,6 +267,14 @@ def register(app, db, origin, rp, secret, data, now):
     row = identity(app, db, pending["reservation_id"])
     if not row or fingerprint(app, secret, row) != pending["identity"]:
         raise Rejected()
+    if pending.get("email_invite"):
+        if (db.execute("SELECT 1 FROM guest_passkey_accounts WHERE customer_id=?", (row["id"],)).fetchone()
+                or db.execute("SELECT 1 FROM guest_saved_cards WHERE customer_id=?", (row["id"],)).fetchone()):
+            raise Rejected()
+        if not db.execute("""UPDATE guest_email_invites SET used=1
+            WHERE token_hash=? AND reservation_id=? AND customer_id=? AND used=0 AND expires>?""",
+            (pending["email_invite"], pending["reservation_id"], row["id"], now)).rowcount:
+            raise Rejected()
     db.execute("""INSERT INTO guest_passkey_accounts VALUES(?,?,?,?)
         ON CONFLICT(customer_id) DO UPDATE SET reservation_id=excluded.reservation_id,
         user_handle=excluded.user_handle,identity=excluded.identity""",
@@ -252,6 +289,14 @@ def register(app, db, origin, rp, secret, data, now):
         # this completed reservation. Reuse still requires a signed login.
         result["card_save_grant"] = guest_saved_cards.grant(
             app, db, secret, row, credential.credential_id, now, save_for=pending["reservation_id"])
+        if pending.get("email_invite"):
+            checkout = db.execute("""SELECT id FROM web_checkouts
+                WHERE reservation_id=? AND state='PAID' AND card_save_consent=1""",
+                (pending["reservation_id"],)).fetchone()
+            if not checkout:
+                result.pop("card_save_grant")
+            else:
+                result["save_reservation_id"] = pending["reservation_id"]
     return result
 
 
@@ -299,6 +344,14 @@ def process(app, action, data, source, settings):
         db.execute("DELETE FROM guest_passkey_attempts WHERE expires<=?", (now,))
         db.execute("DELETE FROM guest_passkey_limits WHERE window<?", (now - 7200,))
         db.commit()
+        email_mode = bool(email_enrollment.secret_for_origin(app.APP_BASE_URL))
+        if action == "email-options" and email_mode:
+            return prepare_email_registration(app, db, secret, rp, data, now)
+        if action == "email-save-card" and email_mode:
+            import web_checkout
+            return web_checkout.save_enrolled_card(app, data.get("reservation_id"), data.get("card_grant"))
+        if email_mode and action in {"verify", "register-options"}:
+            raise Rejected(404)
         if action == "verify":
             charge(db, digest(secret, "verify-client", source), now, 300, 30)
             return begin_verification(app, db, secret, data, now)
