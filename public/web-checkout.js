@@ -194,7 +194,7 @@
     const data=new FormData(form);
     if(!session){const bytes=crypto.getRandomValues(new Uint8Array(32));session={request_id:requestId,secret:Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join(''),state:'CREATING'};save();}
     pending={...selected,course,request_id:session.request_id,checkout_secret:session.secret,booking_language:english?'en':'ja',payment_method:'CARD',
-      attribution:window.TsukiyaAttribution?.data(),guest_name:data.get('guest_name'),email:data.get('email'),phone:data.get('phone'),
+      attribution:window.TsukiyaAttribution?.data(),guest_name:data.get('guest_name'),email:data.get('email'),phone:data.get('phone'),receipt_name:data.get('receipt_name')||'',
       guest_note:data.get('guest_note'),celebration_items:data.getAll('celebration_items'),plate_message:data.get('plate_message'),cancellation_policy_accepted:data.get('cancellation_policy_accepted')==='on'};
     try {const result=await api('/api/public/checkouts',pending);session.amount=result.amount;await show(result);if(result.state==='HOLD')await mount();panel.scrollIntoView({behavior:'smooth'});}
     catch(e){

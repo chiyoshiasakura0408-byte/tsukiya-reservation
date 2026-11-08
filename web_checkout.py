@@ -3,6 +3,8 @@
 The legacy invoice path is independent. New reservations use source WEB_CARD;
 all seat writers continue to share reservations and BEGIN IMMEDIATE.
 """
+
+import guest_passkeys
 import payment_terms
 import hashlib
 import hmac
@@ -134,6 +136,7 @@ def create(app, x):
             raise ValueError()
         name,email,phone = name.strip(),email.strip().lower(),phone.strip()
         note,items,plate = app.guest_requests(x)
+        receipt_name = guest_passkeys.receipt_name(x)
         today = datetime.now(timezone(timedelta(hours=9))).date()
         if (type(party) is not int or not app.public_party_allowed(area,party)
                 or language not in ('ja','en') or day > today + timedelta(days=365)
@@ -146,7 +149,10 @@ def create(app, x):
     except (ValueError, TypeError, AttributeError, KeyError):
         raise CheckoutError('日付・人数・連絡先・キャンセル規定をご確認ください。') from None
     # Bind all accepted booking values. Arbitrary client amount/location is ignored.
-    canonical = json.dumps([str(day),clock,area,party,language,name,email,phone,note,items,plate],ensure_ascii=False)
+    booking_fields = [str(day), clock, area, party, language, name, email, phone, note, items, plate]
+    if receipt_name:
+        booking_fields.append(receipt_name)
+    canonical = json.dumps(booking_fields, ensure_ascii=False)
     payload_hash = hashlib.sha256(canonical.encode()).hexdigest()
     expire(app)
     c = app.con()
@@ -176,6 +182,7 @@ def create(app, x):
             VALUES(?,?,?,?,?,?,?,?,?,?,?,150,'PENDING',?,?,?,?,?,?,?)''',
             (SOURCE,name,phone,email,visit,party,course,language,amount,area,round_number,
              'web-card:'+request,now,now,now,note,items,plate)).lastrowid
+        guest_passkeys.save_receipt_name(c, rid, receipt_name)
         payment_terms.register(c,rid,now)
         app.marketing.bind(c,rid,x.get('attribution'),now,False)
         sid=uuid.uuid4().hex;ts=time.time();location=config(app,language)['location_id']
