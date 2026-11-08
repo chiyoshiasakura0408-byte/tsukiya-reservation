@@ -23,14 +23,15 @@ def schema(db):
     )""")
 
 
-def grant(app, db, secret, row, credential_id, now):
+def grant(app, db, secret, row, credential_id, now, *, save_for=None):
     return guest_passkeys.issue(db, secret, "saved-card", {
         "customer": row["id"], "credential": credential_id.hex(),
         "identity": guest_passkeys.fingerprint(app, secret, row),
+        "save_for": save_for,
     }, now, 1200)
 
 
-def authorize(app, db, token, reservation=None):
+def authorize(app, db, token, reservation=None, *, saving=False):
     settings = guest_passkeys.configuration(app)
     if not enabled() or not settings or not isinstance(token, str) or not guest_passkeys.TOKEN.fullmatch(token):
         raise guest_passkeys.Rejected()
@@ -41,6 +42,10 @@ def authorize(app, db, token, reservation=None):
     if not attempt:
         raise guest_passkeys.Rejected()
     data = json.loads(attempt["payload"])
+    if data.get("save_for") is not None and (
+        not saving or not reservation or data["save_for"] != reservation["id"]
+    ):
+        raise guest_passkeys.Rejected()
     current = db.execute("""SELECT a.reservation_id FROM guest_passkey_accounts a
         JOIN guest_passkey_credentials k USING(customer_id)
         WHERE a.customer_id=? AND k.credential_id=? AND a.identity=?""",

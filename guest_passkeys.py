@@ -245,7 +245,14 @@ def register(app, db, origin, rp, secret, data, now):
     db.execute("DELETE FROM guest_passkey_credentials WHERE customer_id=?", (row["id"],))
     db.execute("INSERT INTO guest_passkey_credentials VALUES(?,?,?,?)",
                (credential.credential_id, row["id"], credential.credential_public_key, credential.sign_count))
-    return {"ok": True}
+    result = {"ok": True}
+    import guest_saved_cards
+    if guest_saved_cards.enabled():
+        # Enrollment's dual-channel proof can authorize storing the card for
+        # this completed reservation. Reuse still requires a signed login.
+        result["card_save_grant"] = guest_saved_cards.grant(
+            app, db, secret, row, credential.credential_id, now, save_for=pending["reservation_id"])
+    return result
 
 
 def authenticate(app, db, origin, rp, secret, data, now):

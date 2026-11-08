@@ -82,7 +82,7 @@ class CheckoutTest(unittest.TestCase):
      return {'card':{'id':'ccof:fixture','customer_id':'customer-fixture','enabled':True,'last_4':'1234','card_brand':'VISA'}}
     return gateway(path,body,method)
    with patch.object(run,'square',side_effect=square) as client:
-    expected={'saved_card':{'id':'ccof:fixture','brand':'VISA','last4':'1234'}}
+    expected={'ok':True}
     self.assertEqual(wc.save_paid_card(run,second['id'],next_booking['checkout_secret'],grant),expected)
     self.assertEqual(wc.save_paid_card(run,second['id'],next_booking['checkout_secret'],grant),expected)
     self.assertEqual(sum(call.args[0]=='/v2/cards' for call in client.call_args_list),1)
@@ -92,6 +92,11 @@ class CheckoutTest(unittest.TestCase):
     returning,third=self.book(date='2027-01-16',guest_name=x['guest_name'],email=x['email'],phone=x['phone'])
     with self.assertRaises(wc.CheckoutError):
      wc.pay(run,third['id'],returning['checkout_secret'],'ccof:fixture#verf:verified',card_grant=grant,saved_card_id='ccof:someone-else')
+    with closing(pk.connect(run)) as db, db:
+     enroll_grant=cards.grant(run,db,secret,profile,b'credential',int(time.time()),save_for=second['reservation_id'])
+    self.assertEqual(wc.save_paid_card(run,second['id'],next_booking['checkout_secret'],enroll_grant),expected)
+    with self.assertRaises(wc.CheckoutError):
+     wc.pay(run,third['id'],returning['checkout_secret'],'ccof:fixture#verf:verified',card_grant=enroll_grant,saved_card_id='ccof:fixture')
     with self.assertRaises(wc.CheckoutError):
      wc.pay(run,third['id'],returning['checkout_secret'],'ccof:other#verf:verified',card_grant=grant,saved_card_id='ccof:fixture')
     with self.assertRaises(wc.CheckoutError):

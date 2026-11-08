@@ -19,6 +19,14 @@
     <label data-save-card hidden><input type="checkbox"> <span></span><small class="sub" style="display:block"></small></label>
     <p data-card-save-result class="sub" role="status" hidden></p>`;
   panel.querySelector('[data-card]').after(cardOptions);
+  const enrollment = document.createElement('div');
+  enrollment.className = 'guest-passkeys';
+  const enrollButton = document.createElement('button');
+  enrollButton.type = 'button';
+  enrollButton.hidden = true;
+  enrollButton.textContent = t('次回のためにパスキーを登録する','Set up a passkey for your next booking');
+  enrollment.append(enrollButton);
+  panel.append(enrollment);
   document.getElementById('details').after(panel);
   const q = selector => panel.querySelector(selector);
   q('h2').textContent = t('カードのお支払い','Card payment');
@@ -61,15 +69,15 @@
     q('[data-back]').hidden=locked || state==='PAID' || canRecover;
     form.querySelector('button[type="submit"]').disabled=!!session;
   }
-  function finishCardSave() {
+  function finishCardSave(event) {
     const status = q('[data-card-save-result]');
     const intent = paidCard;
     if (!intent) return;
-    const grant = intent.grant || window.TsukiyaGuestCards?.grant;
+    const grant = intent.grant || event?.detail?.grant || window.TsukiyaGuestCards?.grant;
     status.hidden = false;
     if (!grant) {
-      status.textContent = t('カードを保存するには、上の案内からパスキーを登録し、登録情報を呼び出してください。',
-        'To save your card, set up a passkey above and retrieve your saved information.');
+      status.textContent = t('カードを保存するには、パスキーを登録してください。',
+        'Set up a passkey to save your card.');
       return;
     }
     paidCard = null;
@@ -91,6 +99,14 @@
       q('[data-card]').hidden=true; q('[data-pay]').hidden=true;
       q('h2').textContent=t('ご予約が確定しました','Your reservation is confirmed');
       message(t('決済が完了しました。予約番号：','Payment completed. Reservation reference: ')+result.reservation_id+t('。確認メールをお送りします。','. We will send a confirmation email.'));
+      if (pending && window.TsukiyaPasskeySetup && !cardAccount) {
+        const {email, phone} = pending;
+        enrollButton.hidden = false;
+        enrollButton.onclick = () => {
+          enrollButton.hidden = true;
+          window.TsukiyaPasskeySetup(enrollment, {reference:String(result.reservation_id), email, phone});
+        };
+      }
       if (saveIntent?.id === session.id) {
         paidCard = {...saveIntent, secret:session.secret};
         finishCardSave();

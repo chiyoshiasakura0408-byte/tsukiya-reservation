@@ -273,9 +273,10 @@ def save_paid_card(app, sid, secret, grant):
         if not reservation or reservation["status"] != "CONFIRMED":
             raise CheckoutError("カード保存には確定済みのご予約が必要です。", 409)
         try:
-            customer = guest_saved_cards.authorize(app, c, grant, reservation)
+            customer = guest_saved_cards.authorize(app, c, grant, reservation, saving=True)
             with guest_saved_cards.SAVE_LOCKS[customer["id"] % len(guest_saved_cards.SAVE_LOCKS)], c:
-                return {"saved_card": guest_saved_cards.save(app, c, customer, checkout)}
+                guest_saved_cards.save(app, c, customer, checkout)
+            return {"ok": True}
         except guest_passkeys.Rejected:
             raise CheckoutError("カード保存にはパスキーでの本人確認が必要です。", 403) from None
     finally:

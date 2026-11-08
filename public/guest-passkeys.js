@@ -46,7 +46,8 @@
   receipt.append(receiptInput);
   booking.elements.email.closest('label').after(receipt);
 
-  const query = selector => panel.querySelector(selector);
+  const setup = panel.querySelector('[data-setup]');
+  const query = selector => panel.querySelector(selector) || (setup.matches(selector) ? setup : setup.querySelector(selector));
   const feedback = query('[data-feedback]');
   const codes = query('[data-codes]');
   let verificationTicket = '';
@@ -88,7 +89,7 @@
     if (busy) return;
     busy = true;
     status('');
-    const buttons = panel.querySelectorAll('button:not([data-first])');
+    const buttons = new Set([...panel.querySelectorAll('button:not([data-first])'), ...setup.querySelectorAll('button')]);
     buttons.forEach(button => { button.disabled = true; });
     try {
       await operation();
@@ -149,6 +150,20 @@
     status(t('このブラウザでは端末認証を利用できません。予約情報は手入力できます。', 'Device authentication is unavailable in this browser. You can still enter your details manually.'));
     return;
   }
+  window.TsukiyaPasskeySetup = (container, details) => {
+    const request = query('[data-request]');
+    for (const name of ['reference', 'email', 'phone']) {
+      request.elements[name].value = details[name];
+      request.elements[name].closest('label').hidden = true;
+    }
+    setup.open = true;
+    setup.querySelector('summary').hidden = true;
+    setup.querySelector('p').hidden = true;
+    query('[data-forget]').hidden = true;
+    container.append(setup, feedback);
+    request.querySelector('button').textContent = t('確認コードを再送する','Resend verification codes');
+    request.requestSubmit();
+  };
   query('[data-retrieve]').addEventListener('click', () => run(() => retrieve(false)));
   query('[data-forget]').addEventListener('click', () => run(() => retrieve(true)));
   query('[data-request]').addEventListener('submit', event => {
@@ -179,9 +194,13 @@
       options.user.id = fromBase64(options.user.id);
       options.excludeCredentials = (options.excludeCredentials || []).map(item => ({...item, id: fromBase64(item.id)}));
       const credential = await navigator.credentials.create({publicKey: options});
-      await api('register', {ticket: registration.ticket, credential: credentialJSON(credential, true)});
+      const result = await api('register', {ticket: registration.ticket, credential: credentialJSON(credential, true)});
+      if (result.card_save_grant) {
+        window.dispatchEvent(new CustomEvent('tsukiya-passkey-card-verified', {detail:{grant:result.card_save_grant}}));
+      }
       query('[data-request]').reset();
-      query('[data-setup]').open = false;
+      setup.open = false;
+      if (!panel.contains(setup)) setup.hidden = true;
       status(t('パスキーを登録しました。次回から登録情報を呼び出せます。', 'Your passkey is ready. You can retrieve your saved details next time.'));
     });
   });
