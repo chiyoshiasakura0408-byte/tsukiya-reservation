@@ -88,11 +88,15 @@ class CheckoutTest(unittest.TestCase):
     self.assertEqual(sum(call.args[0]=='/v2/cards' for call in client.call_args_list),1)
     other, mismatch=self.book(seating_area='PRIVATE2')
     with self.assertRaises(wc.CheckoutError):
-     wc.pay(run,mismatch['id'],other['checkout_secret'],'cnon:verified',card_grant=grant,saved_card_id='ccof:fixture')
+     wc.pay(run,mismatch['id'],other['checkout_secret'],'ccof:fixture#verf:verified',card_grant=grant,saved_card_id='ccof:fixture')
     returning,third=self.book(date='2027-01-16',guest_name=x['guest_name'],email=x['email'],phone=x['phone'])
     with self.assertRaises(wc.CheckoutError):
-     wc.pay(run,third['id'],returning['checkout_secret'],'cnon:verified',card_grant=grant,saved_card_id='ccof:someone-else')
-    self.assertEqual(wc.pay(run,third['id'],returning['checkout_secret'],'cnon:verified',card_grant=grant,saved_card_id='ccof:fixture')['state'],'PAID')
+     wc.pay(run,third['id'],returning['checkout_secret'],'ccof:fixture#verf:verified',card_grant=grant,saved_card_id='ccof:someone-else')
+    with self.assertRaises(wc.CheckoutError):
+     wc.pay(run,third['id'],returning['checkout_secret'],'ccof:other#verf:verified',card_grant=grant,saved_card_id='ccof:fixture')
+    with self.assertRaises(wc.CheckoutError):
+     wc.pay(run,third['id'],returning['checkout_secret'],'ccof:fixture',card_grant=grant,saved_card_id='ccof:fixture')
+    self.assertEqual(wc.pay(run,third['id'],returning['checkout_secret'],'ccof:fixture#verf:verified',card_grant=grant,saved_card_id='ccof:fixture')['state'],'PAID')
     self.assertEqual(self.bodies[-1]['customer_id'],'customer-fixture')
     self.assertEqual(self.bodies[-1]['customer_details'],{'customer_initiated':True,'seller_keyed_in':False})
 

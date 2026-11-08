@@ -220,7 +220,9 @@ def status(app, sid, secret):
 
 def pay(app, sid, secret, source_id, *, card_grant=None, saved_card_id=None, store_card=False):
     # Existing sessions can finish after the new-booking feature is switched off.
-    if not isinstance(source_id,str) or not re.fullmatch(r'cnon:[A-Za-z0-9:_-]{1,507}',source_id):
+    prefix = "cnon:" if saved_card_id is None else "ccof:"
+    suffix = r"(?:#verf:[A-Za-z0-9_-]{1,300})?" if saved_card_id is None else r"#verf:[A-Za-z0-9_-]{1,300}"
+    if not isinstance(source_id, str) or not re.fullmatch(prefix + r"[A-Za-z0-9:_-]{1,507}" + suffix, source_id):
         raise CheckoutError('カード情報をもう一度ご確認ください。')
     c=app.con()
     try:
@@ -243,7 +245,9 @@ def pay(app, sid, secret, source_id, *, card_grant=None, saved_card_id=None, sto
             try:
                 account = guest_saved_cards.authorize(app, c, card_grant, r)
                 saved = guest_saved_cards.card(app, c, account["id"])
-                if not saved or not hmac.compare_digest(guest_saved_cards.square_id(saved_card_id), saved["square_card"]):
+                if (not saved
+                        or not hmac.compare_digest(guest_saved_cards.square_id(saved_card_id), saved["square_card"])
+                        or not hmac.compare_digest(source_id.split("#", 1)[0], saved["square_card"])):
                     raise guest_passkeys.Rejected()
             except (guest_passkeys.Rejected, ValueError):
                 raise CheckoutError('保存済みカードを利用するには、もう一度パスキーで本人確認してください。', 403) from None
