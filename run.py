@@ -439,20 +439,54 @@ def customer_match_key(row):
     return f"reservation:{row['id']}"
 
 
+def link_reservation_customer(c, rid):
+    """Link an eligible reservation inside the caller's write transaction."""
+    row = c.execute("""SELECT id,guest_name,phone,email FROM reservations
+        WHERE id=? AND customer_id IS NULL AND (source!='WEB_CARD' OR status='CONFIRMED')
+        AND (course_name IS NULL OR course_name NOT LIKE '決済テスト%')""", (rid,)).fetchone()
+    if not row:
+        return
+
+    key = customer_match_key(row)
+    customer = c.execute("SELECT id FROM customers WHERE match_key=?", (key,)).fetchone()
+    if not customer:
+        # Imported profiles may have only one of the booking's contact fields.
+        name = tablecheck_import.norm_name(row["guest_name"])
+        phone = tablecheck_import.norm_phone(row["phone"])
+        email = (row["email"] or "").strip().casefold()
+        candidates = []
+        if name and (phone or email):
+            for existing in c.execute("SELECT id,name,phone,email FROM customers"):
+                if tablecheck_import.norm_name(existing["name"]) != name:
+                    continue
+                existing_phone = tablecheck_import.norm_phone(existing["phone"])
+                existing_email = (existing["email"] or "").strip().casefold()
+                shared = (phone and phone == existing_phone) or (email and email == existing_email)
+                conflict = ((phone and existing_phone and phone != existing_phone) or
+                            (email and existing_email and email != existing_email))
+                if shared and not conflict:
+                    candidates.append(existing)
+        if len(candidates) == 1:
+            customer = candidates[0]
+        else:
+            now = now_iso()
+            c.execute("""INSERT OR IGNORE INTO customers(match_key,name,phone,email,created_at,updated_at)
+                         VALUES(?,?,?,?,?,?)""", (key, row["guest_name"], row["phone"] or "", row["email"] or "", now, now))
+            customer = c.execute("SELECT id FROM customers WHERE match_key=?", (key,)).fetchone()
+
+    c.execute("UPDATE reservations SET customer_id=? WHERE id=?", (customer["id"], rid))
+
+
 def sync_customers(c):
     """Link legacy and new bookings without merging people on a shared phone alone."""
     c.execute("BEGIN IMMEDIATE")
     try:
         c.execute("UPDATE reservations SET customer_id=NULL WHERE customer_id IS NOT NULL AND course_name LIKE '決済テスト%'")
-        for row in c.execute("""SELECT id,guest_name,phone,email FROM reservations
-            WHERE customer_id IS NULL AND (source!='WEB_CARD' OR status='CONFIRMED') AND (course_name IS NULL OR course_name NOT LIKE '決済テスト%')
+        for row in c.execute("""SELECT id FROM reservations
+            WHERE customer_id IS NULL AND (source!='WEB_CARD' OR status='CONFIRMED')
+            AND (course_name IS NULL OR course_name NOT LIKE '決済テスト%')
             ORDER BY id""").fetchall():
-            key = customer_match_key(row)
-            now = now_iso()
-            c.execute("""INSERT OR IGNORE INTO customers(match_key,name,phone,email,created_at,updated_at)
-                         VALUES(?,?,?,?,?,?)""", (key, row["guest_name"], row["phone"] or "", row["email"] or "", now, now))
-            customer = c.execute("SELECT id FROM customers WHERE match_key=?", (key,)).fetchone()
-            c.execute("UPDATE reservations SET customer_id=? WHERE id=?", (customer["id"], row["id"]))
+            link_reservation_customer(c, row["id"])
         c.commit()
     except Exception:
         c.rollback()
@@ -1617,6 +1651,7 @@ def restore_paid_bank_reservation(c, rid, data):
     c.execute("UPDATE reservations SET status='CONFIRMED',payment_source='BANK',payment_confirmed_at=?,"
               "cancellation_reason=NULL,cancelled_at=NULL,staff_seen_at=NULL,guest_note=?,last_error=NULL,updated_at=? WHERE id=?",
               (ts, note, ts, rid))
+    link_reservation_customer(c, rid)
     return dict(c.execute('SELECT * FROM reservations WHERE id=?', (rid,)).fetchone())
 
 
@@ -2206,8 +2241,11 @@ def reconcile_reservations():
         web_checkout.reconcile(sys.modules[__name__])
         reservation_changes.reconcile(sys.modules[__name__])
         c = con()
-        rows = [dict(r) for r in c.execute("SELECT * FROM reservations WHERE status IN ('INVOICED','CONFIRMED') ORDER BY id")]
-        c.close()
+        try:
+            sync_customers(c)
+            rows = [dict(r) for r in c.execute("SELECT * FROM reservations WHERE status IN ('INVOICED','CONFIRMED') ORDER BY id")]
+        finally:
+            c.close()
         for row in rows:
             try:
                 refresh_sms_delivery(row)
@@ -2275,6 +2313,7 @@ def process_square_event(event, raw):
                         "last_error=NULL, updated_at=? WHERE id=?",
                         (now_iso(), now_iso(), row["id"])
                     )
+                    link_reservation_customer(c, row["id"])
                     confirmed = dict(c.execute(
                         "SELECT * FROM reservations WHERE id=?", (row["id"],)
                     ).fetchone())
@@ -3933,6 +3972,7 @@ class Handler(
                     c.execute("UPDATE reservations SET payment_method='BANK',bank_payer=?,bank_planned_date=?,bank_due_at=? WHERE id=?",(bank_payer,bank_planned_date,due,rid))
                     bank_transfer.enqueue(c,c.execute("SELECT * FROM reservations WHERE id=?",(rid,)).fetchone(),sys.modules[__name__])
                 marketing.bind(c,rid,x.get("attribution"),ts,test_booking)
+                link_reservation_customer(c, rid)
                 c.commit()
                 row = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
             finally:
@@ -4193,6 +4233,7 @@ class Handler(
                     "VALUES(?,?,?,?,?,?)",
                     (rid, "BANK", amount, reference, staff, ts)
                 )
+                link_reservation_customer(c, rid)
                 if bank_pending:
                     bank_transfer.enqueue(c,row,sys.modules[__name__],"confirmed")
                 c.commit()
@@ -4501,11 +4542,8 @@ class Handler(
             if not direct and request_id:
                 c.execute("UPDATE reservations SET public_request_id=? WHERE id=?", ("phone:" + request_id, cur.lastrowid))
             if direct:
-                if linked_customer is None:
-                    key = customer_match_key({"id": cur.lastrowid, "guest_name": x["guest_name"], "phone": x.get("phone"), "email": x.get("email")})
-                    c.execute("INSERT OR IGNORE INTO customers(match_key,name,phone,email,created_at,updated_at) VALUES(?,?,?,?,?,?)", (key,x["guest_name"],x.get("phone") or "",x["email"],ts,ts))
-                    linked_customer = c.execute("SELECT id FROM customers WHERE match_key=?", (key,)).fetchone()["id"]
-                c.execute("UPDATE reservations SET customer_id=?,public_request_id=?,staff_seen_at=? WHERE id=?", (linked_customer,"direct:" + request_id,ts,cur.lastrowid))
+                c.execute("UPDATE reservations SET public_request_id=?,staff_seen_at=? WHERE id=?", ("direct:" + request_id,ts,cur.lastrowid))
+            link_reservation_customer(c, cur.lastrowid)
             c.commit()
 
             row = dict(
