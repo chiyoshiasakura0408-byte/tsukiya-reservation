@@ -5,3 +5,5 @@ reportlab==4.4.4
 fonttools==4.60.1
 
 cryptography==50.0.2
+
+webauthn==2.7.1

@@ -1,5 +1,6 @@
 import email_sms
 import web_checkout
+import guest_passkeys
 import reservation_changes
 import customer_party
 import unpaid_invoice_changes
@@ -362,6 +363,7 @@ def con():
         "confirmation_note": "TEXT NOT NULL DEFAULT ''",
         "celebration_items": "TEXT",
         "plate_message": "TEXT",
+        "booking_receipt_name": "TEXT",
         "customer_id": "INTEGER",
         "visit_note": "TEXT",
         "companions": "TEXT",
@@ -2590,10 +2592,11 @@ class Handler(
             self.wfile.write(content)
             return
 
-        if p in ("/attribution.js", "/web-checkout.js"):
+        if p in ("/attribution.js", "/web-checkout.js", "/guest-passkeys.js", "/guest-passkeys.css"):
             b = (BASE / "public" / p[1:]).read_bytes()
             self.send_response(200)
-            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            mime = "text/css" if p.endswith(".css") else "application/javascript"
+            self.send_header("Content-Type", mime + "; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Content-Length", str(len(b)))
             self.end_headers(); self.wfile.write(b)
@@ -2778,6 +2781,9 @@ class Handler(
                 page = page.replace("<body>", "<body><p>決済テスト専用・1予約 1円（税込）</p>")
                 page = page.replace("selected.party_size*selected.price_per_person", "1")
                 page = page.replace("/api/public/reservations", "/api/test/reservations")
+            if p == "/book" and guest_passkeys.configuration(sys.modules[__name__]):
+                page = page.replace("</head>", '<link rel="stylesheet" href="/guest-passkeys.css">\n'
+                                    '<script defer src="/guest-passkeys.js"></script>\n</head>', 1)
             return self.send_html(page)
 
         if p == "/api/public/availability":
@@ -3176,7 +3182,8 @@ class Handler(
 
         # Reject ambiguous framing before any handler reads or acts on a body.
         lengths = self.headers.get_all("Content-Length", [])
-        limit = 4096 if p == "/api/login" else 12 * 1024 * 1024
+        guest_passkey_path = p.startswith(guest_passkeys.PREFIX)
+        limit = 24 * 1024 if guest_passkey_path else 4096 if p == "/api/login" else 12 * 1024 * 1024
         if (self.headers.get("Transfer-Encoding") is not None
                 or len(lengths) > 1
                 or (lengths and not re.fullmatch(r"[0-9]{1,10}", lengths[0]))):
@@ -3185,6 +3192,9 @@ class Handler(
         if lengths and int(lengths[0]) > limit:
             self.close_connection = True
             return self.send_json({"error": "request too large"}, 413)
+
+        if guest_passkey_path:
+            return guest_passkeys.handle_post(self, sys.modules[__name__], p)
 
         if gpt_reservations.handle_post(self, sys.modules[__name__], p):
             return
@@ -3885,6 +3895,7 @@ class Handler(
                 email = str(x.get("email", "")).strip().lower()
                 phone = str(x.get("phone", "")).strip()
                 guest_note, celebration_items, plate_message = guest_requests(x)
+                receipt_name = guest_passkeys.receipt_name(x) if not test_booking else ""
             except (ValueError, TypeError, json.JSONDecodeError):
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
             if not test_booking and payment_method == "CARD" and web_checkout.config(sys.modules[__name__])["enabled"]:
@@ -3966,6 +3977,7 @@ class Handler(
                      150, "PENDING", request_id, ts, ts, ts, guest_note, celebration_items, plate_message)
                 )
                 rid = cur.lastrowid
+                guest_passkeys.save_receipt_name(c, rid, receipt_name)
                 payment_terms.register(c, rid, ts)
                 if payment_method == "BANK":
                     due=(datetime.fromisoformat(ts)+timedelta(hours=NEW_PAYMENT_HOURS)).isoformat()
