@@ -1,5 +1,8 @@
 import email_sms
 import web_checkout
+import guest_passkeys
+import guest_email_enrollment
+import staff_mfa
 import reservation_changes
 import customer_party
 import unpaid_invoice_changes
@@ -362,6 +365,7 @@ def con():
         "confirmation_note": "TEXT NOT NULL DEFAULT ''",
         "celebration_items": "TEXT",
         "plate_message": "TEXT",
+        "booking_receipt_name": "TEXT",
         "customer_id": "INTEGER",
         "visit_note": "TEXT",
         "companions": "TEXT",
@@ -2211,6 +2215,11 @@ def deliver_confirmation(reservation, retry_failed=False):
                     ok, error = send_confirmation(row)
                     c.execute("UPDATE reservations SET confirmation_email_status=?,confirmation_sent_at=?,last_error=? WHERE id=?", ("SENT" if ok else "ERROR", now_iso() if ok else None, None if ok else error, rid))
                     c.commit()
+                    if ok:
+                        try:
+                            guest_email_enrollment.send(sys.modules[__name__], rid)
+                        except Exception as exc:
+                            print(f"guest-email-enrollment: {type(exc).__name__}", flush=True)
             return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
         finally:
             c.close()
@@ -2436,7 +2445,7 @@ class Handler(
         if 'aria-label="管理画面"' in text:
             text += "<script>" + (BASE / "public" / "refund-badge.js").read_text() + "</script>"
             text += "<script>" + (BASE / "public" / "party-adjustments.js").read_text() + "</script>"
-        payment_page = urlparse(self.path).path in ("/book", "/book-en", "/book.html", "/book-en.html")
+        payment_page = urlparse(self.path).path in ("/book", "/book-en", "/book.html", "/book-en.html", "/passkey-enroll")
         if payment_page:
             text, payment_nonce = web_checkout.secure_page(text)
         b = text.encode("utf-8")
@@ -2502,7 +2511,7 @@ class Handler(
                 if int(expiry) <= int(datetime.now(timezone.utc).timestamp()):
                     return False
                 expected = hmac.new(
-                    ADMIN_TOKEN.encode(), expiry.encode(), hashlib.sha256
+                    ADMIN_TOKEN.encode(), staff_mfa.session_message(expiry), hashlib.sha256
                 ).hexdigest()
                 return hmac.compare_digest(signature, expected)
             except (ValueError, TypeError):
@@ -2590,10 +2599,11 @@ class Handler(
             self.wfile.write(content)
             return
 
-        if p in ("/attribution.js", "/web-checkout.js"):
+        if p in ("/attribution.js", "/web-checkout.js", "/guest-passkeys.js", "/guest-passkeys.css"):
             b = (BASE / "public" / p[1:]).read_bytes()
             self.send_response(200)
-            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            mime = "text/css" if p.endswith(".css") else "application/javascript"
+            self.send_header("Content-Type", mime + "; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Content-Length", str(len(b)))
             self.end_headers(); self.wfile.write(b)
@@ -2769,6 +2779,11 @@ class Handler(
             if requested: self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
             self.end_headers(); self.wfile.write(b[start:end+1]); return
 
+        if p == "/passkey-enroll":
+            if not guest_passkeys.configuration(sys.modules[__name__]) or not guest_email_enrollment.secret_for_origin(APP_BASE_URL):
+                return self.send_error(404)
+            return self.send_html((BASE / "public" / "passkey-enroll.html").read_text(encoding="utf-8"), loader=False)
+
         if p in ("/book", "/book-test"):
             if p == "/book-test" and not self.auth():
                 return self.redirect("/login")
@@ -2778,6 +2793,11 @@ class Handler(
                 page = page.replace("<body>", "<body><p>決済テスト専用・1予約 1円（税込）</p>")
                 page = page.replace("selected.party_size*selected.price_per_person", "1")
                 page = page.replace("/api/public/reservations", "/api/test/reservations")
+            if p == "/book" and guest_passkeys.configuration(sys.modules[__name__]):
+                if guest_email_enrollment.secret_for_origin(APP_BASE_URL):
+                    page = page.replace("<body>", '<body data-passkey-email-only>', 1)
+                page = page.replace("</head>", '<link rel="stylesheet" href="/guest-passkeys.css">\n'
+                                    '<script defer src="/guest-passkeys.js"></script>\n</head>', 1)
             return self.send_html(page)
 
         if p == "/api/public/availability":
@@ -2916,7 +2936,10 @@ class Handler(
             if self.auth():
                 return self.redirect("/")
             f = BASE / "public" / "login.html"
-            return self.send_html(f.read_text(encoding="utf-8"))
+            page = f.read_text(encoding="utf-8")
+            if staff_mfa.enabled():
+                page = page.replace('<fieldset id="staff-mfa" hidden disabled>', '<fieldset id="staff-mfa">', 1)
+            return self.send_html(page)
 
         if p == "/api/diagnostics/memory":
             if not self.auth():
@@ -3176,7 +3199,8 @@ class Handler(
 
         # Reject ambiguous framing before any handler reads or acts on a body.
         lengths = self.headers.get_all("Content-Length", [])
-        limit = 4096 if p == "/api/login" else 12 * 1024 * 1024
+        guest_passkey_path = p.startswith(guest_passkeys.PREFIX)
+        limit = 24 * 1024 if guest_passkey_path else 4096 if p == "/api/login" else 12 * 1024 * 1024
         if (self.headers.get("Transfer-Encoding") is not None
                 or len(lengths) > 1
                 or (lengths and not re.fullmatch(r"[0-9]{1,10}", lengths[0]))):
@@ -3186,10 +3210,13 @@ class Handler(
             self.close_connection = True
             return self.send_json({"error": "request too large"}, 413)
 
+        if guest_passkey_path:
+            return guest_passkeys.handle_post(self, sys.modules[__name__], p)
+
         if gpt_reservations.handle_post(self, sys.modules[__name__], p):
             return
 
-        checkout_match = re.fullmatch(r"/api/public/checkouts(?:/([0-9a-f]{32})/(pay|status|cancel)|/(lookup))?", p)
+        checkout_match = re.fullmatch(r"/api/public/checkouts(?:/([0-9a-f]{32})/(pay|status|cancel|save-card)|/(lookup))?", p)
         if checkout_match:
             # Same-origin only; no third-party POSTs or cross-origin fallback.
             origin = self.headers.get("Origin", "")
@@ -3207,7 +3234,11 @@ class Handler(
                 elif not action:
                     result = web_checkout.create(sys.modules[__name__], data)
                 elif action == "pay":
-                    result = web_checkout.pay(sys.modules[__name__], sid, data.get("checkout_secret"), data.get("source_id"))
+                    result = web_checkout.pay(sys.modules[__name__], sid, data.get("checkout_secret"), data.get("source_id"),
+                                              card_grant=data.get("card_grant"), saved_card_id=data.get("saved_card_id"),
+                                              store_card=data.get("store_card") is True)
+                elif action == "save-card":
+                    result = web_checkout.save_paid_card(sys.modules[__name__], sid, data.get("checkout_secret"), data.get("card_grant"))
                 elif action == "cancel":
                     result = web_checkout.abandon(sys.modules[__name__], sid, data.get("checkout_secret"))
                 else:
@@ -3885,6 +3916,7 @@ class Handler(
                 email = str(x.get("email", "")).strip().lower()
                 phone = str(x.get("phone", "")).strip()
                 guest_note, celebration_items, plate_message = guest_requests(x)
+                receipt_name = guest_passkeys.receipt_name(x) if not test_booking else ""
             except (ValueError, TypeError, json.JSONDecodeError):
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
             if not test_booking and payment_method == "CARD" and web_checkout.config(sys.modules[__name__])["enabled"]:
@@ -3966,6 +3998,7 @@ class Handler(
                      150, "PENDING", request_id, ts, ts, ts, guest_note, celebration_items, plate_message)
                 )
                 rid = cur.lastrowid
+                guest_passkeys.save_receipt_name(c, rid, receipt_name)
                 payment_terms.register(c, rid, ts)
                 if payment_method == "BANK":
                     due=(datetime.fromisoformat(ts)+timedelta(hours=NEW_PAYMENT_HOURS)).isoformat()
@@ -4075,15 +4108,27 @@ class Handler(
                 supplied = credentials["password"]
             except (ValueError, UnicodeError):
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
-            if not hmac.compare_digest(supplied.encode("utf-8"), STAFF_LOGIN_PIN.encode("utf-8")):
+            if staff_mfa.enabled():
+                if (not APP_BASE_URL.startswith("https://")
+                        or self.headers.get_all("Origin") != [APP_BASE_URL]
+                        or self.headers.get("Sec-Fetch-Site", "same-origin") != "same-origin"):
+                    return self.send_json({"error": "ログイン画面を開き直してください"}, 403)
+                try:
+                    authenticated = staff_mfa.verify(DB, credentials.get("username"), supplied, credentials.get("code"))
+                except (ValueError, TypeError, sqlite3.Error):
+                    print("staff-mfa: verification unavailable", flush=True)
+                    return self.send_json({"error": "管理者認証を利用できません"}, 503)
+            else:
+                authenticated = hmac.compare_digest(supplied.encode("utf-8"), STAFF_LOGIN_PIN.encode("utf-8"))
+            if not authenticated:
                 with LOGIN_LOCK:
                     LOGIN_FAILURES.setdefault(ip, deque()).append(time.monotonic())
-                return self.send_json({"error": "パスワードが違います"}, 401)
+                return self.send_json({"error": "ログイン情報を確認してください" if staff_mfa.enabled() else "パスワードが違います"}, 401)
             with LOGIN_LOCK:
                 LOGIN_FAILURES.pop(ip, None)
             expiry = str(int(datetime.now(timezone.utc).timestamp()) + SESSION_SECONDS)
             signature = hmac.new(
-                ADMIN_TOKEN.encode(), expiry.encode(), hashlib.sha256
+                ADMIN_TOKEN.encode(), staff_mfa.session_message(expiry), hashlib.sha256
             ).hexdigest()
             return self.send_json(
                 {"ok": True},

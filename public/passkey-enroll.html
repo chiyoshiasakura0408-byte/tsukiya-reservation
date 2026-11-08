@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>パスキー登録｜西天満つきや</title>
+<style>
+body{margin:0;padding:24px;background:#171512;color:#faf3e7;font:16px system-ui,sans-serif}
+main{max-width:440px;margin:50px auto;padding:24px;border:1px solid #66523b;border-radius:16px}
+h1{font-size:1.35rem}p{line-height:1.7}
+button{font:inherit;color:#231a12;background:#e0c096;border:0;border-radius:8px;padding:12px 18px;min-height:44px}
+a{color:#e0c096}
+</style>
+</head>
+<body>
+<main>
+<p>西天満 つきや</p>
+<h1 id="title">パスキー登録</h1>
+<p id="status" role="status" aria-live="polite">登録の準備中です。</p>
+<button id="enroll" hidden>端末でパスキーを登録する</button>
+<p><a id="book" href="/book">予約ページへ</a></p>
+</main>
+<script>
+(() => {
+  const token = location.hash.slice(1);
+  history.replaceState(null, '', location.pathname + location.search);
+  const english = new URLSearchParams(location.search).get('lang') === 'en';
+  const t = (ja,en) => english ? en : ja;
+  if (english) document.documentElement.lang = 'en';
+  document.getElementById('title').textContent = t('パスキー登録','Set up your passkey');
+  const book = document.getElementById('book');
+  book.textContent = t('予約ページへ','Back to reservations');
+  if (english) book.href = '/book?lang=en';
+  const status = document.getElementById('status');
+  const button = document.getElementById('enroll');
+  button.textContent = t('端末でパスキーを登録する','Create a passkey on this device');
+  status.textContent = t('登録の準備中です。','Preparing passkey setup.');
+  const decode = value => Uint8Array.from(atob(value.replace(/-/g,'+').replace(/_/g,'/')), ch => ch.charCodeAt(0));
+  const encode = value => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  async function api(action, data) {
+    const response = await fetch('/api/public/guest-passkeys/'+action, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data), cache:'no-store'
+    });
+    if (!response.ok) throw new Error('request rejected');
+    return response.json();
+  }
+  const invalid = t('このリンクは期限切れか、すでに使用されています。','This link has expired or has already been used.');
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token) || !window.isSecureContext || !navigator.credentials || !window.PublicKeyCredential) {
+    status.textContent = t('有効なメールリンクを、パスキー対応ブラウザで開いてください。','Open a valid invitation link in a browser that supports passkeys.');
+    return;
+  }
+  api('email-options', {token}).then(({ticket, options}) => {
+    options.challenge = decode(options.challenge);
+    options.user.id = decode(options.user.id);
+    status.textContent = t('メールでの本人確認が完了しました。お使いの端末で登録してください。','Email verification is complete. Create your passkey on this device.');
+    button.hidden = false;
+    button.onclick = async () => {
+      button.disabled = true;
+      let result;
+      try {
+        const credential = await navigator.credentials.create({publicKey:options});
+        result = await api('register', {ticket, credential:{
+          id:credential.id, rawId:encode(credential.rawId), type:credential.type, response:{
+            clientDataJSON:encode(credential.response.clientDataJSON), attestationObject:encode(credential.response.attestationObject)
+          }
+        }});
+      } catch (error) {
+        if (error.name === 'NotAllowedError') {
+          status.textContent = t('端末認証を完了できませんでした。もう一度お試しください。','Device verification did not finish. Please try again.');
+          button.disabled = false;
+        } else {
+          button.hidden = true;
+          status.textContent = t('登録を完了できませんでした。メールのリンクを開き直してください。','Passkey setup did not finish. Reopen your email link and try again.');
+        }
+        return;
+      }
+      button.hidden = true;
+      const registered = t('パスキーを登録しました。','Your passkey has been created.');
+      status.textContent = registered;
+      if (result.card_save_grant && result.save_reservation_id) {
+        try {
+          await api('email-save-card', {card_grant:result.card_save_grant, reservation_id:result.save_reservation_id});
+          status.textContent = registered + t(' 次回のお支払い用にカードを保存しました。',' Your card was saved for your next booking.');
+        } catch {
+          status.textContent = registered + t(' カードを保存できませんでした。次回のお支払い時にカード情報をご入力ください。',' Your card could not be saved. Enter your card details at your next booking.');
+        }
+      }
+    };
+  }).catch(() => { status.textContent = invalid; });
+})();
+</script>
+</body>
+</html>

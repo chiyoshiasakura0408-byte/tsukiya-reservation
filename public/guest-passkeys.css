@@ -1,0 +1,10 @@
+.guest-passkeys { text-align: center; }
+.guest-passkeys svg { color: var(--gold); margin-top: 6px; }
+.guest-passkeys h2 { margin: 10px 0 4px; }
+.guest-passkeys .guest-passkeys-subtitle { margin: 0 0 14px; color: var(--muted); }
+.guest-passkeys [data-feedback]:empty { display: none; }
+.guest-passkeys details { margin: 16px auto 0; max-width: 28rem; }
+.guest-passkeys summary { cursor: pointer; text-decoration: underline; }
+.guest-passkeys form:not([hidden]) { display: grid; gap: 10px; text-align: left; margin: 12px 0; }
+.guest-passkeys input { display: block; width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 6px; font-size: 16px; }
+.guest-passkeys button { max-width: 100%; white-space: normal; }
