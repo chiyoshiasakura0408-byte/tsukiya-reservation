@@ -24,6 +24,13 @@ PREFIX = "/api/public/guest-passkeys/"
 TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 OTP = re.compile(r"[0-9]{6}")
 VERIFIED = UserVerificationRequirement.REQUIRED
+DEMO_ORIGIN = "https://tsukiya-square-sandbox-20261026.onrender.com"
+DEMO_EMAIL = "passkey-device-qa@example.com"
+DEMO_PHONE = "+819000000000"
+
+
+def demo_environment(app):
+    return app.SQUARE_ENV == "sandbox" and app.APP_BASE_URL == DEMO_ORIGIN
 
 
 class Rejected(Exception):
@@ -34,6 +41,11 @@ class Rejected(Exception):
 def configuration(app):
     origin = app.APP_BASE_URL
     url = urlsplit(origin)
+    if demo_environment(app):
+        stage_key = os.getenv("CHECKOUT_TOKEN_ENCRYPTION_KEY", "")
+        if len(stage_key) >= 32:
+            stage_secret = hmac.new(stage_key.encode(), b"guest-passkey-synthetic-demo", hashlib.sha256).digest()
+            return origin, url.hostname, stage_secret
     secret = os.getenv("GUEST_PASSKEY_SECRET", "")
     if (os.getenv("GUEST_PASSKEY_ENABLED") == "1" and len(secret) >= 32
             and url.scheme == "https" and url.hostname and url.netloc == url.hostname
@@ -175,7 +187,10 @@ def begin_verification(app, db, secret, data, now):
     row = identity(app, db, reservation_id)
     if not row or row["email"].strip().casefold() != email or app.normalize_jp_phone(row["phone"]) != phone:
         return {"ticket": secrets.token_urlsafe(32)}
-    charge(db, digest(secret, "recipient", row["id"]), now, 3600, 3)
+    demo = demo_environment(app)
+    if demo and (email != DEMO_EMAIL or phone != DEMO_PHONE):
+        return {"ticket": secrets.token_urlsafe(32)}
+    charge(db, digest(secret, "recipient", row["id"]), now, 3600, 12 if demo else 3)
     charge(db, "verify-global", now, 3600, 60)
     email_code, sms_code = (f"{secrets.randbelow(1000000):06}" for _ in range(2))
     nonce = secrets.token_urlsafe(32)
@@ -185,6 +200,8 @@ def begin_verification(app, db, secret, data, now):
         "sms": digest(secret, "sms-code", nonce, sms_code),
     }, now, 600)
     db.commit()
+    if demo:
+        return {"ticket": ticket, "demo_codes": {"email": email_code, "sms": sms_code}}
     try:
         send_codes(app, row, email_code, sms_code)
     except Exception:

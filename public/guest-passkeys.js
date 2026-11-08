@@ -151,10 +151,16 @@
       verificationTicket = '';
       codes.reset();
       codes.hidden = true;
-      const {ticket} = await api('verify', data);
+      const {ticket, demo_codes} = await api('verify', data);
       verificationTicket = ticket;
       codes.hidden = false;
       status(t('予約情報が一致する場合はメールとSMSに確認コードが届きます。', 'If your reservation details match, codes will arrive by email and SMS.'));
+      if (demo_codes) {
+        status(t(
+          'Square検証環境の架空予約です。画面表示のテストコードを入力してください。メール：' + demo_codes.email + '、SMS：' + demo_codes.sms,
+          'Square Sandbox demo only. Enter the simulated codes shown here. Email: ' + demo_codes.email + ', SMS: ' + demo_codes.sms
+        ));
+      }
       codes.elements.email_code.focus();
     });
   });

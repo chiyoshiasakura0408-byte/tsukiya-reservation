@@ -17,6 +17,12 @@
     <form id="login">
       <label for="password">従業員ログインパスワード</label>
       <input id="password" type="password" autocomplete="current-password" required>
+      <fieldset id="staff-mfa" hidden disabled>
+        <label for="username">管理者ID</label>
+        <input id="username" autocomplete="username" maxlength="60" required>
+        <label for="staff-code">認証アプリの確認コード</label>
+        <input id="staff-code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required>
+      </fieldset>
       <button type="submit">ログイン</button>
       <div id="error" role="alert"></div>
     </form>
@@ -28,13 +34,19 @@
       const password=document.getElementById('password');
       const error=document.getElementById('error');
       error.textContent='';
+      const data={password:password.value};
+      if(!document.getElementById('staff-mfa').disabled){
+        data.username=document.getElementById('username').value;
+        data.code=document.getElementById('staff-code').value;
+      }
       try{
-        const response=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({password:password.value})});
+        const response=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(data)});
         const result=await response.json();
         if(!response.ok)throw new Error(result.error||'ログインできませんでした');
         password.value='';
         location.href=new URLSearchParams(location.search).get('next')==='/gpt-setup'?'/gpt-setup':'/';
       }catch(e){error.textContent=e.message}
+      finally{document.getElementById('staff-code').value=''}
     });
   </script>
 </body>
