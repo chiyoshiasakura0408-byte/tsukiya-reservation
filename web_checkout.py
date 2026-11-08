@@ -317,6 +317,7 @@ def finalize(app,payment):
         if s['state'] not in ('PAYING','UNKNOWN') or r['status']!='PENDING':
             c.execute("UPDATE web_checkouts SET state='REVIEW',payment_id=?,updated=?,last_error='PAID_RESERVATION_CONFLICT' WHERE id=?",(pid,time.time(),sid));c.commit();return True
         c.execute("UPDATE reservations SET status='CONFIRMED',payment_source='SQUARE',payment_confirmed_at=?,last_error=NULL,updated_at=? WHERE id=?",(app.now_iso(),app.now_iso(),r['id']))
+        app.link_reservation_customer(c, r['id'])
         c.execute("UPDATE web_checkouts SET state='PAID',payment_id=?,encrypted_request=NULL,lease_until=0,last_error=NULL,updated=? WHERE id=?",(pid,time.time(),sid))
         c.execute('INSERT INTO payment_audit(reservation_id,source,amount,reference,confirmed_by,created_at) VALUES(?,?,?,?,?,?)',
                   (r['id'],'SQUARE',s['amount'],pid,'Square Payments API',app.now_iso()))
