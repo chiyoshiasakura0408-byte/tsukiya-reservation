@@ -156,12 +156,16 @@
       codes.hidden = false;
       status(t('予約情報が一致する場合はメールとSMSに確認コードが届きます。', 'If your reservation details match, codes will arrive by email and SMS.'));
       if (demo_codes) {
+        codes.elements.email_code.value = demo_codes.email;
+        codes.elements.sms_code.value = demo_codes.sms;
         status(t(
-          'Square検証環境の架空予約です。画面表示のテストコードを入力してください。メール：' + demo_codes.email + '、SMS：' + demo_codes.sms,
-          'Square Sandbox demo only. Enter the simulated codes shown here. Email: ' + demo_codes.email + ', SMS: ' + demo_codes.sms
+          '検証用コードを入力しました。「コードを確認し、端末に登録する」を押してください。',
+          'The Sandbox test codes have been filled in. Select Verify codes and save passkey.'
         ));
+        codes.querySelector('button').focus();
+      } else {
+        codes.elements.email_code.focus();
       }
-      codes.elements.email_code.focus();
     });
   });
   codes.addEventListener('submit', event => {
