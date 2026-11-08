@@ -101,13 +101,12 @@
       buttons.forEach(button => { button.disabled = false; });
     }
   }
-  async function retrieve(forget) {
+  async function retrieve(forget, prepared) {
     if (forget && !window.confirm(t('このパスキーでの呼び出しを解除しますか？', 'Remove this passkey from your booking profile?'))) return;
     if (!forget && names.some(name => booking.elements[name].value)
         && !window.confirm(t('入力済みの連絡先を登録情報で置き換えますか？', 'Replace the details already entered with your saved information?'))) return;
-    const {ticket, options} = await api('login-options');
-    options.challenge = fromBase64(options.challenge);
-    const credential = await navigator.credentials.get({publicKey: options});
+    const {ticket, options} = prepared || await api('login-options');
+    const credential = await navigator.credentials.get({publicKey: {...options, challenge: fromBase64(options.challenge)}});
     const result = await api('login', {ticket, credential: credentialJSON(credential, false), forget});
     if (forget) {
       status(t('パスキーを解除しました。', 'Your passkey was removed.'));
@@ -140,6 +139,50 @@
     query('[data-retrieve]').disabled = true;
     query('[data-setup]').hidden = true;
     status(t('このブラウザでは端末認証を利用できません。予約情報は手入力できます。', 'Device authentication is unavailable in this browser. You can still enter your details manually.'));
+    return;
+  }
+  if (location.origin === 'https://tsukiya-square-sandbox-20261026.onrender.com'
+      && new URLSearchParams(location.search).get('device-test') === '1') {
+    const retrieveButton = query('[data-retrieve]');
+    retrieveButton.hidden = true;
+    query('[data-first]').hidden = true;
+    query('[data-setup]').hidden = true;
+    const registerButton = document.createElement('button');
+    registerButton.type = 'button';
+    registerButton.className = 'primary';
+    registerButton.textContent = t('このiPhoneにパスキーを登録', 'Save a passkey on this device');
+    registerButton.hidden = true;
+    feedback.before(registerButton);
+    let registration;
+    let preparedLogin;
+    registerButton.addEventListener('click', () => run(async () => {
+      const credential = await navigator.credentials.create({publicKey: registration.options});
+      await api('register', {ticket: registration.ticket, credential: credentialJSON(credential, true)});
+      registerButton.hidden = true;
+      status(t('パスキーを登録しました。呼び出しの準備中です。', 'Passkey saved. Preparing sign-in.'));
+      preparedLogin = await api('login-options');
+      retrieveButton.hidden = false;
+      status(t('パスキーを登録しました。「登録情報を呼び出す」を押してください。', 'Passkey saved. Select Retrieve My Information.'));
+    }));
+    retrieveButton.addEventListener('click', () => run(() => retrieve(false, preparedLogin)));
+    status(t('実機テストの準備中です。', 'Preparing the device test.'));
+    api('verify', {reference: '1', email: 'passkey-device-qa@example.com', phone: '09000000000'})
+      .then(({ticket, demo_codes}) => {
+        if (!demo_codes) throw new Error('test reservation missing');
+        return api('register-options', {ticket, email_code: demo_codes.email, sms_code: demo_codes.sms});
+      })
+      .then(result => {
+        registration = result;
+        const options = registration.options;
+        options.challenge = fromBase64(options.challenge);
+        options.user.id = fromBase64(options.user.id);
+        options.excludeCredentials = (options.excludeCredentials || []).map(item => ({...item, id: fromBase64(item.id)}));
+        options.authenticatorSelection.authenticatorAttachment = 'platform';
+        registerButton.hidden = false;
+        status(t('準備できました。「このiPhoneにパスキーを登録」を押してください。', 'Ready. Select Save a passkey on this device.'));
+        registerButton.scrollIntoView({block:'center'});
+      })
+      .catch(() => status(t('実機テストを準備できませんでした。ページを開き直してください。', 'The device test could not be prepared. Reopen this page.')));
     return;
   }
   query('[data-retrieve]').addEventListener('click', () => run(() => retrieve(false)));
@@ -188,13 +231,4 @@
       status(t('パスキーを登録しました。次回から登録情報を呼び出せます。', 'Your passkey is ready. You can retrieve your saved details next time.'));
     });
   });
-  if (location.origin === 'https://tsukiya-square-sandbox-20261026.onrender.com'
-      && new URLSearchParams(location.search).get('device-test') === '1') {
-    query('[data-setup]').open = true;
-    const testForm = query('[data-request]');
-    testForm.elements.reference.value = '1';
-    testForm.elements.email.value = 'passkey-device-qa@example.com';
-    testForm.elements.phone.value = '09000000000';
-    testForm.requestSubmit();
-  }
 })();
