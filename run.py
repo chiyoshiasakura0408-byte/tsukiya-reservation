@@ -1,6 +1,7 @@
 import email_sms
 import web_checkout
 import guest_passkeys
+import staff_mfa
 import reservation_changes
 import customer_party
 import unpaid_invoice_changes
@@ -2504,7 +2505,7 @@ class Handler(
                 if int(expiry) <= int(datetime.now(timezone.utc).timestamp()):
                     return False
                 expected = hmac.new(
-                    ADMIN_TOKEN.encode(), expiry.encode(), hashlib.sha256
+                    ADMIN_TOKEN.encode(), staff_mfa.session_message(expiry), hashlib.sha256
                 ).hexdigest()
                 return hmac.compare_digest(signature, expected)
             except (ValueError, TypeError):
@@ -2922,7 +2923,10 @@ class Handler(
             if self.auth():
                 return self.redirect("/")
             f = BASE / "public" / "login.html"
-            return self.send_html(f.read_text(encoding="utf-8"))
+            page = f.read_text(encoding="utf-8")
+            if staff_mfa.enabled():
+                page = page.replace('<fieldset id="staff-mfa" hidden disabled>', '<fieldset id="staff-mfa">', 1)
+            return self.send_html(page)
 
         if p == "/api/diagnostics/memory":
             if not self.auth():
@@ -4087,15 +4091,27 @@ class Handler(
                 supplied = credentials["password"]
             except (ValueError, UnicodeError):
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
-            if not hmac.compare_digest(supplied.encode("utf-8"), STAFF_LOGIN_PIN.encode("utf-8")):
+            if staff_mfa.enabled():
+                if (not APP_BASE_URL.startswith("https://")
+                        or self.headers.get_all("Origin") != [APP_BASE_URL]
+                        or self.headers.get("Sec-Fetch-Site", "same-origin") != "same-origin"):
+                    return self.send_json({"error": "ログイン画面を開き直してください"}, 403)
+                try:
+                    authenticated = staff_mfa.verify(DB, credentials.get("username"), supplied, credentials.get("code"))
+                except (ValueError, TypeError, sqlite3.Error):
+                    print("staff-mfa: verification unavailable", flush=True)
+                    return self.send_json({"error": "管理者認証を利用できません"}, 503)
+            else:
+                authenticated = hmac.compare_digest(supplied.encode("utf-8"), STAFF_LOGIN_PIN.encode("utf-8"))
+            if not authenticated:
                 with LOGIN_LOCK:
                     LOGIN_FAILURES.setdefault(ip, deque()).append(time.monotonic())
-                return self.send_json({"error": "パスワードが違います"}, 401)
+                return self.send_json({"error": "ログイン情報を確認してください" if staff_mfa.enabled() else "パスワードが違います"}, 401)
             with LOGIN_LOCK:
                 LOGIN_FAILURES.pop(ip, None)
             expiry = str(int(datetime.now(timezone.utc).timestamp()) + SESSION_SECONDS)
             signature = hmac.new(
-                ADMIN_TOKEN.encode(), expiry.encode(), hashlib.sha256
+                ADMIN_TOKEN.encode(), staff_mfa.session_message(expiry), hashlib.sha256
             ).hexdigest()
             return self.send_json(
                 {"ok": True},
