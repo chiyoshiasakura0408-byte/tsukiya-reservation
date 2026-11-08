@@ -109,9 +109,15 @@
     const credential = await navigator.credentials.get({publicKey: {...options, challenge: fromBase64(options.challenge)}});
     const result = await api('login', {ticket, credential: credentialJSON(credential, false), forget});
     if (forget) {
+      window.TsukiyaGuestCards = null;
       status(t('パスキーを解除しました。', 'Your passkey was removed.'));
       return;
     }
+    window.TsukiyaGuestCards = result.card_grant ? {
+      grant: result.card_grant, card: result.saved_card,
+      guest_name: result.guest_name, email: result.email, phone: result.phone
+    } : null;
+    if (window.TsukiyaGuestCards) window.dispatchEvent(new Event('tsukiya-passkey-card-verified'));
     filled = {};
     for (const name of names) {
       const field = booking.elements[name];
@@ -124,6 +130,7 @@
     focusBooking();
   }
   function clearAutofill() {
+    window.TsukiyaGuestCards = null;
     for (const [name, value] of Object.entries(filled)) {
       if (booking.elements[name].value === value) booking.elements[name].value = '';
     }

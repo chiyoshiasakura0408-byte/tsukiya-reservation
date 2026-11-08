@@ -46,6 +46,56 @@ class CheckoutTest(unittest.TestCase):
   finally:c.close()
  def lease(self):
   c=run.con();c.execute('UPDATE web_checkouts SET lease_until=0');c.commit();c.close()
+ def test_guest_card_requires_consent_and_matching_passkey(self):
+  import time
+  from contextlib import closing
+  import guest_passkeys as pk
+  import guest_saved_cards as cards
+  with patch.dict(os.environ, {'GUEST_SAVED_CARDS_ENABLED':'1'}), patch.object(pk,'configuration',return_value=('https://checkout.test','checkout.test',b'test-key')):
+   x, first = self.book()
+   paid = wc.pay(run,first['id'],x['checkout_secret'],'cnon:fixture')
+   self.assertEqual(paid['state'],'PAID')
+   with self.assertRaises(wc.CheckoutError):
+    wc.save_paid_card(run,first['id'],x['checkout_secret'],None)
+
+   next_booking, second = self.book(time='20:30',guest_name=x['guest_name'],email=x['email'],phone=x['phone'])
+   wc.pay(run,second['id'],next_booking['checkout_secret'],'cnon:fixture',store_card=True)
+   with closing(pk.connect(run)) as db, db:
+    profile=pk.identity(run,db,first['reservation_id'])
+    secret=pk.configuration(run)[2]
+    identity=pk.fingerprint(run,secret,profile)
+    db.execute('INSERT INTO guest_passkey_accounts VALUES(?,?,?,?)',(profile['id'],first['reservation_id'],b'handle',identity))
+    db.execute('INSERT INTO guest_passkey_credentials VALUES(?,?,?,?)',(b'credential',profile['id'],b'key',0))
+    grant=cards.grant(run,db,secret,profile,b'credential',int(time.time()))
+   with self.assertRaises(wc.CheckoutError):
+    wc.save_paid_card(run,second['id'],next_booking['checkout_secret'],None)
+   with self.assertRaises(wc.CheckoutError):
+    wc.save_paid_card(run,first['id'],x['checkout_secret'],grant)
+
+   gateway=self.gateway
+   def square(path,body=None,method=None):
+    if path=='/v2/customers':
+     return {'customer':{'id':'customer-fixture'}}
+    if path=='/v2/cards':
+     self.assertEqual(body['source_id'],next(p['id'] for p in self.payments.values() if p['reference_id']=='wc:'+second['id']))
+     self.assertEqual(body['card']['customer_id'],'customer-fixture')
+     return {'card':{'id':'ccof:fixture','customer_id':'customer-fixture','enabled':True,'last_4':'1234','card_brand':'VISA'}}
+    return gateway(path,body,method)
+   with patch.object(run,'square',side_effect=square) as client:
+    expected={'saved_card':{'id':'ccof:fixture','brand':'VISA','last4':'1234'}}
+    self.assertEqual(wc.save_paid_card(run,second['id'],next_booking['checkout_secret'],grant),expected)
+    self.assertEqual(wc.save_paid_card(run,second['id'],next_booking['checkout_secret'],grant),expected)
+    self.assertEqual(sum(call.args[0]=='/v2/cards' for call in client.call_args_list),1)
+    other, mismatch=self.book(seating_area='PRIVATE2')
+    with self.assertRaises(wc.CheckoutError):
+     wc.pay(run,mismatch['id'],other['checkout_secret'],'cnon:verified',card_grant=grant,saved_card_id='ccof:fixture')
+    returning,third=self.book(date='2027-01-16',guest_name=x['guest_name'],email=x['email'],phone=x['phone'])
+    with self.assertRaises(wc.CheckoutError):
+     wc.pay(run,third['id'],returning['checkout_secret'],'cnon:verified',card_grant=grant,saved_card_id='ccof:someone-else')
+    self.assertEqual(wc.pay(run,third['id'],returning['checkout_secret'],'cnon:verified',card_grant=grant,saved_card_id='ccof:fixture')['state'],'PAID')
+    self.assertEqual(self.bodies[-1]['customer_id'],'customer-fixture')
+    self.assertEqual(self.bodies[-1]['customer_details'],{'customer_initiated':True,'seller_keyed_in':False})
+
  def test_server_price_full_confirmation(self):
   x,s=self.book(amount=1,location_id='attacker');self.assertEqual(s['amount'],132000)
   self.assertEqual(wc.pay(run,s['id'],x['checkout_secret'],'cnon:test-token')['state'],'PAID')

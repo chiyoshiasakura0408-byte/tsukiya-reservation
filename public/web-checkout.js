@@ -8,17 +8,31 @@
   const legacy = form.onsubmit;
   let configuration, session = null, card = null, busy = false, polling = null;
   let pending = null, completed = false, checking = false;
+  let cardAccount = null, saveIntent = null, paidCard = null;
   const bankChoice = english ? null : document.getElementById('bankChoice');
   const panel = document.createElement('section');
   panel.className = 'card'; panel.hidden = true;
   panel.setAttribute('aria-label', t('カードのお支払い','Card payment'));
   panel.innerHTML = '<h2></h2><div data-summary class="summary"></div><p data-timer class="sub"></p><div id="tsukiya-square-card" data-card></div><p data-message class="message" role="status"></p><button data-pay type="button" class="primary"></button> <button data-retry type="button" class="primary" hidden></button> <button data-bank type="button" hidden></button> <button data-back type="button"></button>';
+  const cardOptions = document.createElement('div');
+  cardOptions.innerHTML = `<label data-use-saved hidden><input type="checkbox"> <span></span></label>
+    <label data-save-card hidden><input type="checkbox"> <span></span><small class="sub" style="display:block"></small></label>
+    <p data-card-save-result class="sub" role="status" hidden></p>`;
+  panel.querySelector('[data-card]').after(cardOptions);
   document.getElementById('details').after(panel);
   const q = selector => panel.querySelector(selector);
   q('h2').textContent = t('カードのお支払い','Card payment');
   q('[data-retry]').textContent = t('別のカードで支払う','Try another card');
   q('[data-bank]').textContent = '銀行振込に切り替える';
   q('[data-back]').textContent = t('入力に戻る','Back to your details');
+  const savedChoice = q('[data-use-saved] input');
+  const saveChoice = q('[data-save-card] input');
+  q('[data-save-card] span').textContent = t('次回からカード情報入力を省略する','Skip entering card details next time');
+  q('[data-save-card] small').textContent = t(
+    '＊カード情報は決済サービス「Square」に安全に保存され、パスキーによる本人確認でカード情報を再入力せずに保存済みのカードでお支払いいただけます。',
+    'Your card details are securely stored with Square. After verifying with your passkey, you can pay with the saved card without re-entering its details.');
+  savedChoice.addEventListener('change', () => controls(session?.state));
+
   function message(text,error=false) { q('[data-message]').textContent=text; q('[data-message]').className='message'+(error?' error':''); }
   function save() { if (session) sessionStorage.setItem(key,JSON.stringify(session)); }
   function clear() { sessionStorage.removeItem(key); session=null; }
@@ -32,6 +46,14 @@
   function controls(state) {
     const locked=['PAYING','UNKNOWN','REVIEW'].includes(state);
     q('[data-pay]').disabled=busy || state!=='HOLD';
+    const canChoose = state === 'HOLD' && !!cardAccount;
+    q('[data-use-saved]').hidden = !canChoose || !cardAccount?.card;
+    const canSave = state === 'HOLD' && !!configuration?.saved_cards && !cardAccount?.card;
+    q('[data-save-card]').hidden = !canSave;
+    savedChoice.disabled = busy || !canChoose;
+    saveChoice.disabled = busy || !canSave;
+    q('[data-card]').hidden = state !== 'HOLD' || (canChoose && !!cardAccount.card && savedChoice.checked);
+
     const canRecover=state==='FAILED' && !!pending && !!configuration?.enabled;
     q('[data-retry]').hidden=!canRecover;
     q('[data-bank]').hidden=!canRecover || !bankChoice || bankChoice.disabled;
@@ -39,6 +61,25 @@
     q('[data-back]').hidden=locked || state==='PAID' || canRecover;
     form.querySelector('button[type="submit"]').disabled=!!session;
   }
+  function finishCardSave() {
+    const status = q('[data-card-save-result]');
+    const intent = paidCard;
+    if (!intent) return;
+    const grant = intent.grant || window.TsukiyaGuestCards?.grant;
+    status.hidden = false;
+    if (!grant) {
+      status.textContent = t('カードを保存するには、上の案内からパスキーを登録し、登録情報を呼び出してください。',
+        'To save your card, set up a passkey above and retrieve your saved information.');
+      return;
+    }
+    paidCard = null;
+    status.textContent = t('カードを保存しています…','Saving your card…');
+    api('/api/public/checkouts/'+intent.id+'/save-card', {checkout_secret:intent.secret, card_grant:grant})
+      .then(() => { status.textContent = t('次回のお支払い用にカードを保存しました。','Your card was saved for your next booking.'); })
+      .catch(() => { status.textContent = t('カードを保存できませんでした。今回のお支払いは完了しています。','The card could not be saved. This payment is complete.'); });
+  }
+  window.addEventListener('tsukiya-passkey-card-verified', finishCardSave);
+
   async function show(result) {
     session.id=result.id; session.state=result.state; session.expires=result.expires; save();
     panel.hidden=false; form.hidden=true;
@@ -50,6 +91,11 @@
       q('[data-card]').hidden=true; q('[data-pay]').hidden=true;
       q('h2').textContent=t('ご予約が確定しました','Your reservation is confirmed');
       message(t('決済が完了しました。予約番号：','Payment completed. Reservation reference: ')+result.reservation_id+t('。確認メールをお送りします。','. We will send a confirmation email.'));
+      if (saveIntent?.id === session.id) {
+        paidCard = {...saveIntent, secret:session.secret};
+        finishCardSave();
+      }
+      saveIntent = null;
       completed=true;clear(); return;
     }
     if(['FAILED','EXPIRED','CANCELLED'].includes(result.state)) {
@@ -101,14 +147,18 @@
     busy=true;controls('HOLD');
     try {
       await mount();
-      const details={amount:String(session.amount),currencyCode:'JPY',intent:'CHARGE',customerInitiated:true,sellerKeyedIn:false,
+      const savedCard = savedChoice.checked ? cardAccount?.card : null;
+      const wantsSave = saveChoice.checked && configuration.saved_cards && !cardAccount?.card;
+      const details={amount:String(session.amount),currencyCode:'JPY',intent:wantsSave?'CHARGE_AND_STORE':'CHARGE',customerInitiated:true,sellerKeyedIn:false,
         billingContact:pending?{email:pending.email,phone:pending.phone}:{}};
       message(t('カード会社の本人認証を確認しています…','Checking your card issuer verification…'));
-      const result=await Promise.race([card.tokenize(details),new Promise((_,reject)=>setTimeout(()=>reject(new Error(t('本人認証が完了しませんでした。入力に戻り、もう一度お試しください。決済は送信していません。','Verification did not finish. Return to your details and try again. No payment was submitted.'))),120000))]);
+      const result=await Promise.race([savedCard?card.tokenize(details,savedCard.id):card.tokenize(details),new Promise((_,reject)=>setTimeout(()=>reject(new Error(t('本人認証が完了しませんでした。入力に戻り、もう一度お試しください。決済は送信していません。','Verification did not finish. Return to your details and try again. No payment was submitted.'))),120000))]);
       if(result.status!=='OK')throw new Error(t('本人認証またはカード情報をご確認ください。決済は送信していません。','Please check your card details or verification. Payment has not been submitted.'));
       // Persist the fact that a payment is about to be sent before dispatch.
+      saveIntent = wantsSave ? {id:session.id,grant:cardAccount?.grant} : null;
       session.state='PAYING';save();controls('PAYING');
-      const paid=await api('/api/public/checkouts/'+session.id+'/pay',{checkout_secret:session.secret,source_id:result.token});
+      const paid=await api('/api/public/checkouts/'+session.id+'/pay',{checkout_secret:session.secret,source_id:result.token,store_card:wantsSave,
+        ...(savedCard ? {saved_card_id:savedCard.id,card_grant:cardAccount.grant} : {})});
       await show(paid);
     } catch(e) {
       if(session?.state==='PAYING') message(t('決済結果を確認中です。重ねて支払わず、お待ちください。','Checking the payment result. Please do not pay again.'),true);
@@ -117,7 +167,9 @@
   });
   async function resetCheckout() {
     if(card){await card.destroy();card=null;}
-    stopPolling();clear();pending=null;panel.hidden=true;form.hidden=false;
+    stopPolling();clear();pending=null;cardAccount=null;saveIntent=null;panel.hidden=true;form.hidden=false;
+    savedChoice.checked=saveChoice.checked=false;
+    q('[data-card-save-result]').hidden=true;
     q('[data-card]').hidden=false;q('[data-pay]').hidden=false;
     document.getElementById('submit').disabled=false;
     selected=null;requestId=null;document.getElementById('details').hidden=true;
@@ -196,6 +248,15 @@
     pending={...selected,course,request_id:session.request_id,checkout_secret:session.secret,booking_language:english?'en':'ja',payment_method:'CARD',
       attribution:window.TsukiyaAttribution?.data(),guest_name:data.get('guest_name'),email:data.get('email'),phone:data.get('phone'),receipt_name:data.get('receipt_name')||'',
       guest_note:data.get('guest_note'),celebration_items:data.getAll('celebration_items'),plate_message:data.get('plate_message'),cancellation_policy_accepted:data.get('cancellation_policy_accepted')==='on'};
+    const authenticated = window.TsukiyaGuestCards;
+    cardAccount = configuration.saved_cards && authenticated
+      && ['guest_name','email','phone'].every(field => pending[field].trim() === authenticated[field].trim())
+      ? authenticated : null;
+    savedChoice.checked = saveChoice.checked = false;
+    if (cardAccount?.card) {
+      const {brand,last4}=cardAccount.card;
+      q('[data-use-saved] span').textContent=t('保存済みカードを使う','Use your saved card') + ' (' + brand + ' •••• ' + last4 + ')';
+    }
     try {const result=await api('/api/public/checkouts',pending);session.amount=result.amount;await show(result);if(result.state==='HOLD')await mount();panel.scrollIntoView({behavior:'smooth'});}
     catch(e){
       if(!session?.id && e.status && e.status<500){clear();document.getElementById('submit').disabled=false;}

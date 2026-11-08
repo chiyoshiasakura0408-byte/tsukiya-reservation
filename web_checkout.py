@@ -5,6 +5,7 @@ all seat writers continue to share reservations and BEGIN IMMEDIATE.
 """
 
 import guest_passkeys
+import guest_saved_cards
 import payment_terms
 import hashlib
 import hmac
@@ -12,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -40,9 +42,16 @@ def schema(c):
         language TEXT NOT NULL, state TEXT NOT NULL, expires REAL NOT NULL,
         created REAL NOT NULL, updated REAL NOT NULL, lease_until REAL NOT NULL DEFAULT 0,
         idempotency_key TEXT NOT NULL UNIQUE, order_id TEXT, payment_id TEXT UNIQUE,
-        encrypted_request TEXT, last_error TEXT,
+        encrypted_request TEXT, last_error TEXT, card_save_consent INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY(reservation_id) REFERENCES reservations(id))''')
     c.execute('CREATE INDEX IF NOT EXISTS web_checkout_due ON web_checkouts(state,lease_until)')
+    if "card_save_consent" not in {row[1] for row in c.execute("PRAGMA table_info(web_checkouts)")}:
+        try:
+            c.execute("ALTER TABLE web_checkouts ADD COLUMN card_save_consent INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
+    guest_saved_cards.schema(c)
 
 
 def cipher():
@@ -70,6 +79,7 @@ def config(app, language='ja'):
     location = app.SQUARE_EN_LOCATION_ID if language == 'en' and app.SQUARE_EN_LOCATION_ID else app.SQUARE_LOCATION_ID
     sandbox = app.SQUARE_ENV == 'sandbox'
     return {'enabled': ready and enabled(app), 'environment': app.SQUARE_ENV,
+            'saved_cards': bool(ready and enabled(app) and guest_saved_cards.enabled() and guest_passkeys.configuration(app)),
             'application_id': os.getenv('SQUARE_APPLICATION_ID', '') if ready else '',
             'location_id': location if ready else '',
             'sdk_url': ('https://sandbox.web.squarecdn.com/v1/square.js' if sandbox
@@ -208,7 +218,7 @@ def status(app, sid, secret):
     finally:c.close()
 
 
-def pay(app, sid, secret, source_id):
+def pay(app, sid, secret, source_id, *, card_grant=None, saved_card_id=None, store_card=False):
     # Existing sessions can finish after the new-booking feature is switched off.
     if not isinstance(source_id,str) or not re.fullmatch(r'cnon:[A-Za-z0-9:_-]{1,507}',source_id):
         raise CheckoutError('カード情報をもう一度ご確認ください。')
@@ -229,12 +239,43 @@ def pay(app, sid, secret, source_id):
               'amount_money':{'amount':s['amount'],'currency':'JPY'},
               'location_id':s['location_id'],'reference_id':'wc:'+sid,
               'autocomplete':True,'buyer_email_address':r['email']}
+        if saved_card_id is not None:
+            try:
+                account = guest_saved_cards.authorize(app, c, card_grant, r)
+                saved = guest_saved_cards.card(app, c, account["id"])
+                if not saved or not hmac.compare_digest(guest_saved_cards.square_id(saved_card_id), saved["square_card"]):
+                    raise guest_passkeys.Rejected()
+            except (guest_passkeys.Rejected, ValueError):
+                raise CheckoutError('保存済みカードを利用するには、もう一度パスキーで本人確認してください。', 403) from None
+            body["customer_id"] = saved["square_customer"]
+            body["customer_details"] = {"customer_initiated": True, "seller_keyed_in": False}
         encrypted=cipher().encrypt(json.dumps(body,sort_keys=True).encode()).decode()
-        c.execute("UPDATE web_checkouts SET state='PAYING',encrypted_request=?,updated=?,lease_until=? WHERE id=? AND state='HOLD'",(encrypted,time.time(),time.time()+90,sid))
+        consent = int(store_card is True and saved_card_id is None and config(app, s["language"])["saved_cards"])
+        c.execute("UPDATE web_checkouts SET state='PAYING',encrypted_request=?,updated=?,lease_until=?,card_save_consent=? WHERE id=? AND state='HOLD'",
+                  (encrypted,time.time(),time.time()+90,consent,sid))
         c.commit()
     except Exception:c.rollback();raise
     finally:c.close()
     return submit(app,sid,claimed=True)
+
+
+def save_paid_card(app, sid, secret, grant):
+    c = app.con()
+    try:
+        checkout = get_session(c, sid, secret)
+        if checkout["state"] != "PAID" or checkout["environment"] != app.SQUARE_ENV or not checkout["card_save_consent"]:
+            raise CheckoutError("カード保存には決済の完了が必要です。", 409)
+        reservation = c.execute("SELECT * FROM reservations WHERE id=?", (checkout["reservation_id"],)).fetchone()
+        if not reservation or reservation["status"] != "CONFIRMED":
+            raise CheckoutError("カード保存には確定済みのご予約が必要です。", 409)
+        try:
+            customer = guest_saved_cards.authorize(app, c, grant, reservation)
+            with guest_saved_cards.SAVE_LOCKS[customer["id"] % len(guest_saved_cards.SAVE_LOCKS)], c:
+                return {"saved_card": guest_saved_cards.save(app, c, customer, checkout)}
+        except guest_passkeys.Rejected:
+            raise CheckoutError("カード保存にはパスキーでの本人確認が必要です。", 403) from None
+    finally:
+        c.close()
 
 
 def submit(app,sid,claimed=False):

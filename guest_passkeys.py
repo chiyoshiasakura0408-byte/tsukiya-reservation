@@ -291,8 +291,14 @@ def authenticate(app, db, origin, rp, secret, data, now):
         return {"ok": True}
     db.execute("UPDATE guest_passkey_credentials SET sign_count=? WHERE credential_id=?",
                (assertion.new_sign_count, credential_id))
-    return {"guest_name": row["name"], "phone": row["phone"], "email": row["email"],
-            "receipt_name": row["receipt_name"]}
+    result = {"guest_name": row["name"], "phone": row["phone"], "email": row["email"],
+              "receipt_name": row["receipt_name"]}
+    import guest_saved_cards
+    if guest_saved_cards.enabled():
+        guest_saved_cards.schema(db)
+        result["card_grant"] = guest_saved_cards.grant(app, db, secret, row, credential_id, now)
+        result["saved_card"] = guest_saved_cards.public_card(guest_saved_cards.card(app, db, row["id"]))
+    return result
 
 
 def process(app, action, data, source, settings):

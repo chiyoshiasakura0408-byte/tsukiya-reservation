@@ -3203,7 +3203,7 @@ class Handler(
         if gpt_reservations.handle_post(self, sys.modules[__name__], p):
             return
 
-        checkout_match = re.fullmatch(r"/api/public/checkouts(?:/([0-9a-f]{32})/(pay|status|cancel)|/(lookup))?", p)
+        checkout_match = re.fullmatch(r"/api/public/checkouts(?:/([0-9a-f]{32})/(pay|status|cancel|save-card)|/(lookup))?", p)
         if checkout_match:
             # Same-origin only; no third-party POSTs or cross-origin fallback.
             origin = self.headers.get("Origin", "")
@@ -3221,7 +3221,11 @@ class Handler(
                 elif not action:
                     result = web_checkout.create(sys.modules[__name__], data)
                 elif action == "pay":
-                    result = web_checkout.pay(sys.modules[__name__], sid, data.get("checkout_secret"), data.get("source_id"))
+                    result = web_checkout.pay(sys.modules[__name__], sid, data.get("checkout_secret"), data.get("source_id"),
+                                              card_grant=data.get("card_grant"), saved_card_id=data.get("saved_card_id"),
+                                              store_card=data.get("store_card") is True)
+                elif action == "save-card":
+                    result = web_checkout.save_paid_card(sys.modules[__name__], sid, data.get("checkout_secret"), data.get("card_grant"))
                 elif action == "cancel":
                     result = web_checkout.abandon(sys.modules[__name__], sid, data.get("checkout_secret"))
                 else:
