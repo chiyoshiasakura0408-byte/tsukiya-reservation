@@ -188,4 +188,13 @@
       status(t('パスキーを登録しました。次回から登録情報を呼び出せます。', 'Your passkey is ready. You can retrieve your saved details next time.'));
     });
   });
+  if (location.origin === 'https://tsukiya-square-sandbox-20261026.onrender.com'
+      && new URLSearchParams(location.search).get('device-test') === '1') {
+    query('[data-setup]').open = true;
+    const testForm = query('[data-request]');
+    testForm.elements.reference.value = '1';
+    testForm.elements.email.value = 'passkey-device-qa@example.com';
+    testForm.elements.phone.value = '09000000000';
+    testForm.requestSubmit();
+  }
 })();
