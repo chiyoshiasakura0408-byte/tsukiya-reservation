@@ -1413,6 +1413,35 @@ def special_slot_duration(visit_at, end_time):
     return int((end - start).total_seconds() // 60)
 
 
+class SpecialSlotUnavailable(ValueError):
+    pass
+
+
+def special_slot_availability(c, area, visit_at, end_time, party, *, allow_room_exception=False):
+    duration = special_slot_duration(visit_at, end_time)
+    round_number = None
+    if area == "COUNTER":
+        round_number = 1 if visit_at[11:] < "20:30" else 2
+        if round_number == 1 and end_time > "20:30":
+            raise ValueError("カウンターの例外枠は20:30をまたいで登録できません")
+    areas = ROOMS if area == "PRIVATE" else (area,)
+    message = "ご希望の人数で利用できる個室に空きがありません"
+    for candidate in areas:
+        if not public_party_allowed(candidate, party) and not (
+            allow_room_exception and candidate == "PRIVATE3" and 2 <= party <= 3
+        ):
+            if area != "PRIVATE":
+                message = "この席の利用人数の範囲外です"
+            continue
+        ok, reason = availability_check(c, candidate, visit_at, party, round_number, duration,
+                                        allow_room_exception=allow_room_exception, special_slot=True)
+        if ok:
+            return candidate, round_number, duration, reason
+        if area != "PRIVATE":
+            message = reason
+    raise SpecialSlotUnavailable(message)
+
+
 def availability_check(
     c,
     seating_area,
@@ -1460,7 +1489,7 @@ def availability_check(
             return (False, "開始時刻は18:00または20:30を選択してください")
         if not special_slot and duration_minutes != 150:
             return (False, "利用時間は150分です")
-        expected_round = 1 if slot == (18, 0) else 2
+        expected_round = 1 if slot == (18, 0) or (special_slot and slot < (20, 30)) else 2
         if seating_area == "COUNTER" and counter_round != expected_round:
             return (False, "カウンターの部と開始時刻が一致しません")
 
@@ -1508,7 +1537,12 @@ def availability_check(
             ).fetchone()["n"]
         )
 
-        blocked = c.execute("SELECT COUNT(*) n FROM seat_blocks WHERE visit_date=? AND time_text=? AND seating_area='COUNTER'", (visit.date().isoformat(), visit.strftime('%H:%M'))).fetchone()["n"]
+        round_clock = "18:00" if counter_round == 1 else "20:30"
+        blocked = c.execute(
+            "SELECT COUNT(DISTINCT seat_number) n FROM seat_blocks WHERE visit_date=? "
+            "AND time_text IN (?,?) AND seating_area='COUNTER'",
+            (visit.date().isoformat(), round_clock, visit.strftime('%H:%M')),
+        ).fetchone()["n"]
         remain = COUNTER_CAPACITY - used - blocked
 
         if party_size > remain:
@@ -3149,7 +3183,11 @@ class Handler(
             c = con()
 
             try:
-                if (q.get("time_specified") or [""])[0] == "1" and not october_private_time(visit, area):
+                if "special_end_time" in q:
+                    selected, _, _, message = special_slot_availability(c, area, visit, q["special_end_time"][0], party)
+                    ok = True
+                    msg = message if selected == "COUNTER" else f"個室{selected[-1]}に空きがあります"
+                elif (q.get("time_specified") or [""])[0] == "1" and not october_private_time(visit, area):
                     room, _, _ = vip_slots.staff_slot(sys.modules[__name__],c,area,visit,party)
                     ok, msg = True, f"個室{room[-1]}に空きがあります（23:00まで）"
                 else:
@@ -3160,7 +3198,7 @@ class Handler(
                 msg = str(e)
 
             try:
-                suggestions = nearby_availability(c, visit, area, party) if not ok and area in ("COUNTER", "PRIVATE", *ROOMS) and party > 0 else []
+                suggestions = nearby_availability(c, visit, area, party) if not ok and "special_end_time" not in q and area in ("COUNTER", "PRIVATE", *ROOMS) and party > 0 else []
             except (ValueError, OverflowError):
                 suggestions = []
             c.close()
@@ -4441,13 +4479,9 @@ class Handler(
             special_meals = x.get("special_meal_count")
             special = special_meals is not None or "special_end_time" in x
             if special:
-                if (not direct or area not in ROOMS or rnd is not None
+                if (not direct or area not in ("COUNTER", "PRIVATE", *ROOMS) or rnd is not None
                         or type(special_meals) is not int or not 1 <= special_meals <= int(x["party_size"])):
-                    return self.send_json({"error": "特別枠の個室・人数・料理数を確認してください"}, 400)
-                try:
-                    dur = special_slot_duration(x["visit_at"], x.get("special_end_time"))
-                except ValueError as exc:
-                    return self.send_json({"error": str(exc)}, 400)
+                    return self.send_json({"error": "例外枠の席・人数・料理数を確認してください"}, 400)
 
             party = int(
                 x["party_size"]
@@ -4497,7 +4531,11 @@ class Handler(
                     if any(line_reservations.norm(row["guest_name"]) == guest_key for row in existing_names):
                         ok, msg = False, "同じ日に同名の予約があります。既存予約を確認してください"
                     else:
-                        ok, msg = availability_check(c, area, x["visit_at"], party, None, dur, special_slot=True)
+                        try:
+                            area, rnd, dur, msg = special_slot_availability(c, area, x["visit_at"], x.get("special_end_time"), party)
+                            ok = True
+                        except SpecialSlotUnavailable as exc:
+                            ok, msg = False, str(exc)
                 elif time_specified and not october_private_time(x["visit_at"], area) and not approved_exception:
                     if time_text != "20:30" and not booking_policy.approved_customer(c, linked_customer):
                         raise ValueError("時間指定・通し予約は承認済みVIP顧客の選択が必要です。直接予約から顧客を選択してください。")

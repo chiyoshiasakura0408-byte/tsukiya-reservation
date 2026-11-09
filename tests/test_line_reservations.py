@@ -91,6 +91,31 @@ class Tests(unittest.TestCase):
   finally:
    c.close()
 
+ def test_counter_exception_alias_holds_second_round_capacity(self):
+  text='例外予約\n11/18\n21時〜\nカウンター④名\n試験 太郎'
+  payload=item(visit_at='2099-11-18T21:00',party_size=4,seating_area='COUNTER',
+               special_end_time='',special_meal_count=None)
+  with patch.object(lb,'extract',return_value={'is_reservation':True,'items':[payload]}):
+   self.signed([self.event('counter-exception',text),self.event('counter-staff',text,actor='U'+'b'*32)])
+   lb.drain(run)
+  with run.con() as c:
+   row=c.execute('SELECT * FROM reservations').fetchone()
+   self.assertEqual((row['visit_at'],row['counter_round'],row['duration_minutes'],
+                     row['special_meal_count'],row['source']),
+                    ('2099-11-18T21:00',2,120,4,'DIRECT'))
+   self.assertEqual(c.execute('SELECT COUNT(*) FROM line_booking_jobs').fetchone()[0],1)
+   self.assertEqual(len(run.vip_slots.counter_assignments(run,c,'2099-11-18','20:30')[0]),4)
+   self.assertTrue(run.availability_check(c,'COUNTER','2099-11-18T18:00',8,1)[0])
+   self.assertFalse(run.availability_check(c,'COUNTER','2099-11-18T20:30',5,2)[0])
+   c.execute("INSERT INTO seat_blocks(visit_date,time_text,seating_area,seat_number,note,created_at) VALUES('2099-11-18','20:30','COUNTER',8,'test','now')")
+   with self.assertRaisesRegex(ValueError,'残り3席'):
+    run.special_slot_availability(c,'COUNTER','2099-11-18T21:00','23:00',4)
+   self.assertEqual(run.special_slot_availability(c,'COUNTER','2099-11-18T19:00','20:30',4)[:3],
+                    ('COUNTER',1,90))
+   with self.assertRaisesRegex(ValueError,'20:30をまたいで'):
+    run.special_slot_availability(c,'COUNTER','2099-11-18T19:00','21:00',4)
+  c.close()
+
  def test_owner_seat_move_preserves_paid_booking_and_obeys_blocks(self):
   c=run.con()
   with c:

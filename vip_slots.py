@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 
 def counter_assignments(app,c,day,clock):
     blocked={r[0] for r in c.execute("SELECT seat_number FROM seat_blocks WHERE visit_date=? AND time_text=? AND seating_area='COUNTER'",(day,clock))}
-    rows=c.execute("SELECT * FROM reservations WHERE substr(visit_at,1,10)=? AND seating_area='COUNTER' AND (substr(visit_at,12,5)=? OR vip_through=1) AND status IN (?,?,?,?) ORDER BY id",(day,clock,*app.ACTIVE_STATUSES)).fetchall()
+    round_number = 1 if clock == '18:00' else 2
+    rows=c.execute("SELECT * FROM reservations WHERE substr(visit_at,1,10)=? AND seating_area='COUNTER' AND (counter_round=? OR substr(visit_at,12,5)=? OR vip_through=1) AND status IN (?,?,?,?) ORDER BY id",(day,round_number,clock,*app.ACTIVE_STATUSES)).fetchall()
     assigned={}
     for row in rows:
         if row['vip_through']:

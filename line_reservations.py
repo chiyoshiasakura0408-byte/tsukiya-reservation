@@ -22,11 +22,12 @@ LOCK = threading.Lock()
 ROOM_EXCEPTION = re.compile(r'^(?:予約)?例外(?:として)?(?:\s+([a-f0-9]{16}-\d+))?\s*個室\s*[3③]\s*(?:で予約|で登録|に登録|で|に)?$')
 PREFIX = re.compile(r'^(予約追記|予約追加|予約変更|人数変更|予約取消|予約キャンセル|予約補足|予約再試行|予約)(?:\s|[：:、,]|$)')
 
+EXCEPTION_ADD = re.compile(r"^(?:予約追加[\s:：、,]+)?(?:例外予約|例外枠|予約例外)(?=[\s:：、,]|$)")
 SPECIAL_ADD = re.compile(r"^予約追加[\s:：、,]+特別枠")
 OWNER_SEAT_MOVE = re.compile(r"予約変更 例外 #(\d{1,12}) (カウンター|個室[123])")
 OWNER_SPECIAL_ADD = re.compile(
     r"予約追加 特別枠 (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})-(\d{2}:\d{2}) "
-    r"(個室[123]) ([2-8])名 料理([1-8])人前 (\S{1,80})(?: (\+?[0-9-]{8,20}))?"
+    r"(個室[123]|カウンター) ([2-8])名 料理([1-8])人前 (\S{1,80})(?: (\+?[0-9-]{8,20}))?"
 )
 
 
@@ -170,7 +171,7 @@ def ingest(c,raw,signature,payload):
             claimed.add(e['webhookEventId'])
             continue
         dialog=c.execute('SELECT 1 FROM line_note_sessions WHERE actor=? AND destination=?',(actor,destination)).fetchone() or c.execute("SELECT 1 FROM line_booking_jobs WHERE actor=? AND group_id=? AND state='pending' AND text IN ('予約追記','追加')",(actor,destination)).fetchone()
-        if not image and not (m.get('type')=='text' and (PREFIX.match(text) or ROOM_EXCEPTION.fullmatch(text) or quoted or text=='追加' or dialog)):continue
+        if not image and not (m.get('type')=='text' and (PREFIX.match(text) or EXCEPTION_ADD.match(text) or ROOM_EXCEPTION.fullmatch(text) or quoted or text=='追加' or dialog)):continue
         ident=hashlib.sha256(e['webhookEventId'].encode()).hexdigest()[:16]
         c.execute('INSERT OR IGNORE INTO line_booking_jobs(id,event_id,actor,origin,group_id,text,message_id,created,raw,signature,quoted_message_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                   (ident,e['webhookEventId'],actor,'line',destination,text[:6000],mid if image else None,time.time(),raw if image else None,signature if image else None,quoted))
@@ -209,7 +210,7 @@ def extract(text,media=None,previous=None):
     instructions+=' カレンダー月表示では上部の年・月と白丸で選択された日付を組み合わせる。赤い今日の日付を予約日と取り違えない。②名/②は2名、④名/④は4名であり氏名の一部ではない。氏名から人数表記と電話番号を分離する。uncertainには内部キーではなく日本語の項目名だけを入れる。電話番号が記載されていない場合はphoneを空欄にしuncertainには入れない。電話番号が書かれているが判読不能な場合のみ電話番号の判読確認を求める。'
     instructions+=' 電話番号欄が「なし」「VIP」（大文字小文字不問）ならphoneはその語を返す。予約補足で明記されたこの指定はpreviousの電話番号を上書きする。電話番号欄が空欄の補足はphoneを空文字にする。電話番号欄自体のない部分的な補足はpreviousの電話番号を保持する。VIP指定は直接予約の区分指定でありVIP顧客権限の付与ではない。'
     instructions+=' テキストの先頭が「予約」だけで、その後に改行して日時・氏名・人数・店舗が並ぶ場合も新規予約addとして抽出する。10/24のような月/日は現在年を用いる。previousがある補足ではactionはprevious.actionを必ず引き継ぐ。予約の規定説明や回答文は生成しない。'
-    instructions+=' 「予約追加、特別枠」または特別枠のpreviousでは、開始をvisit_at、終了をspecial_end_time（同日HH:MM）、料理人数をspecial_meal_countに分ける。party_sizeは大人と席のみのお子さまを足した総人数。料理数が明記されない場合はnull、終了が不明なら空文字とし、推測しない。通常予約ではspecial_end_timeは空文字、special_meal_countはnull。'
+    instructions+=' 「予約追加、特別枠」「例外予約」「例外枠」「予約例外」または特別枠のpreviousは新規予約add。開始をvisit_at、終了をspecial_end_time（同日HH:MM）、料理人数をspecial_meal_countに分ける。21時〜のように終了が書かれていなければ開始のみ。party_sizeは大人と席のみのお子さまを足した総人数。料理数が明記されない場合はnull、終了が未記載なら空文字とし、推測しない。終了・料理数の未記載はuncertainに入れず、判読不能・席のみの人数が不明な場合はuncertainに入れる。通常予約ではspecial_end_timeは空文字、special_meal_countはnull。'
     content=[{'type':'input_text','text':json.dumps({'text':text,'previous':previous},ensure_ascii=False)}]
     if media:
         data,mime=media
@@ -245,8 +246,9 @@ def validate(app,x):
         for key,label in [('guest_name','氏名'),('visit_at','予約年月日・時間'),('party_size','人数'),('seating_area','店舗・席種')]:
             if not x.get(key):errors.append(label)
     if x.get('special'):
-        if x.get('seating_area') not in app.ROOMS:
-            errors.append('別邸の個室番号（①〜③）')
+        areas = ('COUNTER', *app.ROOMS, 'PRIVATE') if x.get('exception_add') else ('COUNTER', *app.ROOMS)
+        if x.get('seating_area') not in areas:
+            errors.append('カウンターまたは別邸の個室番号（①〜③）')
         if not x.get('special_end_time'):
             errors.append('終了時刻')
         meals = x.get('special_meal_count')
@@ -313,9 +315,15 @@ def perform(app,c,x,allow_room_exception=False):
     course=app.bookable_course(when.date())
     if not course:raise ValueError('この日に登録可能なコースがありません')
     rnd=(1 if when.strftime('%H:%M')=='18:00' else 2) if area=='COUNTER' else None
-    if area=='PRIVATE':
+    if special:
+        area, rnd, duration, reason = app.special_slot_availability(
+            c, area, visit, x['special_end_time'], party, allow_room_exception=exception
+        )
+        ok = True
+    elif area=='PRIVATE':
         area=next((r for r in app.ROOMS if app.public_party_allowed(r,party) and app.availability_check(c,r,visit,party,None,150,before['id'] if before else None)[0]),'PRIVATE')
-    ok,reason=app.availability_check(c,area,visit,party,rnd,duration,before['id'] if before else None,allow_room_exception=exception,special_slot=special)
+    if not special:
+        ok,reason=app.availability_check(c,area,visit,party,rnd,duration,before['id'] if before else None,allow_room_exception=exception)
     if not ok:raise ValueError(reason)
     ts=app.now_iso(); amount=course[1]*(meals if special else party)
     if before:
@@ -405,7 +413,7 @@ def apply_item(app,ident):
             c.execute("UPDATE line_booking_items SET state='needs_info',result=? WHERE id=?",(text,ident))
         command=(f'予約補足 {ident}\n日時\n氏名\n人数\n店舗\n（本店／別邸）\n電話番号\n（なし・VIP・無記載は直接予約）' if c.execute('SELECT state FROM line_booking_items WHERE id=?',(ident,)).fetchone()[0]=='needs_info' else None)
         if command and x.get('special'):
-            command=f'予約補足 {ident}\n日時（開始・終了）\n氏名\n総人数（席のみを含む）\n別邸・個室番号\n料理数'
+            command=f'予約補足 {ident}\n日時（開始・終了）\n氏名\n総人数（席のみを含む）\nカウンター／別邸・個室番号\n料理数'
         done_item=c.execute('SELECT reservation_id FROM line_booking_items WHERE id=?',(ident,)).fetchone()
         notify(c,text,item['group_id'],command=command,reservation_id=done_item[0]);c.commit()
     finally:c.close()
@@ -605,10 +613,21 @@ def process_job(app,job):
             return
     finally:c.close()
     result=extract(text,image_bytes(app.DB,job['message_id']) if job['message_id'] else None,previous)
+    exception_add = bool(previous.get('exception_add')) if previous else (
+        not job['message_id'] and bool(EXCEPTION_ADD.match(text)))
     special = bool(previous.get('special')) if previous else (
-        not job['message_id'] and bool(SPECIAL_ADD.match(text)))
+        not job['message_id'] and (exception_add or bool(SPECIAL_ADD.match(text))))
     for x in result['items']:
         x['special'] = special
+        x['exception_add'] = exception_add
+        if exception_add:
+            if not x.get('special_end_time') and re.fullmatch(r'\d{4}-\d{2}-\d{2}T(?:1[7-9]|2[0-2]):[0-5]\d', x.get('visit_at', '')):
+                hour, minute = map(int, x['visit_at'][11:].split(':'))
+                limit = 20 * 60 + 30 if x['seating_area'] == 'COUNTER' and x['visit_at'][11:] < '20:30' else 23 * 60
+                end = min(hour * 60 + minute + 150, limit)
+                x['special_end_time'] = f'{end // 60:02d}:{end % 60:02d}'
+            if not previous and x.get('special_meal_count') is None and not re.search(r'席のみ|食事なし|料理なし|子ども|子供|こども|幼児', text):
+                x['special_meal_count'] = x['party_size']
     if special and len(result['items']) > 1:
         raise ValueError('特別枠は1件ずつ送信してください')
     # An image or model output cannot authorize a different operation.
