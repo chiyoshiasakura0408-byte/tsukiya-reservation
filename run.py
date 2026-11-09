@@ -1417,7 +1417,12 @@ class SpecialSlotUnavailable(ValueError):
     pass
 
 
-def special_slot_availability(c, area, visit_at, end_time, party, *, allow_room_exception=False):
+APPROVED_CLOSED_COUNTER_SLOT = ("COUNTER", "2026-11-18T21:00", "23:00", 4)
+APPROVED_CLOSED_COUNTER_BOOKING = "3c48012cd3747bf2ae6b4aceca59261062ef8bf73085339270e6e20914a45a8e"
+
+
+def special_slot_availability(c, area, visit_at, end_time, party, *, allow_room_exception=False,
+                              allow_closed_counter=False):
     duration = special_slot_duration(visit_at, end_time)
     round_number = None
     if area == "COUNTER":
@@ -1434,7 +1439,8 @@ def special_slot_availability(c, area, visit_at, end_time, party, *, allow_room_
                 message = "この席の利用人数の範囲外です"
             continue
         ok, reason = availability_check(c, candidate, visit_at, party, round_number, duration,
-                                        allow_room_exception=allow_room_exception, special_slot=True)
+                                        allow_room_exception=allow_room_exception, special_slot=True,
+                                        allow_closed_counter=allow_closed_counter)
         if ok:
             return candidate, round_number, duration, reason
         if area != "PRIVATE":
@@ -1453,7 +1459,8 @@ def availability_check(
     allow_custom_start=False,
     allow_room_exception=False,
     restore_existing=False,
-    special_slot=False
+    special_slot=False,
+    allow_closed_counter=False
 ):
     if not seating_area:
         return (
@@ -1470,7 +1477,7 @@ def availability_check(
     visit = parse_dt(visit_at)
 
     closure_reason = booking_policy.main_restaurant_closure_reason(visit.date(), seating_area)
-    if closure_reason and not restore_existing:
+    if closure_reason and not (restore_existing or (special_slot and allow_closed_counter)):
         return False, closure_reason
 
     if seating_area == "PRIVATE":
@@ -3184,7 +3191,11 @@ class Handler(
 
             try:
                 if "special_end_time" in q:
-                    selected, _, _, message = special_slot_availability(c, area, visit, q["special_end_time"][0], party)
+                    end = q["special_end_time"][0]
+                    selected, _, _, message = special_slot_availability(
+                        c, area, visit, end, party,
+                        allow_closed_counter=(area, visit, end, party) == APPROVED_CLOSED_COUNTER_SLOT,
+                    )
                     ok = True
                     msg = message if selected == "COUNTER" else f"個室{selected[-1]}に空きがあります"
                 elif (q.get("time_specified") or [""])[0] == "1" and not october_private_time(visit, area):
@@ -4532,7 +4543,16 @@ class Handler(
                         ok, msg = False, "同じ日に同名の予約があります。既存予約を確認してください"
                     else:
                         try:
-                            area, rnd, dur, msg = special_slot_availability(c, area, x["visit_at"], x.get("special_end_time"), party)
+                            end = x.get("special_end_time")
+                            slot = (area, x["visit_at"], end, party)
+                            approved_closed_counter = False
+                            if slot == APPROVED_CLOSED_COUNTER_SLOT:
+                                key = "|".join((guest_key, area, x["visit_at"], end, str(party), str(special_meals)))
+                                approved_closed_counter = hashlib.sha256(key.encode()).hexdigest() == APPROVED_CLOSED_COUNTER_BOOKING
+                            area, rnd, dur, msg = special_slot_availability(
+                                c, area, x["visit_at"], end, party,
+                                allow_closed_counter=approved_closed_counter,
+                            )
                             ok = True
                         except SpecialSlotUnavailable as exc:
                             ok, msg = False, str(exc)
