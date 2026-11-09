@@ -3690,6 +3690,54 @@ class Handler(
                 return self.send_json({"error": "入力内容を確認してください"}, 400)
             return self.send_json(data, status, {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
+        if p == "/api/customers":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if self.headers.get("X-Tsukiya-Action") != "customer-create":
+                return self.send_json({"error": "顧客管理画面を開き直してください"}, 403)
+            try:
+                if not lengths or not 0 < int(lengths[0]) <= 16384:
+                    raise ValueError("入力文字数を確認してください")
+                data = self.read_json()
+                if not isinstance(data, dict):
+                    raise ValueError("入力内容を確認してください")
+                values = business_cards.fields(data.get("fields"))
+                if not values["name"]:
+                    raise ValueError("名前を入力してください")
+                if values["phone"] and not booking_blocks.phone_key(values["phone"]):
+                    raise ValueError("電話番号を確認してください")
+                request_id = data.get("request_id")
+                if not isinstance(request_id, str) or not re.fullmatch(
+                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", request_id
+                ):
+                    raise ValueError("画面を開き直して登録してください")
+            except (ValueError, TypeError) as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            contacts = booking_blocks.keys(values["phone"], values["email"])
+            key = customer_match_key({"id": "manual:" + request_id, "guest_name": values["name"],
+                                      "phone": values["phone"], "email": values["email"]})
+            c = con()
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                if contacts:
+                    for row in c.execute("SELECT id, phone, email FROM customers WHERE phone<>'' OR email<>''"):
+                        if contacts & booking_blocks.keys(row["phone"], row["email"]):
+                            return self.send_json({"error": "同じ電話番号またはメールアドレスの顧客が登録済みです。",
+                                                   "customer_id": row["id"]}, 409)
+                previous = c.execute("SELECT id FROM customers WHERE match_key=?", (key,)).fetchone()
+                if previous:
+                    return self.send_json({"customer_id": previous["id"]})
+                now = now_iso()
+                customer_id = c.execute(
+                    "INSERT INTO customers(match_key,name,company_name,phone,email,note,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (key, values["name"], values["company_name"], values["phone"], values["email"], values["memo"], now, now),
+                ).lastrowid
+                c.commit()
+                return self.send_json({"customer_id": customer_id}, 201)
+            finally:
+                c.close()
+
         if p in ("/api/business-cards/scan", "/api/business-cards/save"):
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
