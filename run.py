@@ -3551,6 +3551,23 @@ class Handler(
             except (ValueError,TypeError,AttributeError):
                 return self.send_json({"error":"invalid request"},400)
 
+        if p == "/api/finance/reservation-advances":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if self.headers.get("Transfer-Encoding") or not 0 < length <= 256:
+                    return self.send_json({"error": "invalid request"}, 400)
+                self.connection.settimeout(10)
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    return self.send_json({"error": "invalid request"}, 400)
+                today = datetime.now(ZoneInfo("Asia/Tokyo")).date()
+                code, result = finance_links.read_advances(
+                    DB, raw, self.headers.get("X-Tsukiya-Receipt-Signature", ""), con, today
+                )
+                return self.send_json(result, code, headers={"Cache-Control": "no-store"})
+            except Exception:
+                return self.send_json({"error": "advance sales unavailable"}, 503)
+
         if p == "/api/finance/receipt-link":
             try:
                 length = int(self.headers.get("Content-Length", "0"))

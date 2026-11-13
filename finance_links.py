@@ -85,6 +85,44 @@ def sync(db,raw,signature,connect,sync_customers):
         raise
     finally:c.close()
 
+def read_advances(db, raw, signature, connect, today):
+    """Return confirmed prepayments for elapsed visit dates, without guest data."""
+    secret = line_receipts.bridge_secret(db)
+    expected = hmac.new(secret.encode(), b'tsukiya-finance-advances-v1\n' + raw, hashlib.sha256).hexdigest()
+    if not secret or not hmac.compare_digest(expected, signature):
+        return 403, {'error': 'unauthorized'}
+    try:
+        request = json.loads(raw)
+        timestamp = request['timestamp']
+        if type(timestamp) is not int or abs(time.time() - timestamp) > 300:
+            raise ValueError()
+    except (ValueError, TypeError, KeyError):
+        return 400, {'error': 'invalid request'}
+    c = connect()
+    try:
+        rows = c.execute("""
+            SELECT id, visit_at, seating_area, amount
+            FROM reservations
+            WHERE status = 'CONFIRMED'
+              AND payment_source IN ('BANK', 'SQUARE')
+              AND COALESCE(payment_confirmed_at, '') <> ''
+              AND amount > 0 AND visit_at < ?
+              AND seating_area IN ('COUNTER', 'PRIVATE1', 'PRIVATE2', 'PRIVATE3')
+              AND COALESCE(course_name, '') NOT LIKE '決済テスト%'
+              AND NOT EXISTS (
+                  SELECT 1 FROM cancellation_refunds f
+                  WHERE f.reservation_id = reservations.id AND f.status = 'COMPLETED'
+              )
+            ORDER BY visit_at, id
+        """, (today.isoformat() + 'T99',))
+        return 200, {'advances': [
+            {'reservationId': row['id'], 'date': row['visit_at'][:10],
+             'branch': branch(row['seating_area']), 'amount': row['amount']}
+            for row in rows
+        ]}
+    finally:
+        c.close()
+
 def for_reservation(c,reservation_id):
     schema(c)
     return [{'sales':row['sales'],'imageUrl':ORIGIN+'/api/uploads/'+row['file_id']} for row in c.execute("SELECT sales,file_id FROM finance_receipt_links WHERE reservation_id=? AND status='confirmed'",(reservation_id,))]
