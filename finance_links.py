@@ -106,7 +106,8 @@ def read_advances(db, raw, signature, connect, today):
             WHERE status = 'CONFIRMED'
               AND payment_source IN ('BANK', 'SQUARE')
               AND COALESCE(payment_confirmed_at, '') <> ''
-              AND amount > 0 AND visit_at < ?
+              -- Historical payment tests used a 1-yen charge.
+              AND amount > 1 AND visit_at < ?
               AND seating_area IN ('COUNTER', 'PRIVATE1', 'PRIVATE2', 'PRIVATE3')
               AND COALESCE(course_name, '') NOT LIKE '決済テスト%'
               AND NOT EXISTS (
