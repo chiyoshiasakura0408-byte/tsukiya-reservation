@@ -1463,6 +1463,7 @@ def availability_check(
     special_slot=False,
     allow_closed_counter=False,
     private3_table=None,
+    exclude_other_id=None,
 ):
     if not seating_area:
         return (
@@ -1606,29 +1607,13 @@ def availability_check(
         ).fetchall()
 
         for row in rows:
-            if (
-                exclude_id is not None
-                and row["id"] == exclude_id
-            ):
+            if row["id"] in (exclude_id, exclude_other_id):
                 continue
             if private3_table is not None and row["private3_table"] not in (None, private3_table):
                 continue
 
-            other_start = parse_dt(
-                row["visit_at"]
-            )
-
-            if row["vip_through"]:
-                other_start=other_start.replace(hour=18,minute=0)
-            other_end = (
-                other_start
-                + timedelta(
-                    minutes=int(
-                        300 if row["vip_through"] else row["duration_minutes"]
-                        or 150
-                    )
-                )
-            )
+            other_start, other_duration = private_reservation_window(row)
+            other_end = other_start + timedelta(minutes=other_duration)
 
             if (
                 visit < other_end
@@ -1799,6 +1784,60 @@ def change_direct_room(c, rid, data):
     c.execute("UPDATE reservations SET seating_area=?,private3_table=?,updated_at=? WHERE id=?",
               (room, table, now_iso(), rid))
     return {"ok": True, "id": rid, "seating_area": room, "private3_table": table}
+
+
+def private_reservation_window(row):
+    start = parse_dt(row["visit_at"])
+    if row["vip_through"]:
+        return start.replace(hour=18, minute=0), 300
+    return start, int(row["duration_minutes"] or 150)
+
+
+def swap_private_rooms(c, rid, data):
+    """Swap two confirmed private bookings within the caller's write transaction."""
+    other_id = data.get("other_id")
+    if type(other_id) is not int or other_id < 1 or other_id == rid:
+        raise ValueError("入れ替える予約を選択してください")
+    first = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
+    second = c.execute("SELECT * FROM reservations WHERE id=?", (other_id,)).fetchone()
+    for row, expected in ((first, data.get("first")), (second, data.get("second"))):
+        if not row or row["status"] != "CONFIRMED" or row["seating_area"] not in ROOMS:
+            raise ValueError("確定済みの個室予約を選択してください")
+        fields = ("seating_area", "private3_table", "visit_at", "party_size", "duration_minutes", "vip_through")
+        if not isinstance(expected, dict) or any(expected.get(field) != row[field] for field in fields):
+            raise ValueError("予約が更新されています。再読み込みしてから入れ替えてください")
+    if (first["seating_area"], first["private3_table"]) == (second["seating_area"], second["private3_table"]):
+        raise ValueError("異なる席の予約を選択してください")
+    first_start, first_duration = private_reservation_window(first)
+    second_start, second_duration = private_reservation_window(second)
+    now = datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
+    if min(parse_dt(first["visit_at"]), parse_dt(second["visit_at"])) <= now:
+        raise ValueError("過去の予約は入れ替えできません")
+    if not (first_start < second_start + timedelta(minutes=second_duration)
+            and second_start < first_start + timedelta(minutes=first_duration)):
+        raise ValueError("利用時間が重なる予約を選択してください")
+    for incoming, outgoing, start, duration in (
+        (first, second, first_start, first_duration),
+        (second, first, second_start, second_duration),
+    ):
+        area, table = outgoing["seating_area"], outgoing["private3_table"]
+        if incoming["vip_through"] and table is not None:
+            raise ValueError("VIP通し予約の移動先は個室全体を選んでください")
+        legacy_small_room = area == "PRIVATE3" and table is None and outgoing["party_size"] < 4
+        ok, reason = availability_check(
+            c, area, start.isoformat(timespec="minutes"), incoming["party_size"], None, duration,
+            exclude_id=outgoing["id"], exclude_other_id=incoming["id"], special_slot=True,
+            private3_table=table, allow_room_exception=legacy_small_room,
+        )
+        if not ok:
+            raise ValueError(f"予約 #{incoming['id']} の移動先を確保できません。{reason}")
+    ts = now_iso()
+    c.executemany(
+        "UPDATE reservations SET seating_area=?,private3_table=?,updated_at=? WHERE id=?",
+        ((second["seating_area"], second["private3_table"], ts, rid),
+         (first["seating_area"], first["private3_table"], ts, other_id)),
+    )
+    return {"ok": True, "id": rid, "other_id": other_id}
 
 
 def change_direct_time(c, rid, data):
@@ -3890,7 +3929,7 @@ class Handler(
             finally:
                 c.close()
 
-        time_change = re.fullmatch(r"/api/reservations/(\d+)/(time|party|room)", p)
+        time_change = re.fullmatch(r"/api/reservations/(\d+)/(time|party|room|room-swap)", p)
         if time_change:
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
@@ -3902,7 +3941,8 @@ class Handler(
                 if not isinstance(data, dict):
                     raise ValueError("入力内容を確認してください")
                 c.execute("BEGIN IMMEDIATE")
-                result = {"time": change_direct_time, "party": change_direct_party, "room": change_direct_room}[time_change[2]](c, int(time_change[1]), data)
+                result = {"time": change_direct_time, "party": change_direct_party, "room": change_direct_room,
+                          "room-swap": swap_private_rooms}[time_change[2]](c, int(time_change[1]), data)
                 c.commit()
                 return self.send_json(result)
             except (ValueError, TypeError) as exc:

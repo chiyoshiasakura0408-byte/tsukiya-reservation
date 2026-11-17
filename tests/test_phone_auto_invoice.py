@@ -162,6 +162,7 @@ class PhoneInvoiceTest(unittest.TestCase):
             self.post(path, {**change, 'private3_table': 1}, **headers)
         self.assertIn('テーブルAに18:00〜20:30', json.load(table_taken.exception)['error'])
         self.assertEqual(self.post(path, change, **headers)['private3_table'], 2)
+
         with run.con() as db:
             db.execute("UPDATE reservations SET status='CANCELLED' WHERE id=?", (table_a['id'],))
         change.update(expected_seating_area='PRIVATE3', expected_private3_table=2, private3_table=1)
@@ -171,5 +172,39 @@ class PhoneInvoiceTest(unittest.TestCase):
         self.assertIn('予約が更新されています', json.load(stale.exception)['error'])
         change.update(expected_private3_table=1, private3_table=2)
         self.assertEqual(self.post(path, change, **headers)['private3_table'], 2)
+
+    def test_swap_confirmed_private_bookings_checks_both_directions_before_saving(self):
+        direct = '/api/reservations/direct'
+        start = '2099-12-05T18:00'
+        first = self.post(direct, {
+            **self.body, 'visit_at': start, 'seating_area': 'PRIVATE3', 'approve_private3_table': True
+        }, **{'X-Tsukiya-Action': 'approve-private3-table'})
+        second = self.post(direct, {
+            **self.body, 'visit_at': start, 'guest_name': 'Other booking',
+            'request_id': str(uuid.uuid4()), 'party_size': 4
+        })
+        fields = ('seating_area', 'private3_table', 'visit_at', 'party_size', 'duration_minutes', 'vip_through')
+        payload = {'other_id': second['id'], 'first': {field: first[field] for field in fields},
+                   'second': {field: second[field] for field in fields}}
+        url = f"/api/reservations/{first['id']}/room-swap"
+        headers = {'X-Tsukiya-Action': 'change-time'}
+        with run.con() as db:
+            db.execute("UPDATE reservations SET source='WEB_CARD',payment_source='SQUARE' WHERE id=?", (second['id'],))
+            db.execute("INSERT INTO seat_blocks(visit_date,time_text,seating_area,created_at) VALUES('2099-12-05','18:00','PRIVATE3','test')")
+        with self.assertRaises(urllib.error.HTTPError) as blocked:
+            self.post(url, payload, **headers)
+        self.assertIn('ブロック', json.load(blocked.exception)['error'])
+        with run.con() as db:
+            saved = db.execute("SELECT seating_area,private3_table FROM reservations ORDER BY id").fetchall()
+            self.assertEqual([tuple(row) for row in saved], [('PRIVATE3', 1), ('PRIVATE1', None)])
+            db.execute("DELETE FROM seat_blocks")
+        self.assertTrue(self.post(url, payload, **headers)['ok'])
+        with run.con() as db:
+            saved = db.execute("SELECT seating_area,private3_table,visit_at,party_size,amount,payment_source FROM reservations ORDER BY id").fetchall()
+            self.assertEqual([tuple(row) for row in saved],
+                             [('PRIVATE1', None, start, 2, 132000, None), ('PRIVATE3', 1, start, 4, 264000, 'SQUARE')])
+        with self.assertRaises(urllib.error.HTTPError) as stale:
+            self.post(url, payload, **headers)
+        self.assertIn('予約が更新されています', json.load(stale.exception)['error'])
 
 if __name__=='__main__': unittest.main()
