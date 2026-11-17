@@ -43,6 +43,10 @@ main{max-width:1450px;margin:auto;padding:16px}.pages{display:flex;flex-wrap:wra
 .room-swap select{display:block;width:100%;min-height:44px;margin:5px 0 10px}
 .room-swap p{margin:8px 0}
 .room-swap #roomSwapSummary{white-space:pre-line}
+.room-batch{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.room-batch-row{padding:8px 0;border-bottom:1px solid var(--line)}
+.room-batch-row label{display:block;font-weight:700}
+.room-batch #roomBatchSummary{white-space:pre-line}
 </style>
 
 <style id="phoneScriptStyles">
@@ -195,8 +199,7 @@ function roomSwapEditor(r){
     const [otherStart,otherEnd]=reservationRoomWindow(other);
     return start<otherEnd&&otherStart<end;
   }).map(other=>`<option value="${Number(other.id)}">${escapeHtml(areaLabel(other))} · ${escapeHtml(other.visit_at.slice(11,16))} · ${escapeHtml(other.guest_name)}様 (${Number(other.party_size)}名)</option>`);
-  if(!choices.length)return '';
-  return `<section class="room-swap" aria-label="席の入れ替え"><button id="openRoomSwap" class="room-swap-primary" type="button" aria-expanded="false" aria-controls="roomSwapEditor" onclick="openRoomSwap(this)">予約同士の席を入れ替える</button><div id="roomSwapEditor" hidden><label for="roomSwapTarget">入れ替える相手の予約</label><select id="roomSwapTarget" onchange="resetRoomSwap()"> <option value="">選択してください</option>${choices.join('')}</select><button id="previewRoomSwap" type="button" onclick="previewRoomSwap(${Number(r.id)})" disabled>入れ替え内容を確認</button><p id="roomSwapSummary" hidden></p><button id="confirmRoomSwap" class="room-swap-primary" type="button" onclick="swapRooms(${Number(r.id)})" hidden>この内容で入れ替える</button></div><p id="roomSwapMessage" role="status"></p></section>`;
+  return `<section class="room-swap" aria-label="席の入れ替え"><button id="openRoomSwap" class="room-swap-primary" type="button" aria-expanded="false" aria-controls="roomSwapEditor" onclick="openRoomSwap(this)">予約同士の席を入れ替える</button><div id="roomSwapEditor" hidden><label for="roomSwapTarget">入れ替える相手の予約</label><select id="roomSwapTarget" onchange="resetRoomSwap()"> <option value="">選択してください</option>${choices.join('')}</select><button id="previewRoomSwap" type="button" onclick="previewRoomSwap(${Number(r.id)})" disabled>入れ替え内容を確認</button><p id="roomSwapSummary" hidden></p><button id="confirmRoomSwap" class="room-swap-primary" type="button" onclick="swapRooms(${Number(r.id)})" hidden>この内容で入れ替える</button><button id="openRoomBatch" type="button" onclick="openRoomBatch(${Number(r.id)})">関連予約をまとめて変更</button><div id="roomBatchEditor" class="room-batch" hidden></div></div><p id="roomSwapMessage" role="status"></p></section>`;
 }
 let roomSwapPlan=null;
 function openRoomSwap(button){
@@ -211,6 +214,7 @@ function resetRoomSwap(){
   $('roomSwapSummary').hidden=true;
   $('confirmRoomSwap').hidden=true;
   $('roomSwapMessage').textContent='';
+  $('roomBatchEditor').hidden=true;
 }
 function roomSwapRequest(id,body){
   return api(`/api/reservations/${id}/room-swap`,{method:'POST',headers:{'X-Tsukiya-Action':'change-time'},body:JSON.stringify(body)});
@@ -221,11 +225,7 @@ async function previewRoomSwap(id){
   const second=reservations.find(row=>Number(row.id)===Number(control.value));
   resetRoomSwap();
   if(!first||!second){$('roomSwapMessage').textContent='入れ替える相手の予約を選択してください';return}
-  const snapshot=r=>({
-    seating_area:r.seating_area,private3_table:r.private3_table??null,visit_at:r.visit_at,
-    party_size:r.party_size,duration_minutes:r.duration_minutes,vip_through:r.vip_through
-  });
-  const body={other_id:Number(second.id),first:snapshot(first),second:snapshot(second)};
+  const body={other_id:Number(second.id),first:roomReservationSnapshot(first),second:roomReservationSnapshot(second)};
   control.disabled=true;
   $('previewRoomSwap').disabled=true;
   try{
@@ -268,6 +268,86 @@ async function swapRooms(id){
     resetRoomSwap();
     control.disabled=false;
     $('roomSwapMessage').textContent=e.message;
+  }
+}
+function roomReservationSnapshot(r){
+  return {seating_area:r.seating_area,private3_table:r.private3_table??null,visit_at:r.visit_at,
+    party_size:r.party_size,duration_minutes:r.duration_minutes,vip_through:r.vip_through};
+}
+function roomBatchSeat(value){
+  const table=value.match(/^PRIVATE3_TABLE_([12])$/);
+  return table?{seating_area:'PRIVATE3',private3_table:Number(table[1])}:{seating_area:value,private3_table:null};
+}
+function roomBatchLabel(seat){
+  return seat.seating_area==='PRIVATE3'&&!seat.private3_table?'個室③全体':areaLabel(seat);
+}
+function roomBatchChoices(r){
+  const current=currentRoomChoice(r);
+  const rooms=['PRIVATE1','PRIVATE2','PRIVATE3'].filter(area=>r.party_size>= (area==='PRIVATE3'?4:2)&&r.party_size<=(area==='PRIVATE3'?8:4));
+  if(!r.vip_through&&r.party_size>=2&&r.party_size<=4)rooms.push('PRIVATE3_TABLE_1','PRIVATE3_TABLE_2');
+  return [...new Set([current,...rooms])];
+}
+let roomBatchRows=[],roomBatchPlan=null;
+function openRoomBatch(id){
+  const source=reservations.find(r=>Number(r.id)===id);
+  if(!source)return;
+  const partner=reservations.find(r=>Number(r.id)===Number($('roomSwapTarget').value));
+  roomBatchRows=reservations.filter(r=>r.status==='CONFIRMED'&&['PRIVATE1','PRIVATE2','PRIVATE3'].includes(r.seating_area)&&r.visit_at.slice(0,10)===source.visit_at.slice(0,10))
+    .sort((a,b)=>a.visit_at.localeCompare(b.visit_at)||Number(a.id)-Number(b.id));
+  const editor=$('roomBatchEditor');
+  editor.hidden=false;
+  editor.innerHTML=`<p>変更する予約ごとに移動先を選択してください。</p>${roomBatchRows.map(r=>{
+    const current=currentRoomChoice(r),choices=roomBatchChoices(r);
+    const suggested=Number(r.id)===id&&partner?currentRoomChoice(partner):Number(r.id)===Number(partner?.id)?currentRoomChoice(source):current;
+    const selected=choices.includes(suggested)?suggested:current;
+    return `<div class="room-batch-row"><label for="batchSeat${Number(r.id)}">${escapeHtml(r.visit_at.slice(11,16))}・${escapeHtml(r.guest_name)}様（${Number(r.party_size)}名）</label><select id="batchSeat${Number(r.id)}" onchange="resetRoomBatch()">${choices.map(value=>`<option value="${value}" ${value===selected?'selected':''}>${escapeHtml(roomBatchLabel(roomBatchSeat(value)))}${value===current?'（現在の席）':''}</option>`).join('')}</select></div>`;
+  }).join('')}<button id="previewRoomBatch" type="button" onclick="submitRoomBatch(${id},true)">一括変更の内容を確認</button><p id="roomBatchSummary" role="status"></p><button id="confirmRoomBatch" class="room-swap-primary" type="button" onclick="submitRoomBatch(${id},false)" hidden>この内容で一括変更</button>`;
+  resetRoomBatch();
+  editor.scrollIntoView({block:'nearest'});
+}
+function resetRoomBatch(){
+  roomBatchPlan=null;
+  $('confirmRoomBatch').hidden=true;
+  $('roomBatchSummary').textContent='';
+}
+async function submitRoomBatch(id,preview){
+  if(!preview&&!roomBatchPlan)return;
+  const editor=$('roomBatchEditor'),button=$('previewRoomBatch'),confirmButton=$('confirmRoomBatch');
+  const fields=roomBatchRows.map(r=>$('batchSeat'+Number(r.id)));
+  if(preview)resetRoomBatch();
+  const selected=preview?roomBatchRows.map((row,index)=>({row,value:fields[index].value}))
+    .filter(({row,value})=>value!==currentRoomChoice(row)):roomBatchPlan.selected;
+  const changes=selected.map(({row,value})=>({id:Number(row.id),expected:roomReservationSnapshot(row),...roomBatchSeat(value)}));
+  if(!changes.length){$('roomBatchSummary').textContent='移動先を変更した予約がありません。';return}
+  button.disabled=true;
+  confirmButton.disabled=true;
+  fields.forEach(field=>field.disabled=true);
+  try{
+    const reply=await api(`/api/reservations/${id}/room-batch`,{method:'POST',headers:{'X-Tsukiya-Action':'change-time'},body:JSON.stringify({changes,preview})});
+    if(preview){
+      if($('roomBatchEditor')!==editor)return;
+      roomBatchPlan={selected};
+      $('roomBatchSummary').textContent=selected.map(({row,value})=>`${row.guest_name}様（${row.visit_at.slice(11,16)}） ${roomBatchLabel(row)} → ${roomBatchLabel(roomBatchSeat(value))}`).join('\n');
+      confirmButton.hidden=false;
+    }else{
+      roomBatchPlan=null;
+      await load();
+      if($('roomBatchEditor')===editor)showSeatDetail(id);
+      const message=`${reply.changed}件の席を一括変更しました。`;
+      $('boardMessage').textContent=message;
+      if($('roomSwapMessage'))$('roomSwapMessage').textContent=message;
+    }
+  }catch(e){
+    if($('roomBatchEditor')===editor){
+      resetRoomBatch();
+      $('roomBatchSummary').textContent=e.message;
+    }
+  }finally{
+    if($('roomBatchEditor')===editor){
+      button.disabled=false;
+      confirmButton.disabled=false;
+      fields.forEach(field=>field.disabled=false);
+    }
   }
 }
 async function changeStartTime(id,button){const r=reservations.find(x=>Number(x.id)===id);if(!r)return;button.disabled=true;try{await api(`/api/reservations/${id}/time`,{method:'POST',headers:{'Content-Type':'application/json','X-Tsukiya-Action':'change-time'},body:JSON.stringify({time:$('changeStartTime').value,expected_visit_at:r.visit_at})});await load();showSeatDetail(id);$('changeTimeMessage').textContent='開始時刻を変更しました。'}catch(e){$('changeTimeMessage').textContent=e.message;button.disabled=false}}

@@ -1464,6 +1464,7 @@ def availability_check(
     allow_closed_counter=False,
     private3_table=None,
     exclude_other_id=None,
+    exclude_ids=(),
 ):
     if not seating_area:
         return (
@@ -1607,7 +1608,7 @@ def availability_check(
         ).fetchall()
 
         for row in rows:
-            if row["id"] in (exclude_id, exclude_other_id):
+            if row["id"] in (exclude_id, exclude_other_id) or row["id"] in exclude_ids:
                 continue
             if private3_table is not None and row["private3_table"] not in (None, private3_table):
                 continue
@@ -1623,7 +1624,7 @@ def availability_check(
                     destination = ("個室③全体" if row["private3_table"] is None
                                    else ("テーブルA", "テーブルB")[private3_table - 1])
                     return False, f"{destination}に{other_start:%H:%M}〜{other_end:%H:%M}の予約があります"
-                if exclude_other_id is not None:
+                if exclude_other_id is not None or exclude_ids:
                     destination = ("テーブルA", "テーブルB")[row["private3_table"] - 1] if row["private3_table"] else "移動先の個室"
                     return False, f"{destination}に{other_start:%H:%M}〜{other_end:%H:%M}の予約があります"
                 return (
@@ -1794,6 +1795,64 @@ def private_reservation_window(row):
     if row["vip_through"]:
         return start.replace(hour=18, minute=0), 300
     return start, int(row["duration_minutes"] or 150)
+
+
+def change_private_rooms_together(c, rid, data):
+    """Validate the final layout, then save all selected seats in one transaction."""
+    changes = data.get("changes")
+    if not isinstance(changes, list) or not changes:
+        raise ValueError("席を変更する予約と移動先を選択してください")
+    plan = []
+    seen = set()
+    now = datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
+    for change in changes:
+        if not isinstance(change, dict):
+            raise ValueError("変更内容を確認してください")
+        ident = change.get("id")
+        if type(ident) is not int or ident < 1 or ident in seen:
+            raise ValueError("各予約は一度ずつ選択してください")
+        seen.add(ident)
+        row = c.execute("SELECT * FROM reservations WHERE id=?", (ident,)).fetchone()
+        if not row or row["status"] != "CONFIRMED" or row["seating_area"] not in ROOMS:
+            raise ValueError("確定済みの個室予約を選択してください")
+        expected = change.get("expected")
+        fields = ("seating_area", "private3_table", "visit_at", "party_size", "duration_minutes", "vip_through")
+        if not isinstance(expected, dict) or any(expected.get(field) != row[field] for field in fields):
+            raise ValueError("予約が更新されています。画面を開き直してください")
+        if parse_dt(row["visit_at"]) <= now:
+            raise ValueError("過去の予約は変更できません")
+        area, table = change.get("seating_area"), change.get("private3_table")
+        if area not in ROOMS or (table is not None and
+                (area != "PRIVATE3" or type(table) is not int or table not in (1, 2) or row["vip_through"])):
+            raise ValueError(f"{row['guest_name']}様の移動先を確認してください")
+        if (area, table) != (row["seating_area"], row["private3_table"]):
+            start, duration = private_reservation_window(row)
+            plan.append((row, area, table, start, duration))
+    anchor = c.execute("SELECT visit_at FROM reservations WHERE id=?", (rid,)).fetchone()
+    if not anchor or any(row["visit_at"][:10] != anchor["visit_at"][:10] for row, *_ in plan):
+        raise ValueError("同じ日の予約を選んでください")
+    if not plan:
+        raise ValueError("移動先を変更した予約がありません")
+    moving = {row["id"] for row, *_ in plan}
+    for index, (row, area, table, start, duration) in enumerate(plan):
+        ok, reason = availability_check(
+            c, area, start.isoformat(timespec="minutes"), row["party_size"], None, duration,
+            special_slot=True, private3_table=table, exclude_ids=moving,
+        )
+        if not ok:
+            raise ValueError(f"{row['guest_name']}様の移動先を確保できません。{reason}")
+        for other, other_area, other_table, other_start, other_duration in plan[:index]:
+            shared_seat = area == other_area and (table is None or other_table is None or table == other_table)
+            if (shared_seat and start < other_start + timedelta(minutes=other_duration)
+                    and other_start < start + timedelta(minutes=duration)):
+                raise ValueError(f"{row['guest_name']}様と{other['guest_name']}様の移動先が同じ時間帯に重なっています")
+    if data.get("preview") is not True:
+        ts = now_iso()
+        c.executemany(
+            "UPDATE reservations SET seating_area=?,private3_table=?,updated_at=? WHERE id=?",
+            [(area, table, ts, row["id"]) for row, area, table, _, _ in plan],
+        )
+    return {"ok": True, "changed": len(plan)}
 
 
 def swap_private_rooms(c, rid, data):
@@ -3959,7 +4018,7 @@ class Handler(
             finally:
                 c.close()
 
-        time_change = re.fullmatch(r"/api/reservations/(\d+)/(time|party|room|room-swap)", p)
+        time_change = re.fullmatch(r"/api/reservations/(\d+)/(time|party|room|room-swap|room-batch)", p)
         if time_change:
             if not self.auth():
                 return self.send_json({"error": "unauthorized"}, 401)
@@ -3972,7 +4031,7 @@ class Handler(
                     raise ValueError("入力内容を確認してください")
                 c.execute("BEGIN IMMEDIATE")
                 result = {"time": change_direct_time, "party": change_direct_party, "room": change_direct_room,
-                          "room-swap": swap_private_rooms}[time_change[2]](c, int(time_change[1]), data)
+                          "room-swap": swap_private_rooms, "room-batch": change_private_rooms_together}[time_change[2]](c, int(time_change[1]), data)
                 c.commit()
                 return self.send_json(result)
             except (ValueError, TypeError) as exc:

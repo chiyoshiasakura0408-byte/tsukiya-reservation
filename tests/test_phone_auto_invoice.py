@@ -240,4 +240,42 @@ class PhoneInvoiceTest(unittest.TestCase):
             self.assertEqual([tuple(row) for row in seats],
                              [(early['id'], 'PRIVATE3', 1), (late['id'], 'PRIVATE1', None), (middle['id'], 'PRIVATE3', 2)])
 
+    def test_batch_moves_all_three_related_bookings_or_none(self):
+        direct = '/api/reservations/direct'
+        options = {**self.body, 'visit_at': '2099-12-05T18:00', 'seating_area': 'PRIVATE3'}
+        early = self.post(direct, {**options, 'approve_private3_table': True},
+                          **{'X-Tsukiya-Action': 'approve-private3-table'})
+        late = self.post(direct, {**options, 'visit_at': '2099-12-05T20:30', 'guest_name': 'Late booking',
+                                 'party_size': 4, 'request_id': str(uuid.uuid4())})
+        middle = self.post(direct, {**options, 'visit_at': '2099-12-05T19:00', 'guest_name': 'Middle booking',
+                                   'seating_area': 'PRIVATE1', 'special_end_time': '21:00', 'special_meal_count': 2,
+                                   'request_id': str(uuid.uuid4())})
+        fields = ('seating_area', 'private3_table', 'visit_at', 'party_size', 'duration_minutes', 'vip_through')
+
+        def move(row, area, table=None):
+            return {'id': row['id'], 'expected': {field: row[field] for field in fields},
+                    'seating_area': area, 'private3_table': table}
+
+        changes = [move(early, 'PRIVATE1'), move(middle, 'PRIVATE3', 1), move(late, 'PRIVATE1')]
+        url = f"/api/reservations/{middle['id']}/room-batch"
+        headers = {'X-Tsukiya-Action': 'change-time'}
+        with self.assertRaises(urllib.error.HTTPError) as missing:
+            self.post(url, {'changes': changes[:2], 'preview': True}, **headers)
+        self.assertIn('20:30〜23:00', json.load(missing.exception)['error'])
+        self.assertEqual(self.post(url, {'changes': changes, 'preview': True}, **headers)['changed'], 3)
+        with run.con() as db:
+            seats = db.execute("SELECT seating_area,private3_table FROM reservations ORDER BY id").fetchall()
+            self.assertEqual([tuple(row) for row in seats], [('PRIVATE3', 1), ('PRIVATE3', None), ('PRIVATE1', None)])
+        invalid = [move(early, 'PRIVATE2'), move(middle, 'PRIVATE2'), changes[2]]
+        with self.assertRaises(urllib.error.HTTPError) as collision:
+            self.post(url, {'changes': invalid}, **headers)
+        self.assertIn('同じ時間帯に重なっています', json.load(collision.exception)['error'])
+        self.assertEqual(self.post(url, {'changes': changes}, **headers)['changed'], 3)
+        with run.con() as db:
+            seats = db.execute("SELECT seating_area,private3_table,visit_at,amount FROM reservations ORDER BY id").fetchall()
+            self.assertEqual([tuple(row) for row in seats],
+                             [('PRIVATE1', None, early['visit_at'], early['amount']),
+                              ('PRIVATE1', None, late['visit_at'], late['amount']),
+                              ('PRIVATE3', 1, middle['visit_at'], middle['amount'])])
+
 if __name__=='__main__': unittest.main()
