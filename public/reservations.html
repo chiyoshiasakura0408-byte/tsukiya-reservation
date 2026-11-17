@@ -37,6 +37,12 @@ main{max-width:1450px;margin:auto;padding:16px}.pages{display:flex;flex-wrap:wra
 .phone-actions #notice,.phone-actions #specialTimeSummary{width:100%;margin:0}
 .room-tables{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}.room-tables .seat{min-height:68px}.room-table-label{font-size:11px;font-weight:700;color:var(--muted)}
 .phone-actions #approveRoom3{background:#fff;color:var(--navy);border-color:var(--navy)}
+.room-swap{margin:14px 0;padding:10px;border:1px solid var(--line);border-radius:9px}
+.room-swap button{min-height:44px}
+.room-swap .room-swap-primary{background:var(--navy);color:#fff}
+.room-swap select{display:block;width:100%;min-height:44px;margin:5px 0 10px}
+.room-swap p{margin:8px 0}
+.room-swap #roomSwapSummary{white-space:pre-line}
 </style>
 
 <style id="phoneScriptStyles">
@@ -98,7 +104,7 @@ function togglePhone(show){$('phoneCard').hidden=!show;$('openPhone').hidden=sho
 function showBlockControls(area){blockArea=area;$('blockCard').hidden=false;$('blockTitle').textContent=(area==='COUNTER'?'カウンター':'個室')+'の席ブロック';renderBlockSelection();$('blockCard').scrollIntoView({behavior:'smooth',block:'nearest'})}
 function renderBlockSelection(){const labels=[...selectedBlocks].filter(k=>blockArea==='COUNTER'?k.includes('|COUNTER|'):k.includes('|PRIVATE')).map(k=>{const [time,area,num]=k.split('|');return `${time} ${area==='COUNTER'?num+'番':'個室'+area.slice(-1)}`});const existing=blocks.find(b=>Number(b.id)===selectedBlockedId&&(blockArea==='COUNTER'?b.seating_area==='COUNTER':b.seating_area.startsWith('PRIVATE')));$('blockSelection').textContent=existing?`${existing.time_text} ${existing.seating_area==='COUNTER'?existing.seat_number+'番':'個室'+existing.seating_area.slice(-1)}を解除します`:labels.length?labels.join('・'):'空席をタップして選択';$('createBlock').disabled=!labels.length;$('removeBlock').hidden=!existing}
 function selectBlock(time,area,num){showBlockControls(area==='COUNTER'?'COUNTER':'PRIVATE');const existing=blockFor(time,area,num);if(existing){selectedBlocks.clear();selectedBlockedId=selectedBlockedId===Number(existing.id)?null:Number(existing.id)}else{selectedBlockedId=null;const key=blockKey(time,area,num);if(selectedBlocks.has(key))selectedBlocks.delete(key);else selectedBlocks.add(key)}render()}
-function showSeatDetail(id){const r=reservations.find(x=>Number(x.id)===id);if(!r)return;if($('phoneCard').hidden)togglePhone(true);$('phoneForm').hidden=true;$('reservationDetail').hidden=false;const fields=[['予約ID',`#${r.id}`],['予約日時',String(r.visit_at||'').replace('T',' ')],['席',areaLabel(r)],['お名前',r.guest_name],['電話番号',r.phone||'—'],['メール',r.email||'—'],['人数',`${r.party_size}名`],['予約区分',r.reservation_category||'—'],['ドリンク条件',r.beverage_policy||'—'],['コース',r.course_name||'—'],[r.source==='DIRECT'?'お料理代（当日精算）':'お料理代総額',yen(r.amount)],...(r.additional_invoices?.length?[['決済済み',yen(r.amount-r.additional_unpaid)],['差額未決済',yen(r.additional_unpaid)]]:[]),['状況',r.source==='DIRECT'&&r.status==='CONFIRMED'?'予約確定・当日精算':statusLabel(r)],['アレルギー',r.customer_allergies||'—'],['苦手食材',r.customer_disliked_foods||'—'],['好みの席',r.customer_preferred_seat||'—'],['好みの飲み物',r.customer_preferred_drinks||'—'],...(r.booking_receipt_name?[['ご予約時の領収書宛名',r.booking_receipt_name]]:[]),['備考',r.guest_note||'—'],['確定メール用の備考',r.confirmation_note||'—'],['お祝い',r.celebration_items||'—'],['プレート',r.plate_message||'—'],...(r.cancellation_reason==='PAYMENT_EXPIRED'?[['取消メール',cancellationEmailLabel(r)]]:[])];$('reservationDetail').innerHTML='<div class="section-heading"><h2>予約詳細</h2><button onclick="closeSeatDetail()">✕ 閉じる</button></div>'+(r.customer_id?`<a class="customer-link" href="/customers?customer_id=${Number(r.customer_id)}">顧客情報へ</a>`:'')+'<dl>'+fields.map(([label,value])=>`<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join('')+'</dl>'+reservationNoteEditor(r)+receiptLinks(r)+paidPartyEditor(r)+pendingBankPartyEditor(r)+customerPartyInfo(r)+roomEditor(r)+roomSwapEditor(r)+(r.source==='DIRECT'&&r.status==='CONFIRMED'&&!r.customer_party_change&&!r.vip_through&&!r.square_invoice_id&&!r.payment_confirmed_at?`<label for="changeStartTime">開始時刻を変更</label><input id="changeStartTime" type="time" value="${escapeHtml(r.visit_at.slice(11,16))}"><button onclick="changeStartTime(${Number(r.id)},this)">時刻変更を保存</button><p role="status" id="changeTimeMessage"></p><button onclick="$('partyChangeFields').hidden=false">人数変更</button><div id="partyChangeFields" hidden><label for="changePartySize">変更後の人数</label><input id="changePartySize" type="number" min="1" max="8" step="1" value="${Number(r.party_size)}"><p>現在の1名料金でお料理代を再計算します。減員時のキャンセル料は別途ご確認ください。</p><button onclick="changePartySize(${Number(r.id)},this)">人数変更を保存</button></div><p role="status" id="changePartyMessage"></p>`:'')+(['PENDING','INVOICED','ERROR','CONFIRMED'].includes(r.status)?`<div style="position:sticky;bottom:0;background:#fff;padding:12px 0"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><button type="button" style="color:#a32929;min-height:44px" onclick="cancelSeatReservation(${Number(r.id)},this)">予約キャンセル</button>${r.customer_id?`<a class="customer-link" style="background:#812b30" href="/customers?customer_id=${Number(r.customer_id)}&amp;booking_block=1" aria-label="☠️ ブラックリスト登録・確認">☠️ブラックリスト登録☠️</a>`:''}</div><p>4日前まではSquareカード決済を朝倉の承認後に返金します。3日前からはキャンセル料100％です。銀行振込・エラーは店舗対応となります。</p><p role="status" id="cancelSeatMessage"></p></div>`:(r.customer_id?`<div style="margin-top:12px"><a class="customer-link" style="background:#812b30" href="/customers?customer_id=${Number(r.customer_id)}&amp;booking_block=1" aria-label="☠️ ブラックリスト登録・確認">☠️ブラックリスト登録☠️</a></div>`:''));$('phoneCard').scrollTop=0}
+function showSeatDetail(id){const r=reservations.find(x=>Number(x.id)===id);if(!r)return;if($('phoneCard').hidden)togglePhone(true);$('phoneForm').hidden=true;$('reservationDetail').hidden=false;const fields=[['予約ID',`#${r.id}`],['予約日時',String(r.visit_at||'').replace('T',' ')],['席',areaLabel(r)],['お名前',r.guest_name],['電話番号',r.phone||'—'],['メール',r.email||'—'],['人数',`${r.party_size}名`],['予約区分',r.reservation_category||'—'],['ドリンク条件',r.beverage_policy||'—'],['コース',r.course_name||'—'],[r.source==='DIRECT'?'お料理代（当日精算）':'お料理代総額',yen(r.amount)],...(r.additional_invoices?.length?[['決済済み',yen(r.amount-r.additional_unpaid)],['差額未決済',yen(r.additional_unpaid)]]:[]),['状況',r.source==='DIRECT'&&r.status==='CONFIRMED'?'予約確定・当日精算':statusLabel(r)],['アレルギー',r.customer_allergies||'—'],['苦手食材',r.customer_disliked_foods||'—'],['好みの席',r.customer_preferred_seat||'—'],['好みの飲み物',r.customer_preferred_drinks||'—'],...(r.booking_receipt_name?[['ご予約時の領収書宛名',r.booking_receipt_name]]:[]),['備考',r.guest_note||'—'],['確定メール用の備考',r.confirmation_note||'—'],['お祝い',r.celebration_items||'—'],['プレート',r.plate_message||'—'],...(r.cancellation_reason==='PAYMENT_EXPIRED'?[['取消メール',cancellationEmailLabel(r)]]:[])];$('reservationDetail').innerHTML='<div class="section-heading"><h2>予約詳細</h2><button onclick="closeSeatDetail()">✕ 閉じる</button></div>'+(r.customer_id?`<a class="customer-link" href="/customers?customer_id=${Number(r.customer_id)}">顧客情報へ</a>`:'')+'<dl>'+fields.map(([label,value])=>`<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join('')+'</dl>'+roomSwapEditor(r)+reservationNoteEditor(r)+receiptLinks(r)+paidPartyEditor(r)+pendingBankPartyEditor(r)+customerPartyInfo(r)+roomEditor(r)+(r.source==='DIRECT'&&r.status==='CONFIRMED'&&!r.customer_party_change&&!r.vip_through&&!r.square_invoice_id&&!r.payment_confirmed_at?`<label for="changeStartTime">開始時刻を変更</label><input id="changeStartTime" type="time" value="${escapeHtml(r.visit_at.slice(11,16))}"><button onclick="changeStartTime(${Number(r.id)},this)">時刻変更を保存</button><p role="status" id="changeTimeMessage"></p><button onclick="$('partyChangeFields').hidden=false">人数変更</button><div id="partyChangeFields" hidden><label for="changePartySize">変更後の人数</label><input id="changePartySize" type="number" min="1" max="8" step="1" value="${Number(r.party_size)}"><p>現在の1名料金でお料理代を再計算します。減員時のキャンセル料は別途ご確認ください。</p><button onclick="changePartySize(${Number(r.id)},this)">人数変更を保存</button></div><p role="status" id="changePartyMessage"></p>`:'')+(['PENDING','INVOICED','ERROR','CONFIRMED'].includes(r.status)?`<div style="position:sticky;bottom:0;background:#fff;padding:12px 0"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><button type="button" style="color:#a32929;min-height:44px" onclick="cancelSeatReservation(${Number(r.id)},this)">予約キャンセル</button>${r.customer_id?`<a class="customer-link" style="background:#812b30" href="/customers?customer_id=${Number(r.customer_id)}&amp;booking_block=1" aria-label="☠️ ブラックリスト登録・確認">☠️ブラックリスト登録☠️</a>`:''}</div><p>4日前まではSquareカード決済を朝倉の承認後に返金します。3日前からはキャンセル料100％です。銀行振込・エラーは店舗対応となります。</p><p role="status" id="cancelSeatMessage"></p></div>`:(r.customer_id?`<div style="margin-top:12px"><a class="customer-link" style="background:#812b30" href="/customers?customer_id=${Number(r.customer_id)}&amp;booking_block=1" aria-label="☠️ ブラックリスト登録・確認">☠️ブラックリスト登録☠️</a></div>`:''));$('phoneCard').scrollTop=0}
 function customerPartyInfo(r){const ch=r.customer_party_change;return (r.management_url?`<p><a href="${escapeHtml(r.management_url)}" target="_blank" rel="noopener noreferrer">お客様用・人数変更画面（2名以上）</a></p>`:'')+(ch?`<p>お客様による人数変更：${Number(ch.old_party)}名 → ${Number(ch.new_party)}名<br>減員キャンセル料累計 ${yen(ch.fee_total)}${ch.state==='OPEN'?`<br>${ch.balance>0?'追加入金待ち':'返金対応待ち'} ${yen(Math.abs(ch.balance))}（決済管理で精算を確認）`:''}</p>`:'')}
 function pendingBankPartyEditor(r){
  if(r.customer_party_change||r.payment_method!=='BANK'||r.status!=='PENDING'||r.payment_source||r.payment_confirmed_at||r.square_invoice_id||r.square_order_id||r.source==='WEB_CARD'||r.vip_through)return '';
@@ -190,37 +196,78 @@ function roomSwapEditor(r){
     return start<otherEnd&&otherStart<end;
   }).map(other=>`<option value="${Number(other.id)}">${escapeHtml(areaLabel(other))} · ${escapeHtml(other.visit_at.slice(11,16))} · ${escapeHtml(other.guest_name)}様 (${Number(other.party_size)}名)</option>`);
   if(!choices.length)return '';
-  return `<details id="roomSwapEditor"><summary>既存予約と席を入れ替え</summary><label for="roomSwapTarget">入れ替える予約</label><select id="roomSwapTarget"><option value="">選択してください</option>${choices.join('')}</select><button type="button" onclick="swapRooms(${Number(r.id)},this)">席の入れ替えを承認</button><p id="roomSwapMessage" role="status"></p></details>`;
+  return `<section class="room-swap" aria-label="席の入れ替え"><button id="openRoomSwap" class="room-swap-primary" type="button" aria-expanded="false" aria-controls="roomSwapEditor" onclick="openRoomSwap(this)">予約同士の席を入れ替える</button><div id="roomSwapEditor" hidden><label for="roomSwapTarget">入れ替える相手の予約</label><select id="roomSwapTarget" onchange="resetRoomSwap()"> <option value="">選択してください</option>${choices.join('')}</select><button id="previewRoomSwap" type="button" onclick="previewRoomSwap(${Number(r.id)})" disabled>入れ替え内容を確認</button><p id="roomSwapSummary" hidden></p><button id="confirmRoomSwap" class="room-swap-primary" type="button" onclick="swapRooms(${Number(r.id)})" hidden>この内容で入れ替える</button></div><p id="roomSwapMessage" role="status"></p></section>`;
 }
-async function swapRooms(id,button){
-  if(button.disabled)return;
+let roomSwapPlan=null;
+function openRoomSwap(button){
+  const panel=$('roomSwapEditor');
+  panel.hidden=!panel.hidden;
+  button.setAttribute('aria-expanded',String(!panel.hidden));
+  if(!panel.hidden)$('roomSwapTarget').focus();
+}
+function resetRoomSwap(){
+  roomSwapPlan=null;
+  $('previewRoomSwap').disabled=!$('roomSwapTarget').value;
+  $('roomSwapSummary').hidden=true;
+  $('confirmRoomSwap').hidden=true;
+  $('roomSwapMessage').textContent='';
+}
+function roomSwapRequest(id,body){
+  return api(`/api/reservations/${id}/room-swap`,{method:'POST',headers:{'X-Tsukiya-Action':'change-time'},body:JSON.stringify(body)});
+}
+async function previewRoomSwap(id){
   const control=$('roomSwapTarget');
   const first=reservations.find(row=>Number(row.id)===id);
   const second=reservations.find(row=>Number(row.id)===Number(control.value));
-  if(!first||!second){$('roomSwapMessage').textContent='入れ替える予約を選択してください';return}
-  if(!confirm(`${first.guest_name}様を${areaLabel(second)}へ、${second.guest_name}様を${areaLabel(first)}へ変更しますか？ 日時・人数・決済情報はそのままです。`))return;
+  resetRoomSwap();
+  if(!first||!second){$('roomSwapMessage').textContent='入れ替える相手の予約を選択してください';return}
   const snapshot=r=>({
     seating_area:r.seating_area,private3_table:r.private3_table??null,visit_at:r.visit_at,
     party_size:r.party_size,duration_minutes:r.duration_minutes,vip_through:r.vip_through
   });
-  button.disabled=true;
+  const body={other_id:Number(second.id),first:snapshot(first),second:snapshot(second)};
+  control.disabled=true;
+  $('previewRoomSwap').disabled=true;
+  try{
+    const {destinations}=await roomSwapRequest(id,{...body,preview:true});
+    if($('roomSwapTarget')!==control)return;
+    roomSwapPlan={id,body:{...body,expected_destinations:destinations},names:[first.guest_name,second.guest_name]};
+    const summary=$('roomSwapSummary');
+    summary.textContent=[first,second].map((r,i)=>`${r.guest_name}様（${r.visit_at.slice(11,16)}・${r.party_size}名） ${areaLabel(r)} → ${areaLabel(destinations[i])}`).join('\n');
+    summary.hidden=false;
+    $('confirmRoomSwap').hidden=false;
+    $('confirmRoomSwap').disabled=false;
+  }catch(e){
+    if($('roomSwapTarget')===control)$('roomSwapMessage').textContent=e.message;
+  }finally{
+    if($('roomSwapTarget')===control){
+      control.disabled=false;
+      $('previewRoomSwap').disabled=false;
+    }
+  }
+}
+async function swapRooms(id){
+  const plan=roomSwapPlan;
+  if(!plan||plan.id!==id)return;
+  const control=$('roomSwapTarget');
+  $('confirmRoomSwap').disabled=true;
+  $('previewRoomSwap').disabled=true;
   control.disabled=true;
   try{
-    await api(`/api/reservations/${id}/room-swap`,{method:'POST',headers:{'X-Tsukiya-Action':'change-time'},body:JSON.stringify({
-      other_id:Number(second.id),first:snapshot(first),second:snapshot(second)
-    })});
+    await roomSwapRequest(id,plan.body);
+    roomSwapPlan=null;
     await load();
-    showSeatDetail(id);
-    const message=`${first.guest_name}様と${second.guest_name}様の席を入れ替えました。`;
+    const message=`${plan.names.join('様と')}様の席を入れ替えました。`;
     $('boardMessage').textContent=message;
-    if($('roomSwapEditor')){
-      $('roomSwapEditor').open=true;
-      $('roomSwapMessage').textContent=message;
+    if($('roomSwapTarget')===control){
+      showSeatDetail(id);
+      if($('roomSwapMessage'))$('roomSwapMessage').textContent=message;
     }
   }catch(e){
-    $('roomSwapMessage').textContent=e.message;
-    button.disabled=false;
+    if($('roomSwapTarget')!==control)return;
+    resetRoomSwap();
     control.disabled=false;
+    $('roomSwapMessage').textContent=e.message;
   }
 }
 async function changeStartTime(id,button){const r=reservations.find(x=>Number(x.id)===id);if(!r)return;button.disabled=true;try{await api(`/api/reservations/${id}/time`,{method:'POST',headers:{'Content-Type':'application/json','X-Tsukiya-Action':'change-time'},body:JSON.stringify({time:$('changeStartTime').value,expected_visit_at:r.visit_at})});await load();showSeatDetail(id);$('changeTimeMessage').textContent='開始時刻を変更しました。'}catch(e){$('changeTimeMessage').textContent=e.message;button.disabled=false}}

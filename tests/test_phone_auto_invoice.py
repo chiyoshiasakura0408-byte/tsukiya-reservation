@@ -207,4 +207,37 @@ class PhoneInvoiceTest(unittest.TestCase):
             self.post(url, payload, **headers)
         self.assertIn('予約が更新されています', json.load(stale.exception)['error'])
 
+    def test_swap_preview_uses_free_table_for_overlapping_sittings(self):
+        direct = '/api/reservations/direct'
+        options = {**self.body, 'visit_at': '2099-12-05T18:00', 'seating_area': 'PRIVATE3'}
+        early = self.post(direct, {**options, 'approve_private3_table': True},
+                          **{'X-Tsukiya-Action': 'approve-private3-table'})
+        late = self.post(direct, {**options, 'visit_at': '2099-12-05T20:30', 'guest_name': 'Late booking',
+                                 'party_size': 4, 'request_id': str(uuid.uuid4())})
+        middle = self.post(direct, {**options, 'visit_at': '2099-12-05T19:00', 'guest_name': 'Middle booking',
+                                   'seating_area': 'PRIVATE1', 'special_end_time': '21:00', 'special_meal_count': 2,
+                                   'request_id': str(uuid.uuid4())})
+        fields = ('seating_area', 'private3_table', 'visit_at', 'party_size', 'duration_minutes', 'vip_through')
+        url = f"/api/reservations/{late['id']}/room-swap"
+        headers = {'X-Tsukiya-Action': 'change-time'}
+        with run.con() as db:
+            db.execute("UPDATE reservations SET party_size=2, amount=132000 WHERE id=?", (late['id'],))
+        late['party_size'] = 2
+        payload = {'other_id': middle['id'], 'first': {field: late[field] for field in fields},
+                   'second': {field: middle[field] for field in fields}}
+        with self.assertRaises(urllib.error.HTTPError):
+            self.post(url, payload, **headers)
+        preview = self.post(url, {**payload, 'preview': True}, **headers)
+        destinations = [{'seating_area': 'PRIVATE1', 'private3_table': None},
+                        {'seating_area': 'PRIVATE3', 'private3_table': 2}]
+        self.assertEqual(preview['destinations'], destinations)
+        with run.con() as db:
+            seats = db.execute("SELECT seating_area,private3_table FROM reservations ORDER BY id").fetchall()
+            self.assertEqual([tuple(row) for row in seats], [('PRIVATE3', 1), ('PRIVATE3', None), ('PRIVATE1', None)])
+        self.assertTrue(self.post(url, {**payload, 'expected_destinations': destinations}, **headers)['ok'])
+        with run.con() as db:
+            seats = db.execute("SELECT id,seating_area,private3_table FROM reservations ORDER BY id").fetchall()
+            self.assertEqual([tuple(row) for row in seats],
+                             [(early['id'], 'PRIVATE3', 1), (late['id'], 'PRIVATE1', None), (middle['id'], 'PRIVATE3', 2)])
+
 if __name__=='__main__': unittest.main()

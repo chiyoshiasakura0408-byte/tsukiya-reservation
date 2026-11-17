@@ -1623,6 +1623,9 @@ def availability_check(
                     destination = ("個室③全体" if row["private3_table"] is None
                                    else ("テーブルA", "テーブルB")[private3_table - 1])
                     return False, f"{destination}に{other_start:%H:%M}〜{other_end:%H:%M}の予約があります"
+                if exclude_other_id is not None:
+                    destination = ("テーブルA", "テーブルB")[row["private3_table"] - 1] if row["private3_table"] else "移動先の個室"
+                    return False, f"{destination}に{other_start:%H:%M}〜{other_end:%H:%M}の予約があります"
                 return (
                     False,
                     "この個室は同時間帯に予約があります"
@@ -1816,6 +1819,9 @@ def swap_private_rooms(c, rid, data):
     if not (first_start < second_start + timedelta(minutes=second_duration)
             and second_start < first_start + timedelta(minutes=first_duration)):
         raise ValueError("利用時間が重なる予約を選択してください")
+    preview = data.get("preview") is True
+    expected_destinations = data.get("expected_destinations")
+    destinations = []
     for incoming, outgoing, start, duration in (
         (first, second, first_start, first_duration),
         (second, first, second_start, second_duration),
@@ -1824,18 +1830,42 @@ def swap_private_rooms(c, rid, data):
         if incoming["vip_through"] and table is not None:
             raise ValueError("VIP通し予約の移動先は個室全体を選んでください")
         legacy_small_room = area == "PRIVATE3" and table is None and outgoing["party_size"] < 4
-        ok, reason = availability_check(
-            c, area, start.isoformat(timespec="minutes"), incoming["party_size"], None, duration,
+        visit = start.isoformat(timespec="minutes")
+        checks = dict(
             exclude_id=outgoing["id"], exclude_other_id=incoming["id"], special_slot=True,
-            private3_table=table, allow_room_exception=legacy_small_room,
         )
+        ok, reason = availability_check(
+            c, area, visit, incoming["party_size"], None, duration,
+            private3_table=table, allow_room_exception=legacy_small_room, **checks,
+        )
+        if (not ok and (preview or expected_destinations is not None) and area == "PRIVATE3"
+                and incoming["seating_area"] != area and not incoming["vip_through"]
+                and 2 <= incoming["party_size"] <= 4):
+            # A second booking can use a free table if the whole room is occupied
+            # during part of its visit. A whole-room conflict still blocks both tables.
+            needs_split = table is None and incoming["party_size"] > 2
+            whole_room_free = needs_split and availability_check(c, area, visit, 4, None, duration, **checks)[0]
+            for alternative in (() if whole_room_free else (1, 2)):
+                if alternative == table:
+                    continue
+                free, _ = availability_check(
+                    c, area, visit, incoming["party_size"], None, duration, private3_table=alternative, **checks,
+                )
+                if free:
+                    table, ok = alternative, True
+                    break
         if not ok:
-            raise ValueError(f"予約 #{incoming['id']} の移動先を確保できません。{reason}")
+            raise ValueError(f"{incoming['guest_name']}様の移動先を確保できません。{reason}")
+        destinations.append({"seating_area": area, "private3_table": table})
+    if preview:
+        return {"ok": True, "destinations": destinations}
+    if expected_destinations is not None and expected_destinations != destinations:
+        raise ValueError("空席状況が変わりました。入れ替え内容を確認し直してください")
     ts = now_iso()
     c.executemany(
         "UPDATE reservations SET seating_area=?,private3_table=?,updated_at=? WHERE id=?",
-        ((second["seating_area"], second["private3_table"], ts, rid),
-         (first["seating_area"], first["private3_table"], ts, other_id)),
+        [(seat["seating_area"], seat["private3_table"], ts, ident)
+         for seat, ident in zip(destinations, (rid, other_id))],
     )
     return {"ok": True, "id": rid, "other_id": other_id}
 
