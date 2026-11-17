@@ -175,6 +175,8 @@ def create(app, x):
                 raise CheckoutError('送信済みの予約内容は変更できません。',409)
             c.rollback()
             return response(s)
+        if language == 'ja' and party >= app.booking_policy.PUBLIC_PHONE_PARTY_SIZE:
+            raise CheckoutError(app.booking_policy.PUBLIC_PHONE_PARTY_MESSAGE)
         app.booking_blocks.ensure_allowed(c,phone,email)
         if c.execute("SELECT count(*) FROM reservations WHERE source=? AND email=? AND created_at>=?",(SOURCE,email,(datetime.now(timezone.utc)-timedelta(days=1)).isoformat())).fetchone()[0]>=5:
             raise CheckoutError('申込回数の上限です。店舗へご連絡ください。',429)

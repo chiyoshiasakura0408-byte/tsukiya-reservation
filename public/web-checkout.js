@@ -91,7 +91,9 @@
   async function show(result) {
     session.id=result.id; session.state=result.state; session.expires=result.expires; save();
     panel.hidden=false; form.hidden=true;
-    q('[data-summary]').textContent=t('合計（税込）：','Total (tax included): ')+'¥'+Number(result.amount).toLocaleString();
+    if (!english) q('h2').textContent = ({PAYING:'決済結果を確認中', UNKNOWN:'決済結果を確認中',
+      EXPIRED:'お席の確保期限が終了しました', REVIEW:'決済と予約の照合が必要です'})[result.state] || 'カードのお支払い';
+    q('[data-summary]').textContent=t('コース代（税込・事前決済） ','Total (tax included): ')+'¥'+Number(result.amount).toLocaleString();
     q('[data-pay]').textContent=t('¥'+Number(result.amount).toLocaleString()+'を支払う','Pay JPY '+Number(result.amount).toLocaleString());
     controls(result.state);
     if(result.state==='PAID') {
@@ -263,7 +265,7 @@
         guide.textContent = 'Pay by credit card within this reservation page. Your reservation is confirmed after full payment. Card payment is immediate. Your table is held for 10 minutes while you enter your card details. After the hold expires, please select an available table again.';
         form.prepend(guide);
       }
-      document.getElementById('submit').textContent=t('内容を確認してお支払いへ','Review and continue to payment');
+      if (english) document.getElementById('submit').textContent='Review and continue to payment';
     }
   }catch(e){configuration=null;message(e.message,true);if(session){panel.hidden=false;form.hidden=true;}}
   form.onsubmit=async event=>{
