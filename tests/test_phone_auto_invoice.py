@@ -133,6 +133,43 @@ class PhoneInvoiceTest(unittest.TestCase):
             self.assertEqual((saved['visit_at'], saved['party_size'], saved['amount'], saved['payment_source']),
                              (row['visit_at'], 2, 132000, 'SQUARE'))
         change.update(seating_area='PRIVATE1', expected_seating_area='PRIVATE3', approve_private3_table=False)
+        change['expected_private3_table'] = 1
         self.assertIsNone(self.post(path, change, **{'X-Tsukiya-Action': 'change-time'})['private3_table'])
+
+    def test_move_to_specific_private3_table_checks_entire_visit_and_current_assignment(self):
+        row = self.post('/api/reservations/direct', {**self.body, 'visit_at': '2099-12-05T18:00'})
+        full_room = self.post('/api/reservations/direct', {
+            **self.body, 'guest_name': 'Full room', 'request_id': str(uuid.uuid4()),
+            'visit_at': '2099-12-05T20:30', 'seating_area': 'PRIVATE3', 'party_size': 4
+        })
+        with run.con() as db:
+            db.execute("UPDATE reservations SET visit_at='2099-12-05T19:00' WHERE id=?", (row['id'],))
+        path = f"/api/reservations/{row['id']}/room"
+        headers = {'X-Tsukiya-Action': 'change-time'}
+        change = {'seating_area': 'PRIVATE3', 'expected_seating_area': 'PRIVATE1',
+                  'expected_visit_at': '2099-12-05T19:00', 'expected_party_size': 2,
+                  'approve_private3_table': True, 'private3_table': 2}
+        with self.assertRaises(urllib.error.HTTPError) as occupied:
+            self.post(path, change, **headers)
+        self.assertIn('個室③全体に20:30〜23:00', json.load(occupied.exception)['error'])
+        with run.con() as db:
+            db.execute("UPDATE reservations SET status='CANCELLED' WHERE id=?", (full_room['id'],))
+        table_a = self.post('/api/reservations/direct', {
+            **self.body, 'guest_name': 'Table A', 'request_id': str(uuid.uuid4()),
+            'visit_at': '2099-12-05T18:00', 'seating_area': 'PRIVATE3', 'approve_private3_table': True
+        }, **{'X-Tsukiya-Action': 'approve-private3-table'})
+        with self.assertRaises(urllib.error.HTTPError) as table_taken:
+            self.post(path, {**change, 'private3_table': 1}, **headers)
+        self.assertIn('テーブルAに18:00〜20:30', json.load(table_taken.exception)['error'])
+        self.assertEqual(self.post(path, change, **headers)['private3_table'], 2)
+        with run.con() as db:
+            db.execute("UPDATE reservations SET status='CANCELLED' WHERE id=?", (table_a['id'],))
+        change.update(expected_seating_area='PRIVATE3', expected_private3_table=2, private3_table=1)
+        self.assertEqual(self.post(path, change, **headers)['private3_table'], 1)
+        with self.assertRaises(urllib.error.HTTPError) as stale:
+            self.post(path, {**change, 'private3_table': 2}, **headers)
+        self.assertIn('予約が更新されています', json.load(stale.exception)['error'])
+        change.update(expected_private3_table=1, private3_table=2)
+        self.assertEqual(self.post(path, change, **headers)['private3_table'], 2)
 
 if __name__=='__main__': unittest.main()

@@ -1594,7 +1594,7 @@ def availability_check(
             SELECT
                 id,
                 visit_at,
-            duration_minutes, vip_through, private3_table
+                duration_minutes, vip_through, private3_table
             FROM reservations
             WHERE seating_area=?
             AND status IN (?,?,?,?)
@@ -1634,6 +1634,10 @@ def availability_check(
                 visit < other_end
                 and other_start < end
             ):
+                if private3_table is not None:
+                    destination = ("個室③全体" if row["private3_table"] is None
+                                   else ("テーブルA", "テーブルB")[private3_table - 1])
+                    return False, f"{destination}に{other_start:%H:%M}〜{other_end:%H:%M}の予約があります"
                 return (
                     False,
                     "この個室は同時間帯に予約があります"
@@ -1656,20 +1660,22 @@ def availability_check(
     )
 
 
-def choose_private3_table(c, visit_at, party, duration, *, exclude_id=None, special_slot=False):
-    """Assign one of the two tables under the reservation write transaction."""
+def choose_private3_table(c, visit_at, party, duration, *, exclude_id=None, special_slot=False,
+                          requested_table=None, current_table=None):
+    """Check and assign a table under the reservation write transaction."""
     options = dict(exclude_id=exclude_id, special_slot=special_slot)
-    if party > 2 and availability_check(
+    if party > 2 and current_table is None and availability_check(
         c, "PRIVATE3", visit_at, party, None, duration, allow_room_exception=True, **options
     )[0]:
         raise SpecialSlotUnavailable("個室③をテーブル席に分ける最初の予約は2名です")
-    for table in (1, 2):
+    tables = (requested_table,) if requested_table is not None else (1, 2)
+    for table in tables:
         ok, reason = availability_check(
             c, "PRIVATE3", visit_at, party, None, duration, private3_table=table, **options
         )
         if ok:
             return table
-    raise SpecialSlotUnavailable("個室③のテーブル席を確保できません。"+reason)
+    raise SpecialSlotUnavailable("個室③のテーブル席を確保できません。" + reason)
 
 
 class ReservationNoteConflict(ValueError):
@@ -1756,12 +1762,18 @@ def change_direct_room(c, rid, data):
         raise ValueError("この予約は個室変更の対象外です")
     if (data.get("expected_seating_area") != r["seating_area"]
             or data.get("expected_visit_at") != r["visit_at"]
-            or data.get("expected_party_size") != r["party_size"]):
+            or data.get("expected_party_size") != r["party_size"]
+            or data.get("expected_private3_table") != r["private3_table"]):
         raise ValueError("予約が更新されています。再読み込みしてください")
     room = data.get("seating_area")
     approved = data.get("approve_private3_table") is True
-    if approved and (not 2 <= r["party_size"] <= 4 or room != "PRIVATE3" or r["private3_table"] is not None):
+    requested_table = data.get("private3_table")
+    if requested_table is not None and (not approved or type(requested_table) is not int or requested_table not in (1, 2)):
+        raise ValueError("変更先のテーブルAまたはBを選択してください")
+    if approved and (not 2 <= r["party_size"] <= 4 or room != "PRIVATE3"):
         raise ValueError("個室③のテーブル席への変更は、2〜4名が対象です")
+    if approved and r["private3_table"] is not None and requested_table is None:
+        raise ValueError("変更先のテーブルAまたはBを選択してください")
     leaving_exception_room = r["private3_table"] is not None and room in ("PRIVATE1", "PRIVATE2")
     ordinary_move = r["source"] == "DIRECT" and r["special_meal_count"] is None and not r["square_invoice_id"]
     if not (approved or leaving_exception_room or ordinary_move):
@@ -1771,11 +1783,12 @@ def change_direct_room(c, rid, data):
     if (approved or leaving_exception_room) and parse_dt(r["visit_at"]) <= datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None):
         raise ValueError("過去の予約は変更できません")
     duration = int(r["duration_minutes"] or 150)
-    special_slot = r["special_meal_count"] is not None
+    special_slot = r["special_meal_count"] is not None or approved or leaving_exception_room
     table = None
     if approved:
         table = choose_private3_table(c, r["visit_at"], r["party_size"], duration,
-                                      exclude_id=rid, special_slot=special_slot)
+                                      exclude_id=rid, special_slot=special_slot,
+                                      requested_table=requested_table, current_table=r["private3_table"])
     else:
         if room == r["seating_area"]:
             return {"ok": True, "id": rid, "seating_area": room, "private3_table": r["private3_table"]}

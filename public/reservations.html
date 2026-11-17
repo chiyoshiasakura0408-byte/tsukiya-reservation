@@ -126,41 +126,50 @@ async function issueDifference(id,changeId,button){
 function reservationNoteEditor(r){return `<details id="reservationNoteEditor"><summary>予約時の備考を編集</summary><label for="editReservationNote">予約時の備考</label><textarea id="editReservationNote" data-original-note="${escapeHtml(r.guest_note||'')}" maxlength="5000" rows="5" style="width:100%;box-sizing:border-box">${escapeHtml(r.guest_note||'')}</textarea><p>保存しても、お客様へのメール・SMSは送信しません。</p><button type="button" onclick="saveReservationNote(${Number(r.id)},this)">備考を保存</button><p role="status" id="reservationNoteMessage"></p></details>`}
 async function saveReservationNote(id,button){const r=reservations.find(x=>Number(x.id)===id);if(!r||button.disabled)return;button.disabled=true;try{const result=await api(`/api/reservations/${id}/note`,{method:'POST',headers:{'X-Tsukiya-Action':'edit-reservation-note'},body:JSON.stringify({guest_note:$('editReservationNote').value,expected_guest_note:$('editReservationNote').dataset.originalNote})});r.guest_note=result.guest_note;showSeatDetail(id);$('reservationNoteEditor').open=true;$('reservationNoteMessage').textContent='備考を保存しました。お客様への通知は送信していません。';$('reservationNoteEditor').scrollIntoView({block:'nearest'})}catch(e){$('reservationNoteMessage').textContent=e.message;button.disabled=false}}
 function tableLabel(table){return table===1?'テーブルA':'テーブルB'}
+function currentRoomChoice(r){
+  return r.private3_table?`PRIVATE3_TABLE_${r.private3_table}`:r.seating_area;
+}
 function roomEditor(r){
   const rooms=['PRIVATE1','PRIVATE2','PRIVATE3'];
   if(r.status!=='CONFIRMED'||r.vip_through||!rooms.includes(r.seating_area))return '';
   const ordinary=r.source==='DIRECT'&&!r.customer_party_change&&!r.square_invoice_id&&!r.payment_confirmed_at&&r.special_meal_count==null;
-  const tableChoice=r.party_size>=2&&r.party_size<=4&&!r.private3_table;
+  const tableChoice=r.party_size>=2&&r.party_size<=4;
   if(!ordinary&&!tableChoice&&!r.private3_table)return '';
-  const choices=ordinary||r.private3_table?rooms:[r.seating_area];
-  const tableOption=tableChoice?'<option value="PRIVATE3_TABLE">個室③ テーブル席（2〜4名）</option>':'';
-
-  return `<label for="changeRoom">個室を変更</label><select id="changeRoom" onchange="updateRoomMoveButton(${Number(r.id)})">${choices.map(room=>`<option value="${room}" ${room===r.seating_area?'selected':''}>個室${room.slice(-1)}</option>`).join('')}${tableOption}</select><button id="saveRoomMove" type="button" onclick="changeRoom(${Number(r.id)},this)" disabled>個室変更を保存</button><p role="status" id="changeRoomMessage"></p>`;
+  const roomChoices=r.private3_table?rooms.slice(0,2):ordinary?rooms:[r.seating_area];
+  const choices=roomChoices.map(room=>[room,`個室${room.slice(-1)}`]);
+  if(tableChoice){
+    for(const table of [1,2])choices.push([`PRIVATE3_TABLE_${table}`,`個室③ ${tableLabel(table)}`]);
+  }
+  const current=currentRoomChoice(r);
+  return `<label for="changeRoom">個室を変更</label><select id="changeRoom" onchange="updateRoomMoveButton(${Number(r.id)})">${choices.map(([value,label])=>`<option value="${value}" ${value===current?'selected':''}>${label}</option>`).join('')}</select><button id="saveRoomMove" type="button" onclick="changeRoom(${Number(r.id)},this)" disabled>個室変更を保存</button><p role="status" id="changeRoomMessage"></p>`;
 }
 function updateRoomMoveButton(id){
   const r=reservations.find(row=>Number(row.id)===id);
   if(!r)return;
-  const room=$('changeRoom').value;
-  $('saveRoomMove').disabled=room===r.seating_area;
-  $('saveRoomMove').textContent=room==='PRIVATE3_TABLE'?'個室③のテーブルへの変更を承認':'個室変更を保存';
+  const destination=$('changeRoom').value;
+  const table=destination.match(/^PRIVATE3_TABLE_([12])$/);
+  $('saveRoomMove').disabled=destination===currentRoomChoice(r);
+  $('saveRoomMove').textContent=table?`${tableLabel(Number(table[1]))}への変更を承認`:'個室変更を保存';
 }
 async function changeRoom(id,button){
   const r=reservations.find(row=>Number(row.id)===id);
   if(!r||button.disabled)return;
-  const approved=$('changeRoom').value==='PRIVATE3_TABLE';
-  const room=approved?'PRIVATE3':$('changeRoom').value;
-
-  if(approved&&!confirm(`${r.guest_name}様の${r.party_size}名予約を個室③のテーブル席へ変更しますか？ 日時・人数・決済情報はそのままです。`))return;
+  const destination=$('changeRoom').value;
+  const tableOption=destination.match(/^PRIVATE3_TABLE_([12])$/);
+  const table=tableOption?Number(tableOption[1]):null;
+  const room=table?'PRIVATE3':destination;
+  if(table&&!confirm(`${r.guest_name}様の${r.party_size}名予約を個室③の${tableLabel(table)}へ変更しますか？ 日時・人数・決済情報はそのままです。`))return;
   button.disabled=true;
   $('changeRoom').disabled=true;
   try{
     const result=await api(`/api/reservations/${id}/room`,{method:'POST',headers:{'X-Tsukiya-Action':'change-time'},body:JSON.stringify({
       seating_area:room,expected_seating_area:r.seating_area,expected_visit_at:r.visit_at,
-      expected_party_size:r.party_size,approve_private3_table:approved
+      expected_party_size:r.party_size,expected_private3_table:r.private3_table??null,
+      approve_private3_table:table!==null,private3_table:table
     })});
     await load();
     showSeatDetail(id);
-    $('changeRoomMessage').textContent=`個室${room.slice(-1)}${result.private3_table?' '+tableLabel(result.private3_table):''}に変更しました。`;
+    $('changeRoomMessage').textContent=`${areaLabel(result)}に変更しました。`;
   }catch(e){
     $('changeRoomMessage').textContent=e.message;
     $('changeRoom').disabled=false;
