@@ -113,6 +113,16 @@ class PhoneInvoiceTest(unittest.TestCase):
             self.assertFalse(run.availability_check(db, 'PRIVATE3', first['visit_at'], 4)[0])
             self.assertTrue(run.availability_check(db, 'PRIVATE3', '2099-12-05T20:30', 4)[0])
 
+    def test_phone_booking_preserves_selected_table_and_invoices_once(self):
+        body = {**self.body, 'visit_at': '2099-12-05T18:00', 'seating_area': 'PRIVATE3',
+                'approve_private3_table': True, 'private3_table': 2, 'email': 'test@example.com'}
+        with patch.object(run, 'make_invoice', return_value=('c', 'o', 'i', 'https://example.com/invoice')) as invoice:
+            first = self.post('/api/reservations/phone', body, **{'X-Tsukiya-Action': 'approve-private3-table'})
+            retry = self.post('/api/reservations/phone', body, **{'X-Tsukiya-Action': 'approve-private3-table'})
+        self.assertEqual((first['source'], first['status'], first['private3_table']), ('PHONE', 'INVOICED', 2))
+        self.assertEqual(first['id'], retry['id'])
+        invoice.assert_called_once()
+
     def test_move_paid_private_reservation_into_split_and_back(self):
         target = {**self.body, 'visit_at': '2099-12-05T18:00'}
         row = self.post('/api/reservations/direct', target)

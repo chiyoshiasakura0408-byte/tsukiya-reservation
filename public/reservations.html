@@ -47,6 +47,9 @@ main{max-width:1450px;margin:auto;padding:16px}.pages{display:flex;flex-wrap:wra
 .room-batch-row{padding:8px 0;border-bottom:1px solid var(--line)}
 .room-batch-row label{display:block;font-weight:700}
 .room-batch #roomBatchSummary{white-space:pre-line}
+.entry-modes{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px}
+.entry-modes button{flex:1;min-height:44px}
+.entry-modes button[aria-pressed="true"]{background:var(--navy);color:#fff}
 </style>
 
 <style id="phoneScriptStyles">
@@ -63,11 +66,11 @@ main{max-width:1450px;margin:auto;padding:16px}.pages{display:flex;flex-wrap:wra
 <section class="card" id="counterCard"><div class="section-heading"><h2>カウンター 8席</h2><div class="section-actions"><button onclick="showBlockControls('COUNTER')">席ブロック</button><button onclick="startDirect('COUNTER')">＋ 直接予約</button></div></div><p class="summary" id="counterSummary"></p><div class="board-scroll counter-scroll"><div id="counter" class="matrix counter"></div></div><p class="hint">右端が1番、左端が8番です。席番号は人数に応じた画面上の自動配置です。</p></section>
 <section class="card" id="roomCard"><div class="section-heading"><h2>個室 3室</h2><div class="section-actions"><button onclick="showBlockControls('PRIVATE')">席ブロック</button><button onclick="startDirect('PRIVATE')">＋ 直接予約</button></div></div><p class="summary" id="roomSummary"></p><div class="board-scroll"><div id="rooms" class="matrix rooms"></div></div></section>
 </div><section class="card block-card" id="blockCard" hidden><div class="toolbar"><strong id="blockTitle">席ブロック</strong><span id="blockSelection" class="hint">空席をタップして選択</span><button id="createBlock" onclick="createBlocks()" disabled>登録</button><button id="removeBlock" onclick="removeBlock()" hidden>ブロック解除</button><button type="button" onclick="closeBlockControls()">席ブロックを終了</button></div><input id="blockNote" placeholder="理由・メモ（任意）" maxlength="200" aria-label="ブロックの理由"></section></div>
-<section class="card phone-card" id="phoneCard"><div id="reservationDetail" hidden></div><div id="phoneForm"><div class="section-heading"><h2 id="entryTitle">電話予約入力</h2><button onclick="togglePhone(false)" aria-label="電話予約入力を閉じる">✕</button></div><div id="entryFields"><div id="directContext" class="direct-context" hidden><strong>直接予約・当日精算</strong><p>前受け請求は送りません。メール登録時は確定メールを送信し、未登録時は店内管理用として予約を確定します。</p><label for="customerSearch">顧客検索（名前・電話番号・メール）</label><input id="customerSearch" type="search" oninput="searchDirectCustomers()" autocomplete="off"><div id="customerMatches"></div><p id="linkedCustomer">新しいお客様は登録時に顧客情報を作成します。</p><button type="button" onclick="clearDirectCustomer()">新しいお客様</button><button type="button" onclick="usePhoneMode()">電話予約入力へ</button></div><div class="formgrid">
+<section class="card phone-card" id="phoneCard"><div id="reservationDetail" hidden></div><div id="phoneForm"><div class="section-heading"><h2 id="entryTitle">電話予約入力</h2><button onclick="togglePhone(false)" aria-label="電話予約入力を閉じる">✕</button></div><div id="entryFields"><div class="entry-modes" role="group" aria-label="予約方法"><button type="button" id="directEntryMode" aria-pressed="false" onclick="switchEntryMode('direct')">直接予約</button><button type="button" id="phoneEntryMode" aria-pressed="true" onclick="switchEntryMode('phone')">電話予約</button></div><div id="directContext" class="direct-context" hidden><strong>直接予約・当日精算</strong><p>前受け請求は送りません。メール登録時は確定メールを送信し、未登録時は店内管理用として予約を確定します。</p><label for="customerSearch">顧客検索（名前・電話番号・メール）</label><input id="customerSearch" type="search" oninput="searchDirectCustomers()" autocomplete="off"><div id="customerMatches"></div><p id="linkedCustomer">新しいお客様は登録時に顧客情報を作成します。</p><button type="button" onclick="clearDirectCustomer()">新しいお客様</button></div><div class="formgrid">
 <div><label for="visitDate">来店日</label><input id="visitDate" type="date" onchange="syncFromForm()"></div>
-<div><label for="visitTime">時刻</label><select id="visitTime" onchange="onTimeChange()"><option value="18:00">18:00（1部）</option><option value="20:30">20:30（2部）</option><option value="custom">VIP個室の通し予約</option><option id="specialTimeOption" value="special" disabled hidden>時間指定予約</option></select><div id="customTimeField" hidden><label for="customTime">希望開始時刻</label><input id="customTime" type="time" min="17:00" max="22:59" step="60" value="19:00" onchange="updateSpecialEndTime();checkAvailability()"><small id="vipTimeHint">11月以降の個室通しは承認済みVIPのみ、23時まで。20:30は通常の2部です。</small><div id="specialTimeFields" hidden><label for="specialEndTime">終了時刻</label><input id="specialEndTime" type="time" min="17:00" max="23:00" step="60" aria-describedby="specialTimeHint" oninput="specialEndEdited=!!this.value" onchange="checkAvailability()"><small id="specialTimeHint">終了時刻は自動入力されます。必要に応じて変更してください。カウンターは20:30をまたげません。</small></div></div></div>
+<div><label for="visitTime">時刻</label><select id="visitTime" onchange="onTimeChange()"><option value="" hidden disabled>開始時刻を選択</option><option value="18:00" selected>18:00（1部）</option><option value="20:30">20:30（2部）</option><option value="custom">VIP個室の通し予約</option><option id="specialTimeOption" value="special" disabled hidden>時間指定予約</option></select><div id="customTimeField" hidden><label for="customTime">希望開始時刻</label><input id="customTime" type="time" min="17:00" max="22:59" step="60" value="19:00" onchange="updateSpecialEndTime();checkAvailability()"><small id="vipTimeHint">11月以降の個室通しは承認済みVIPのみ、23時まで。20:30は通常の2部です。</small><div id="specialTimeFields" hidden><label for="specialEndTime">終了時刻</label><input id="specialEndTime" type="time" min="17:00" max="23:00" step="60" aria-describedby="specialTimeHint" oninput="specialEndEdited=!!this.value" onchange="checkAvailability()"><small id="specialTimeHint">終了時刻は自動入力されます。必要に応じて変更してください。カウンターは20:30をまたげません。</small></div></div></div>
 <div><label for="party">人数</label><select id="party" onchange="checkAvailability()"><option value="2">2名</option><option value="3">3名</option><option value="4">4名</option><option value="5">5名</option><option value="6">6名</option><option value="7">7名</option><option value="8">8名</option></select></div>
-<div><label for="area">席</label><select id="area" onchange="onSeatChange()"><option value="COUNTER">カウンター</option><option value="PRIVATE">個室（自動割当）</option><optgroup id="directSeatOptions" label="席を指定" disabled hidden><option value="PRIVATE1">個室①</option><option value="PRIVATE2">個室②</option><option value="PRIVATE3">個室③全体</option><option value="PRIVATE3_TABLE_1">個室③ テーブルA</option><option value="PRIVATE3_TABLE_2">個室③ テーブルB</option></optgroup></select></div>
+<div><label for="area">席</label><select id="area" onchange="onSeatChange()"><option value="COUNTER">カウンター</option><option value="PRIVATE">個室（自動割当）</option><optgroup id="directSeatOptions" label="席を指定"><option value="PRIVATE1">個室①</option><option value="PRIVATE2">個室②</option><option value="PRIVATE3">個室③全体</option><option value="PRIVATE3_TABLE_1">個室③ テーブルA</option><option value="PRIVATE3_TABLE_2">個室③ テーブルB</option></optgroup></select></div>
 <div><label for="name">名前</label><input id="name"></div>
 <div><label for="phone">電話番号</label><input id="phone" type="tel"></div>
 <div><label for="email">メールアドレス（任意）</label><input id="email" type="email" autocomplete="email"></div><div><label for="course">コース（自動設定）</label><input id="course" readonly></div>
@@ -101,10 +104,12 @@ function chooseBoardSeat(time,area,num,table){
   if(!$('blockCard').hidden&&blockArea===group){selectBlock(time,area,num);return}
   if(phoneSubmitting)return;
   const choice=table?`PRIVATE3_TABLE_${table}`:area;
-  if(entryMode==='direct'&&!directSubmitted&&!$('phoneCard').hidden&&!$('phoneForm').hidden){
+  if((entryMode==='direct'||seatEntryActive)&&!directSubmitted&&!$('phoneCard').hidden&&!$('phoneForm').hidden){
+    seatEntryActive=true;
     $('visitDate').value=$('day').value;
     $('area').value=choice;
     $('visitTime').value=time;
+    if(entryMode==='phone')refreshEntryMode();
     onTimeChange();
   }else{
     startDirect(choice,null,time);
@@ -425,8 +430,8 @@ function cancellationEmailLabel(r){return ({SENT:'送信済み（メールサー
 function showOnlineDetail(id){const r=reservations.find(x=>Number(x.id)===id&&['WEB','WEB_CARD'].includes(x.source));if(!r)return;selectedOnlineId=id;for(const row of $('onlineRows').rows){row.classList.toggle('selected',Number(row.getAttribute('onclick')?.match(/\d+/)?.[0])===id)}const fields=[['予約ID',`#${Number(r.id)}`],['受付日',receivedAt(r.created_at)],['予約日時',String(r.visit_at||'').replace('T',' ')],['予約サイト','つきやホームページ'],['経路',sourceLabel(r)],['状況',r.source==='DIRECT'&&r.status==='CONFIRMED'?'予約確定・当日精算':statusLabel(r)],['お客様',r.guest_name],['席',areaLabel(r)],['人数',`${Number(r.party_size)}名`],['予約区分',r.reservation_category||'—'],['ドリンク条件',r.beverage_policy||'—'],['コース',r.course_name||'—'],['お料理代',yen(r.amount)],['電話番号',r.phone||'—'],['メール',r.email||'—'],['アレルギー',r.customer_allergies||'—'],['苦手食材',r.customer_disliked_foods||'—'],['好みの席',r.customer_preferred_seat||'—'],['好みの飲み物',r.customer_preferred_drinks||'—'],...(r.cancellation_reason==='PAYMENT_EXPIRED'?[['取消メール',cancellationEmailLabel(r)],['取消メール送信日時',receivedAt(r.cancellation_email_sent_at)]]:[])];$('onlineDetail').innerHTML='<div class="online-detail-heading"><h3>予約詳細</h3>'+`<button class="read-action" type="button" onclick="markRead(${Number(r.id)})" ${r.staff_seen_at?'disabled':''}>${r.staff_seen_at?'✔︎チェック済み':'チェックする'}</button>`+'</div>'+(r.customer_id?`<a class="customer-link" href="/customers?customer_id=${Number(r.customer_id)}">顧客情報へ</a>`:'')+'<dl>'+fields.map(([name,value])=>`<dt>${escapeHtml(name)}</dt><dd>${name==='状況'?statusBadge(r):escapeHtml(value)}</dd>`).join('')+'</dl>'}
 function onSeatChange(){if($('area').value==='COUNTER'&&$('visitTime').value==='custom'){$('visitTime').value='18:00';$('customTimeField').hidden=true}updateSpecialEndTime();checkAvailability();showSelectedSeats()}
 function showSelectedSeats(){const pane=$('seatPane'),target=$($('area').value==='COUNTER'?'counterCard':'roomCard');const paneBox=pane.getBoundingClientRect(),cardBox=target.getBoundingClientRect();const top=cardBox.top-paneBox.top+pane.scrollTop;const room=$('area').value!=='COUNTER';const desired=room?Math.max(top,cardBox.bottom-paneBox.bottom+pane.scrollTop+24):top;pane.scrollTo({top:Math.max(0,desired),behavior:'smooth'})}
-function syncFromBoard(){$('boardMessage').textContent='';$('visitDate').value=$('day').value;updateBoardDate();renderRequestAlerts();loadBlocks();checkAvailability()}
-function syncFromForm(){$('boardMessage').textContent='';$('day').value=$('visitDate').value;updateBoardDate();renderRequestAlerts();loadBlocks();checkAvailability()}
+function syncFromBoard(){$('boardMessage').textContent='';$('visitDate').value=$('day').value;if(entryMode==='phone'&&!directSubmitted)refreshEntryMode();updateBoardDate();renderRequestAlerts();loadBlocks();checkAvailability()}
+function syncFromForm(){$('boardMessage').textContent='';$('day').value=$('visitDate').value;if(entryMode==='phone'&&!directSubmitted)refreshEntryMode();updateBoardDate();renderRequestAlerts();loadBlocks();checkAvailability()}
 let availabilitySeq=0,courseSeq=0;
 function isSpecialEntry(){return $('visitTime').value==='special'&&entryMode==='direct'}
 function selectedTime(){const mode=$('visitTime').value;return mode==='custom'||mode==='special'?$('customTime').value:mode}
@@ -472,14 +477,18 @@ function onTimeChange(){
   checkAvailability()
 }
 function canApproveRoom3(){
-  return entryMode==='direct'&&['PRIVATE','PRIVATE3','PRIVATE3_TABLE_1','PRIVATE3_TABLE_2'].includes($('area').value)&&['2','3','4'].includes($('party').value)&&$('visitTime').value!=='custom';
+  const area=$('area').value,table=roomBatchSeat(area).private3_table;
+  return (table||(entryMode==='direct'&&['PRIVATE','PRIVATE3'].includes(area)))&&['2','3','4'].includes($('party').value)&&$('visitTime').value!=='custom';
 }
 function updateEntryButtons(){
-  const disabled=directSubmitted||phoneSubmitting||!$('amount').value;
+  const disabled=directSubmitted||phoneSubmitting||!$('amount').value||!selectedTime();
+  $('directEntryMode').disabled=phoneSubmitting||directSubmitted;
+  $('phoneEntryMode').disabled=phoneSubmitting||directSubmitted;
   const table=roomBatchSeat($('area').value).private3_table;
   $('submitPhone').hidden=!!table&&!directSubmitted;
   $('submitPhone').disabled=disabled;
-  $('approveRoom3').textContent=table?`${tableLabel(table)}を承認して確定`:'個室③のテーブルを承認して確定';
+  const tableAction=entryMode==='phone'&&!isSameDayEntry()?'登録・請求送信':'承認して確定';
+  $('approveRoom3').textContent=table?`${tableLabel(table)}を${tableAction}`:'個室③のテーブルを承認して確定';
   $('approveRoom3').disabled=disabled;
   $('approveRoom3').hidden=!canApproveRoom3()||directSubmitted;
 }
@@ -488,7 +497,10 @@ const special=isSpecialEntry();
 const timeError=special?specialTimeError():null;
 $('specialTimeSummary').hidden=!special||!!timeError;
 if(special&&!timeError)$('specialTimeSummary').textContent=`${selectedTime()}〜${$('specialEndTime').value}`;
-const seq=++availabilitySeq;const date=$('visitDate').value,party=Number($('party').value);$('suggestions').hidden=true;updateCourse();if(!date||party<1)return;const at=`${date}T${selectedTime()}`;const seat=roomBatchSeat($('area').value);const q=new URLSearchParams({time_specified:$('visitTime').value==='custom'?'1':'0',visit_at:at,seating_area:seat.seating_area,party_size:party,counter_round:$('area').value==='COUNTER'?($('visitTime').value==='18:00'?'1':'2'):''});if(seat.private3_table)q.set('private3_table',seat.private3_table);if(special){
+const seq=++availabilitySeq;const date=$('visitDate').value,party=Number($('party').value);$('suggestions').hidden=true;updateCourse();if(!date||party<1||!selectedTime()){
+  $('availability').textContent='';
+  return;
+}const at=`${date}T${selectedTime()}`;const seat=roomBatchSeat($('area').value);const q=new URLSearchParams({time_specified:$('visitTime').value==='custom'?'1':'0',visit_at:at,seating_area:seat.seating_area,party_size:party,counter_round:$('area').value==='COUNTER'?($('visitTime').value==='18:00'?'1':'2'):''});if(seat.private3_table)q.set('private3_table',seat.private3_table);if(special){
   if(timeError){$('availability').textContent=timeError[1];return}
   q.set('special_end_time',$('specialEndTime').value);
 }
@@ -496,8 +508,8 @@ try{const result=await api('/api/availability?'+q);if(seq!==availabilitySeq)retu
 
 async function updateCourse(){const seq=++courseSeq,date=$('visitDate').value,party=Number($('party').value);$('course').value='';$('amount').value='';updateEntryButtons();if(!date||party<1)return;try{const q=new URLSearchParams({date,party_size:party});const result=await api('/api/phone-course?'+q);if(seq!==courseSeq)return;if(result.available){$('course').value=result.course_name;$('amount').value=`¥${Number(result.amount).toLocaleString()}`;updateEntryButtons()}else{$('course').value='予約可能なコースはありません'}}catch(e){if(seq===courseSeq)$('course').value=e.message}}
 
-function chooseSuggestion(i){const s=(window.currentSuggestions||[])[i];if(!s)return;$('visitDate').value=s.visit_at.slice(0,10);$('visitTime').value=s.visit_at.slice(11,16);$('customTimeField').hidden=true;$('area').value=entryMode==='direct'||s.seating_area==='COUNTER'?s.seating_area:'PRIVATE';syncFromForm();showSelectedSeats()}
-async function addReservation(approveRoom3=false){if(directSubmitted||phoneSubmitting)return;if(entryMode==='phone'&&!directRequestId)directRequestId=crypto.randomUUID();if(entryMode==='direct'&&!$('email').validity.valid){$('notice').textContent='メールアドレスを確認してください';return}const body={time_specified:$('visitTime').value==='custom',guest_name:$('name').value.trim(),email:$('email').value.trim(),customer_id:linkedCustomerId,request_id:directRequestId,phone:$('phone').value.trim(),party_size:Number($('party').value),visit_at:`${$('visitDate').value}T${selectedTime()}`,seating_area:roomBatchSeat($('area').value).seating_area,counter_round:$('area').value==='COUNTER'?($('visitTime').value==='18:00'?1:2):null,duration_minutes:150,guest_note:$('phoneNote').value.trim(),confirmation_note:$('confirmationNote').value.trim(),celebration_items:[...document.querySelectorAll('[data-celebration].active')].map(b=>b.dataset.celebration),plate_message:$('plateMessage').value.trim()};if(isSpecialEntry()){
+function chooseSuggestion(i){const s=(window.currentSuggestions||[])[i];if(!s)return;$('visitDate').value=s.visit_at.slice(0,10);$('visitTime').value=s.visit_at.slice(11,16);$('customTimeField').hidden=true;$('area').value=s.seating_area;syncFromForm();showSelectedSeats()}
+async function addReservation(approveRoom3=false){if(directSubmitted||phoneSubmitting||!selectedTime())return;if(entryMode==='phone'&&!directRequestId)directRequestId=crypto.randomUUID();if(!$('email').validity.valid){$('notice').textContent='メールアドレスを確認してください';return}const body={time_specified:$('visitTime').value==='custom',guest_name:$('name').value.trim(),email:$('email').value.trim(),customer_id:linkedCustomerId,request_id:directRequestId,phone:$('phone').value.trim(),party_size:Number($('party').value),visit_at:`${$('visitDate').value}T${selectedTime()}`,seating_area:roomBatchSeat($('area').value).seating_area,counter_round:$('area').value==='COUNTER'?($('visitTime').value==='18:00'?1:2):null,duration_minutes:150,guest_note:$('phoneNote').value.trim(),confirmation_note:$('confirmationNote').value.trim(),celebration_items:[...document.querySelectorAll('[data-celebration].active')].map(b=>b.dataset.celebration),plate_message:$('plateMessage').value.trim()};if(isSpecialEntry()){
   const error=specialTimeError();
   if(error){
     const [field,message]=error;
@@ -516,7 +528,8 @@ if(approveRoom3){
   const period=body.visit_at.replace('T',' ')+(body.special_end_time?`〜${body.special_end_time}`:'');
   const table=roomBatchSeat($('area').value).private3_table;
   const label=table?tableLabel(table):'テーブル席';
-  if(!confirm(`${body.guest_name}様の${body.party_size}名予約を、${period}に個室③の${label}で確定しますか？`))return;
+  const action=entryMode==='phone'&&!isSameDayEntry()?'登録して請求を送信しますか？':'確定しますか？';
+  if(!confirm(`${body.guest_name}様の${body.party_size}名予約を、${period}に個室③の${label}で${action}`))return;
   if(table)body.private3_table=table;
   body.seating_area='PRIVATE3';
   body.approve_private3_table=true;
@@ -527,13 +540,64 @@ try{phoneSubmitting=true;updateEntryButtons();const r=await api(entryMode==='dir
 async function logout(){await fetch('/api/logout',{method:'POST',credentials:'same-origin'});location.href='/login'}
 const snapshotParams=new URLSearchParams(location.search),snapshotMode=snapshotParams.get('snapshot')==='1';const japanToday=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());const requestedDay=snapshotParams.get('date');$('day').value=snapshotMode&&/^\d{4}-\d{2}-\d{2}$/.test(requestedDay||'')?requestedDay:japanToday;$('visitDate').value=$('day').value;if(snapshotMode){document.body.classList.add('snapshot');document.body.dataset.snapshotReady='false';toggleDay(false);togglePhone(false)}load();
 
-let entryMode='phone',linkedCustomerId=null,directRequestId=null,directSubmitted=false,directCustomers=[],phoneSubmitting=false,specialEndEdited=false;
+let entryMode='phone',linkedCustomerId=null,directRequestId=null,directSubmitted=false,directCustomers=[],phoneSubmitting=false,specialEndEdited=false,seatEntryActive=false;
 function clearDirectCustomer(){linkedCustomerId=null;for(const id of ['name','phone','email','customerSearch'])$(id).value='';$('customerMatches').innerHTML='';$('linkedCustomer').textContent='新しいお客様は登録時に顧客情報を作成します。'}
-async function startDirect(area='COUNTER',customerId=null,time=null){entryMode='direct';$('directSeatOptions').disabled=false;$('directSeatOptions').hidden=false;$('phoneCard').classList.add('direct-entry');specialEndEdited=false;showSpecialTimeOption(true);$('specialEndTime').value='';directSubmitted=false;directRequestId=crypto.randomUUID();togglePhone(true);$('entryTitle').textContent='直接予約入力';$('directContext').hidden=false;$('amountLabel').textContent='お料理代（当日精算・人数分・税込）';$('submitPhone').textContent='予約を確定する';$('notice').textContent='お支払いはご来店当日です。';clearDirectCustomer();for(const id of ['phoneNote','confirmationNote','plateMessage'])$(id).value='';document.querySelectorAll('[data-celebration].active').forEach(b=>toggleCelebration(b));$('visitDate').value=$('day').value;$('area').value=area;if(time){$('visitTime').value=time;onTimeChange()}else{onSeatChange()}$('phoneCard').scrollTop=0;$('entryFields').scrollTop=0;try{directCustomers=await api('/api/customers');if(customerId)await selectDirectCustomer(customerId)}catch(e){$('notice').textContent=e.message}}
+function isSameDayEntry(){return $('visitDate').value===japanToday}
+function refreshEntryMode(){
+  const direct=entryMode==='direct';
+  const onSite=direct||isSameDayEntry();
+  $('phoneCard').classList.toggle('direct-entry',direct);
+  $('directContext').hidden=!direct;
+  $('directEntryMode').setAttribute('aria-pressed',String(direct));
+  $('phoneEntryMode').setAttribute('aria-pressed',String(!direct));
+  $('entryTitle').textContent=direct?'直接予約入力':'電話予約入力';
+  $('amountLabel').textContent=onSite?'お料理代（当日精算・人数分・税込）':'前受け金額（人数分・税込）';
+  $('submitPhone').textContent=onSite?'予約を確定する':'予約登録・請求送信';
+  $('notice').textContent=onSite?'お支払いはご来店当日です。':'登録後、Square請求書を自動発行します。メール未登録の場合はSMSでご案内します。';
+}
+async function loadDirectCustomers(customerId=null){
+  try{
+    directCustomers=await api('/api/customers');
+    if(customerId&&entryMode==='direct')await selectDirectCustomer(customerId);
+  }catch(e){if(entryMode==='direct')$('notice').textContent=e.message}
+}
+async function startDirect(area='COUNTER',customerId=null,time=null){
+  if(phoneSubmitting)return;
+  entryMode='direct';
+  seatEntryActive=!!time;
+  specialEndEdited=false;
+  showSpecialTimeOption(true);
+  $('specialEndTime').value='';
+  directSubmitted=false;
+  directRequestId=crypto.randomUUID();
+  togglePhone(true);
+  clearDirectCustomer();
+  for(const id of ['phoneNote','confirmationNote','plateMessage'])$(id).value='';
+  document.querySelectorAll('[data-celebration].active').forEach(b=>toggleCelebration(b));
+  $('visitDate').value=$('day').value;
+  $('area').value=area;
+  refreshEntryMode();
+  if(time){$('visitTime').value=time;onTimeChange()}else{onSeatChange()}
+  $('phoneCard').scrollTop=0;
+  $('entryFields').scrollTop=0;
+  await loadDirectCustomers(customerId);
+}
+function switchEntryMode(mode){
+  if(mode===entryMode||phoneSubmitting||directSubmitted)return;
+  const wasSpecial=$('visitTime').value==='special';
+  entryMode=mode;
+  seatEntryActive=true;
+  directRequestId=crypto.randomUUID();
+  showSpecialTimeOption(mode==='direct');
+  if(mode==='phone'&&wasSpecial)$('visitTime').value='';
+  refreshEntryMode();
+  onTimeChange();
+  if(mode==='phone'&&wasSpecial)$('notice').textContent='電話予約の開始時刻を選択してください。';
+  if(mode==='direct')loadDirectCustomers();
+}
 function searchDirectCustomers(){const q=$('customerSearch').value.trim().toLowerCase();const rows=q?directCustomers.filter(c=>[c.name,c.phone,c.email].some(v=>String(v||'').toLowerCase().includes(q))).slice(0,8):[];$('customerMatches').innerHTML=rows.map(c=>`<button type="button" onclick="selectDirectCustomer(${Number(c.id)})">${escapeHtml(c.name)} · ${escapeHtml(c.phone||c.email||'')}</button>`).join('')}
 async function selectDirectCustomer(id){try{const {customer:c}=await api('/api/customers/'+Number(id));linkedCustomerId=Number(c.id);$('name').value=c.name||'';$('phone').value=c.phone||'';$('email').value=c.email||'';$('customerSearch').value=c.name||'';$('customerMatches').innerHTML='';$('linkedCustomer').textContent=`${c.name}様の顧客情報に紐付きます。アレルギー：${c.allergies||'未登録'}／苦手食材：${c.disliked_foods||'未登録'}／好みの席：${c.preferred_seat||'未登録'}`;if(!c.email)$('notice').textContent='メール未登録でも当日精算で予約を確定できます。通知は送信しません。'}catch(e){$('notice').textContent=e.message}}
-function usePhoneMode(){entryMode='phone';if($('area').value.startsWith('PRIVATE'))$('area').value='PRIVATE';$('directSeatOptions').disabled=true;$('directSeatOptions').hidden=true;$('phoneCard').classList.remove('direct-entry');showSpecialTimeOption(false);directSubmitted=false;linkedCustomerId=null;directRequestId=null;$('directContext').hidden=true;$('entryTitle').textContent='電話予約入力';$('submitPhone').textContent='予約登録・請求送信';$('amountLabel').textContent='前受け金額（人数分・税込）';$('notice').textContent='登録時に残席を確認し、Square請求書を自動発行します。メール登録時はメールへ、それ以外はSMSへ送信します。';checkAvailability()}
-const entryParams=new URLSearchParams(location.search);if(entryParams.get('mode')==='direct')startDirect('COUNTER',Number(entryParams.get('customer_id'))||null);
+const entryParams=new URLSearchParams(location.search);if(entryParams.get('mode')==='direct')startDirect('COUNTER',Number(entryParams.get('customer_id'))||null);else refreshEntryMode();
 let notificationPollBusy=false;
 async function pollOnlineReservations(){if(snapshotMode||document.hidden||notificationPollBusy)return;notificationPollBusy=true;try{const latest=await api('/api/reservations');reservations=latest;renderNotifications();renderNewReservations();renderOnline();render()}catch(e){/* Keep the last successful display on temporary network failures. */}finally{notificationPollBusy=false}}
 if(!snapshotMode)setInterval(pollOnlineReservations,30000);

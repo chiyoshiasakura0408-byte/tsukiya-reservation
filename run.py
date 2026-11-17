@@ -4763,9 +4763,9 @@ class Handler(
             if approve_room3:
                 if self.headers.get("X-Tsukiya-Action") != "approve-private3-table":
                     return self.send_json({"error": "個室③の承認ボタンから操作してください"}, 403)
-                if (not direct or x["seating_area"] != "PRIVATE3" or type(x["party_size"]) is not int
+                if ((not direct and requested_table is None) or x["seating_area"] != "PRIVATE3" or type(x["party_size"]) is not int
                         or not 2 <= party <= 4 or rnd is not None or x.get("time_specified") is True):
-                    return self.send_json({"error": "個室③のテーブル席は直接予約の2〜4名が対象です"}, 400)
+                    return self.send_json({"error": "個室③のテーブル席は2〜4名です。電話予約ではテーブルを指定してください"}, 400)
                 area = "PRIVATE3"
 
             try:
