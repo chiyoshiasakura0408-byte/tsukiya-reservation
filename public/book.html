@@ -21,298 +21,33 @@ body{color:#eee9e1}header{background:#0e0f10;border-bottom:1px solid var(--line)
 
 /* White text throughout the reservation interface. */
 :root{--navy:#eee9e1;--muted:#d0cbc3}header .brand,header p,h1,h2,h3,.summary h3,.round-head,.weekend,.slot.open,a,.area,.policy-consent,.policy-consent a,.request-choices label{color:#eee9e1}.primary{background:#27231d;border-color:#b69b72;color:#eee9e1}
-
-#availability .controls{margin-top:10px}
-#availability .controls :is(button,input,select){min-height:44px}
-.view-switch{display:flex;gap:8px;margin:15px 0}
-.view-switch [aria-pressed=true]{background:#27231d;border-color:var(--gold)}
-.day-slots{border-top:1px solid var(--line);padding:12px 0}
-.day-slots h3{font-size:16px;margin:0 0 8px}
-.slot-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-.list-slot{min-height:46px;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left}
-.list-slot small{color:var(--muted);font-weight:400}
-#selection{white-space:pre-line}
-@media(max-width:650px){.slot-list{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <header><div class="brand">西天満 つきや</div><h1 id="courseTitle">ご予約ページ</h1></header>
 <main>
-<section class="card guest-guidance" id="octSnowNotice" style="border:1px solid #b28a47"><h2>コース変更のご案内（10月22日〜11月9日）</h2><p>活たらば蟹の入荷がないため、10月22日〜11月9日のご予約は「ずわい蟹おまかせコース」に変更してご案内いたします。料金はお一人様44,000円（税込）です。お料理代金は事前決済となり、ご入金完了後にご予約確定となります。</p></section><section class="card" id="availability">
-<h2>空席を探す</h2>
-<div class="controls">
-  <label for="party">人数</label><select id="party"></select>
-  <label for="seatingFilter">お席</label>
-  <select id="seatingFilter"><option value="">どちらでも</option><option value="COUNTER">本店｜カウンター</option><option value="PRIVATE">別邸｜個室</option></select>
-</div>
-<p class="summary" id="phoneBooking" hidden>8名以上のご予約はお電話にて承ります。<br><a href="tel:0663554765">店舗に電話する（06-6355-4765）</a></p>
-<div id="availabilityViews">
-  <div class="view-switch" role="group" aria-label="空席の表示方法">
-    <button type="button" id="listMode" aria-controls="slotList" aria-pressed="true">空席一覧</button>
-    <button type="button" id="calendarMode" aria-controls="calendarView" aria-pressed="false">カレンダー</button>
-  </div>
-  <div class="controls"><button type="button" id="previous">7日戻る</button><label for="start">表示開始日</label><input type="date" id="start" required><button type="button" id="next">7日進む</button></div>
-  <p class="sub" id="calendarStatus" role="status">空席を読み込んでいます。</p>
-  <div id="slotList"></div>
-  <div id="calendarView" hidden><div class="scroll"><div class="calendar" id="calendar"></div></div><p class="sub" id="calendarSwipe">スマートフォンではカレンダーを横にスワイプできます。</p></div>
-</div>
-<p class="sub">前日・当日のご予約はお電話のみで承ります。Web受付が終了した日も、<a href="tel:0663554765">お電話</a>でご案内できる場合がございます。</p>
-</section>
-<section class="card" id="details" hidden><h2>ご予約内容</h2><div class="summary"><div id="selection"></div><p class="sub" id="beveragePolicy" hidden></p></div><p id="annexNotice" class="summary" hidden>個室は本店とは別の建物でのご案内となります。西天満つきや 別邸（大阪市北区西天満3-8-7）までお越しください。</p><div class="sub" id="booking-payment-guidance"><p>＊予約確定には事前のお支払いが必要です。カードは全額決済後、銀行振込は全額の着金確認後に予約が確定します。</p><p>＊カード決済中のお席の確保は10分です。期限を過ぎた場合は空席を選び直してください。</p></div><div id="bookingPasskeys"></div><form id="booking"><div class="formgrid"><label>お名前<input name="guest_name" autocomplete="name" maxlength="80" required></label><label>電話番号<input name="phone" type="tel" autocomplete="tel" maxlength="20" required></label><label>メールアドレス<input name="email" type="email" autocomplete="email" maxlength="254" required></label></div><div class="request-fields"><label>備考・ご要望<textarea name="guest_note" maxlength="1000" rows="3" placeholder="アレルギーやお祝いのご希望などをご記入ください"></textarea></label><div><span class="sub">ケーキ、花束をご希望の方は下記を選択してください（複数選択可）</span><div class="request-choices"><label><input type="checkbox" name="celebration_items" value="カットケーキ">カットケーキ ¥1,500〜</label><label><input type="checkbox" name="celebration_items" value="ホールケーキ（小）">ホールケーキ 小 ¥5,000〜</label><label><input type="checkbox" name="celebration_items" value="ホールケーキ（大）">ホールケーキ 大 ¥10,000〜</label><label><input type="checkbox" name="celebration_items" value="花束（小）">花束 小 ¥5,000</label><label><input type="checkbox" name="celebration_items" value="花束（大）">花束 大 ¥10,000〜</label></div><p class="sub">花束・ケーキ代は当日店舗にてお支払いください。<br>その他ご要望は備考欄にご記載下さい。</p></div><label class="plate-field" hidden>お祝いプレートのメッセージ<input type="text" name="plate_message" maxlength="120" placeholder="例：Happy Birthday ○○"></label></div><section class="summary"><h3>お支払い方法</h3><div class="payment-choices" role="radiogroup" aria-label="お支払い方法"><label><input id="cardChoice" name="bank_choice" type="radio" value="card" checked required><span>クレジットカード</span></label><label><input id="bankChoice" name="bank_choice" type="radio" value="on" required><span>銀行振込</span></label></div><div id="bankFields" hidden><p class="sub">全額の着金を店舗で確認後、ご予約確定となります。24時間以内にお振込みください。</p><div class="formgrid"><label>振込名義（カナ）<input name="bank_payer" id="bankPayer" maxlength="80"></label></div></div></section><label class="policy-consent"><input type="checkbox" name="cancellation_policy_accepted" required><span><a href="#cancellation-policy">キャンセルポリシー</a>を確認し、同意します。</span></label><button type="submit" class="primary" id="submit">カード決済へ進む</button></form><div class="message" id="result" role="status"></div></section>
+<section class="card guest-guidance" id="octSnowNotice" style="border:1px solid #b28a47"><h2>コース変更のご案内（10月22日〜11月9日）</h2><p>活たらば蟹の入荷がないため、10月22日〜11月9日のご予約は「ずわい蟹おまかせコース」に変更してご案内いたします。料金はお一人様44,000円（税込）です。お料理代金は事前決済となり、ご入金完了後にご予約確定となります。</p></section><section class="card"><h2>空席カレンダー</h2><div class="sub" id="calendar-guidance">＊前日・当日のご予約はお電話のみで承ります。<br>＊8名以上のご予約はお電話にてご確認下さい。<br>＊Web予約が締め切られていてもお席のご案内が可能な場合がございます。お電話にてご確認ください。</div><div class="controls"><button type="button" id="previous">7日戻る</button><label for="start">表示開始日</label><input type="date" id="start"><button type="button" id="next">7日進む</button><label for="party">人数</label><select id="party"></select></div><p class="sub" id="calendarStatus">空席を読み込んでいます。</p><div class="scroll"><div class="calendar" id="calendar"></div></div><p class="sub">スマートフォンではカレンダーを横にスワイプできます。</p></section>
+<section class="card" id="details" hidden><h2>ご予約内容</h2><div class="summary" id="selection"></div><p id="annexNotice" class="summary" hidden>個室は本店とは別の建物でのご案内となります。西天満つきや 別邸（大阪市北区西天満3-8-7）までお越しください。</p><div class="sub" id="booking-payment-guidance"><p>＊予約確定には事前のお支払いが必要です。カードは全額決済後、銀行振込は全額の着金確認後に予約が確定します。</p><p>＊カード決済中のお席の確保は10分です。期限を過ぎた場合は空席を選び直してください。</p></div><form id="booking"><div class="formgrid"><label>お名前<input name="guest_name" autocomplete="name" maxlength="80" required></label><label>電話番号<input name="phone" type="tel" autocomplete="tel" maxlength="20" required></label><label>メールアドレス<input name="email" type="email" autocomplete="email" maxlength="254" required></label></div><div class="request-fields"><label>備考・ご要望<textarea name="guest_note" maxlength="1000" rows="3" placeholder="アレルギーやお祝いのご希望などをご記入ください"></textarea></label><div><span class="sub">ケーキ、花束をご希望の方は下記を選択してください（複数選択可）</span><div class="request-choices"><label><input type="checkbox" name="celebration_items" value="カットケーキ">カットケーキ ¥1,500〜</label><label><input type="checkbox" name="celebration_items" value="ホールケーキ（小）">ホールケーキ 小 ¥5,000〜</label><label><input type="checkbox" name="celebration_items" value="ホールケーキ（大）">ホールケーキ 大 ¥10,000〜</label><label><input type="checkbox" name="celebration_items" value="花束（小）">花束 小 ¥5,000</label><label><input type="checkbox" name="celebration_items" value="花束（大）">花束 大 ¥10,000〜</label></div><p class="sub">お支払いは当日店舗にてお願い致します。<br>その他ご要望は備考欄にご記載下さい。</p></div><label class="plate-field" hidden>お祝いプレートのメッセージ<input type="text" name="plate_message" maxlength="120" placeholder="例：Happy Birthday ○○"></label></div><section class="summary"><h3>お支払い方法</h3><div class="payment-choices" role="radiogroup" aria-label="お支払い方法"><label><input id="cardChoice" name="bank_choice" type="radio" value="card" checked required><span>クレジットカード</span></label><label><input id="bankChoice" name="bank_choice" type="radio" value="on" required><span>銀行振込</span></label></div><div id="bankFields" hidden><p class="sub">全額の着金を店舗で確認後、ご予約確定となります。24時間以内にお振込みください。</p><div class="formgrid"><label>振込名義（カナ）<input name="bank_payer" id="bankPayer" maxlength="80"></label></div></div></section><label class="policy-consent"><input type="checkbox" name="cancellation_policy_accepted" required><span><a href="#cancellation-policy">キャンセルポリシー</a>を確認し、同意します。</span></label><button type="submit" class="primary" id="submit">この内容で予約へ進む</button></form><div class="message" id="result" role="status"></div></section>
 <section class="card" id="cancellation-policy"><h2>キャンセルポリシー</h2><p>ご予約のキャンセル・変更につきましては、以下の通りキャンセル料を申し受けます。当店は完全予約制（厳選した食材の仕入れ・事前仕込み）のため、ご理解とご協力のほどよろしくお願い申し上げます。</p><h3>キャンセル料</h3><p>ご予約日の3日前～当日：コース料金の100%<br>無断キャンセル：コース料金の100%</p><h3>人数変更・ご予約変更について</h3><p>ご予約人数の減少・日程の変更につきましても、ご予約日の3日前より減員分の100%を頂戴いたします。人数変更は確認メールの「人数変更・キャンセル」から、2名様以上・お席の定員内でお手続きいただけます。日時変更は店舗へご連絡ください。</p><h3>遅刻について</h3><p>ご連絡なくご予約時間を15分以上過ぎた場合は、自動的にキャンセル扱いとさせていただく場合がございます。</p></section>
 </main>
 <script src="/attribution.js"></script>
 <script>
-const $ = id => document.getElementById(id);
-const prefill = new URLSearchParams(location.search);
-let course = prefill.get('course');
-if (course === 'tarabagani') course = null;
-const courses = ['zuwaigani-oct', 'matsuba-seko', 'matsuba-fukahire'];
-if (course && !courses.includes(course)) {
-  document.querySelector('main').innerHTML = '<div class="card">このコースは現在ご予約いただけません。</div>';
-  throw Error('unknown course');
-}
-
-const areas = [['COUNTER', '本店｜カウンター'], ['PRIVATE', '別邸｜個室']];
-const rooms = ['PRIVATE1', 'PRIVATE2', 'PRIVATE3'];
-const times = [['18:00', '1部（18:00〜）'], ['20:30', '2部（20:30〜）']];
-const weekday = '日月火水木金土';
-const yen = number => '¥' + Number(number).toLocaleString('ja-JP');
-const tokyoDate = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date());
-const parseDate = day => new Date(day + 'T12:00:00Z');
-function shift(day, amount) {
-  const date = parseDate(day);
-  date.setUTCDate(date.getUTCDate() + amount);
-  return date.toISOString().slice(0, 10);
-}
-function dateLabel(day) {
-  const date = parseDate(day);
-  return [date.getUTCMonth() + 1, date.getUTCDate(), weekday[date.getUTCDay()]];
-}
-
-let selected = null, requestId = null, availableDays = [];
-let loadVersion = 0, prefillPending = true;
-const today = tokyoDate();
-const month = Number(today.slice(5, 7));
-const year = Number(today.slice(0, 4));
-const maxDate = shift(today, 365);
-const prefillDate = prefill.get('date');
-const prefillParty = Number(prefill.get('party_size'));
-let start = today;
-if (course === 'zuwaigani-oct' && today < '2026-10-22') start = '2026-10-22';
-if (course === 'matsuba-fukahire' && month >= 4) start = (year + 1) + '-01-01';
-if (course === 'matsuba-seko' && today < year + '-11-10') start = year + '-11-10';
-if (!course && today < '2026-10-15') start = '2026-10-15';
-if (prefillDate && /^\d{4}-\d{2}-\d{2}$/.test(prefillDate) && prefillDate >= today && prefillDate <= maxDate) {
-  start = prefillDate;
-}
-$('octSnowNotice').hidden = true;
-$('start').min = today;
-$('start').max = maxDate;
-$('start').value = start;
-$('party').innerHTML = Array.from({length: 6}, (_, i) => '<option value="' + (i + 2) + '">' + (i + 2) + '名</option>').join('')
-  + '<option value="8">8名以上</option>';
-if (Number.isInteger(prefillParty) && prefillParty >= 2) $('party').value = String(Math.min(prefillParty, 8));
-if (areas.some(([area]) => area === prefill.get('area'))) $('seatingFilter').value = prefill.get('area');
-
-function visibleAreas() {
-  return areas.filter(([area]) => !$('seatingFilter').value || area === $('seatingFilter').value);
-}
-function slotFor(day, area, clock) {
-  const seat = area === 'PRIVATE' ? rooms.find(room => day.slots[room]?.[clock]) : area;
-  return day.slots[seat]?.[clock] ? seat : null;
-}
-function slotButton(day, area, clock, label, calendar) {
-  const seat = slotFor(day, area, clock);
-  if (!seat && !calendar) return null;
-  const button = document.createElement('button');
-  button.type = 'button';
-  const limited = day.marks?.[area]?.[clock] === '△';
-  const [month, date, dayOfWeek] = dateLabel(day.date);
-  button.setAttribute('aria-label', month + '月' + date + '日（' + dayOfWeek + '） ' + clock + ' ' + label + ' ' +
-    (seat ? limited ? '残りわずか' : '空きあり' : '予約不可'));
-  if (calendar) {
-    button.className = 'slot ' + (seat ? 'open' : 'closed');
-    button.textContent = seat ? limited ? '△' : '○' : '×';
-    button.disabled = !seat;
-  } else {
-    button.className = 'list-slot';
-    const time = document.createElement('strong');
-    time.textContent = clock + '　' + label;
-    button.append(time);
-    if (limited) {
-      const badge = document.createElement('small');
-      badge.textContent = '残りわずか';
-      button.append(badge);
-    }
-  }
-  if (seat) button.addEventListener('click', () => choose(day.date, seat, clock));
-  return button;
-}
-function cell(parent, className, content) {
-  const element = document.createElement('div');
-  element.className = className;
-  element.append(content);
-  parent.append(element);
-  return element;
-}
-function display(days) {
-  const calendar = $('calendar'), list = $('slotList'), seatTypes = visibleAreas();
-  calendar.replaceChildren();
-  list.replaceChildren();
-  $('calendarSwipe').hidden = !days.length;
-  if (!days.length) return;
-
-  cell(calendar, 'cell head', 'お席 / 時間');
-  for (const day of days) {
-    const [month, date, dayOfWeek] = dateLabel(day.date);
-    const heading = cell(calendar, 'cell head' + (dayOfWeek === '日' ? ' weekend' : ''), month + '/' + date);
-    const small = document.createElement('small');
-    small.textContent = dayOfWeek;
-    heading.append(small);
-  }
-  for (const [clock, round] of times) {
-    cell(calendar, 'round-head', round);
-    for (const [area, label] of seatTypes) {
-      cell(calendar, 'cell area', label);
-      for (const day of days) cell(calendar, 'cell', slotButton(day, area, clock, label, true));
-    }
-  }
-  for (const day of days) {
-    const slots = [];
-    for (const [clock] of times) {
-      for (const [area, label] of seatTypes) {
-        const button = slotButton(day, area, clock, label, false);
-        if (button) slots.push(button);
-      }
-    }
-    if (!slots.length) continue;
-    const [month, date, dayOfWeek] = dateLabel(day.date);
-    const group = document.createElement('section');
-    group.className = 'day-slots';
-    const heading = document.createElement('h3');
-    heading.textContent = month + '月' + date + '日（' + dayOfWeek + '）';
-    const row = document.createElement('div');
-    row.className = 'slot-list';
-    row.append(...slots);
-    group.append(heading, row);
-    list.append(group);
-  }
-  if (!list.children.length) {
-    const help = document.createElement('p');
-    help.textContent = 'この期間にご案内できる空席がありません。お席の条件を変えるか、次の7日間をご確認ください。';
-    help.className = 'sub';
-    list.append(help);
-  }
-}
-function setView(calendar) {
-  $('slotList').hidden = calendar;
-  $('calendarView').hidden = !calendar;
-  $('listMode').setAttribute('aria-pressed', String(!calendar));
-  $('calendarMode').setAttribute('aria-pressed', String(calendar));
-}
-$('listMode').onclick = () => setView(false);
-$('calendarMode').onclick = () => setView(true);
-setView(!window.matchMedia('(max-width: 650px)').matches);
-
-async function load() {
-  const version = ++loadVersion;
-  const start = $('start').value, party = Number($('party').value);
-  const phoneOnly = party >= 8;
-  $('phoneBooking').hidden = !phoneOnly;
-  $('availabilityViews').hidden = phoneOnly;
-  const validStart = $('start').checkValidity();
-  $('previous').disabled = !validStart || start <= today;
-  $('next').disabled = !validStart || start >= maxDate;
-  availableDays = [];
-  display([]);
-  if (phoneOnly) return null;
-  if (!validStart) {
-    $('calendarStatus').textContent = '表示開始日を選び直してください。';
-    return null;
-  }
-  $('calendarStatus').textContent = '空席を確認中です';
-  try {
-    const params = new URLSearchParams({start, party_size: party});
-    if (course) params.set('course', course);
-    const response = await fetch('/api/public/availability?' + params, {cache: 'no-store'});
-    const result = await response.json();
-    if (version !== loadVersion) return null;
-    if (!response.ok) throw Error(result.error || '空席を取得できません');
-    availableDays = result.days;
-    display(availableDays);
-    $('calendarStatus').textContent = start + 'から7日間・' + party + '名様の空席です';
-    if (prefillPending) {
-      prefillPending = false;
-      const day = availableDays.find(day => day.date === prefillDate);
-      const area = prefill.get('area'), clock = prefill.get('time');
-      if (day && areas.some(([name]) => name === area) && times.some(([time]) => time === clock)) {
-        const seat = slotFor(day, area, clock);
-        if (seat) choose(day.date, seat, clock);
-        else $('calendarStatus').textContent = 'LINEでご案内した枠は現在ご予約いただけません。別のお席をお選びください。';
-      }
-    }
-    return availableDays;
-  } catch (error) {
-    if (version === loadVersion) $('calendarStatus').textContent = error.message;
-    return null;
-  }
-}
-function choose(date, area, time) {
-  if (window.TsukiyaCheckout && !window.TsukiyaCheckout.canSelect()) return;
-  const day = availableDays.find(item => item.date === date);
-  const party = Number($('party').value);
-  if (party >= 8 || !day?.price_per_person || !day.slots[area]?.[time]) return;
-  const form = $('booking');
-  if ($('submit').disabled && !form.hidden) return;
-  const privateRoom = rooms.includes(area);
-  window.TsukiyaAttribution?.event('booking_start');
-  selected = {date, seating_area: area, time, party_size: party, price_per_person: day.price_per_person};
-  requestId = crypto.randomUUID();
-  const [month, dayOfMonth, dayOfWeek] = dateLabel(date);
-  const label = privateRoom ? areas[1][1] : areas[0][1];
-  $('selection').textContent = month + '月' + dayOfMonth + '日（' + dayOfWeek + '） ' + time + '　' + label + '　' + party + '名様\n'
-    + day.course_name + '　' + yen(day.price_per_person) + '／名\n'
-    + 'コース代 ' + yen(party * day.price_per_person) + '（税込・事前決済）';
-  $('beveragePolicy').hidden = !day.beverage_policy;
-  $('beveragePolicy').textContent = day.beverage_policy || '';
-  $('annexNotice').hidden = !privateRoom;
-  $('octSnowNotice').hidden = !(date >= '2026-10-22' && date <= '2026-11-09');
-  if (form.hidden) {
-    form.reset();
-    toggleBank();
-    $('submit').disabled = false;
-    for (const box of form.querySelectorAll('[name=celebration_items]')) box.dispatchEvent(new Event('change'));
-  }
-  form.hidden = false;
-  $('details').hidden = false;
-  $('result').textContent = '';
-  $('details').scrollIntoView({behavior: 'smooth', block: 'start'});
-}
-function changeSearch() {
-  prefillPending = false;
-  if (!$('submit').disabled) {
-    selected = null;
-    $('details').hidden = true;
-  }
-  return load();
-}
-$('previous').onclick = () => {
-  const candidate = shift($('start').value, -7);
-  $('start').value = candidate < today ? today : candidate;
-  changeSearch();
-};
-$('next').onclick = () => {
-  const candidate = shift($('start').value, 7);
-  $('start').value = candidate > maxDate ? maxDate : candidate;
-  changeSearch();
-};
-$('start').onchange = changeSearch;
-$('party').onchange = changeSearch;
-$('seatingFilter').onchange = () => display(availableDays);
+const $=id=>document.getElementById(id);$('octSnowNotice').hidden=true;let course=new URLSearchParams(location.search).get('course');if(course==='tarabagani')course=null;const courses={'zuwaigani-oct':{name:'ずわい蟹おまかせコース',period:'2026年10月22日〜11月9日'},'matsuba-seko':{name:'松葉蟹、せこ蟹おまかせコース',period:'11月10日〜12月31日'},'matsuba-fukahire':{name:'松葉蟹と名物ふかひれあんかけおまかせコース',period:'1月1日〜3月20日'}};if(course&&!courses[course]){document.querySelector('main').innerHTML='<div class="card">このコースは現在ご予約いただけません。</div>';throw Error('unknown course')}const courseName=courses[course]?.name||'季節のおまかせコース';$('courseTitle').textContent='ご予約ページ';const areas=[['COUNTER','カウンター席'],['PRIVATE','個室']];const times=['18:00','20:30'];let selected=null,requestId=null;const today=new Date();const dateText=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;const shift=(s,n)=>{const [y,m,d]=s.split('-').map(Number);const value=new Date(y,m-1,d);value.setDate(value.getDate()+n);return dateText(value)};const yen=n=>'¥'+Number(n).toLocaleString();$('party').innerHTML=Array.from({length:7},(_,i)=>`<option value="${i+2}">${i+2}名</option>`).join('');let start=dateText(today);const month=today.getMonth()+1;
+if(course==='zuwaigani-oct')start=start<'2026-10-22'?'2026-10-22':start;
+else if(course==='tarabagani')start=start<'2026-10-15'?'2026-10-15':start;
+else if(course==='matsuba-fukahire'&&month>=4)start=`${today.getFullYear()+1}-01-01`;
+else if(course==='matsuba-seko'&&start<`${today.getFullYear()}-11-10`)start=`${today.getFullYear()}-11-10`;
+else if(!course&&start<'2026-10-15')start='2026-10-15';
+let availableDays=[];
+$('start').min=dateText(today);$('start').value=start;const prefill=new URLSearchParams(location.search);let prefillPending=true;const prefillDate=prefill.get('date'),prefillParty=Number(prefill.get('party_size'));if(/^\d{4}-\d{2}-\d{2}$/.test(prefillDate||'')&&prefillDate>=dateText(today))$('start').value=prefillDate;if(Number.isInteger(prefillParty)&&prefillParty>=2&&prefillParty<=8)$('party').value=String(prefillParty);
+function display(days){let html='<div class="cell head">お席 / 時間</div>';for(const day of days){const d=new Date(`${day.date}T12:00:00`);html+=`<div class="cell head ${d.getDay()===0?'weekend':''}">${d.getMonth()+1}/${d.getDate()}<small>${'日月火水木金土'[d.getDay()]}</small></div>`}for(const [time,round] of [['18:00','1部（18:00〜）'],['20:30','2部（20:30〜）']]){html+=`<div class="round-head">${round}</div>`;for(const [area,label] of areas){const limit=area==='PRIVATE3'?'4〜8名':area==='COUNTER'?'2〜8名':'2〜4名';html+=`<div class="cell area">${label}${area==='COUNTER'?`<small>${limit}</small>`:''}</div>`;for(const day of days){const bookingArea=area==='PRIVATE'?['PRIVATE1','PRIVATE2','PRIVATE3'].find(room=>day.slots[room][time]):area;const open=!!bookingArea&&day.slots[bookingArea][time];const mark=open?(day.marks?.[area]?.[time]||'○'):'×';html+=`<div class="cell"><button type="button" class="slot ${open?'open':'closed'}" ${open?`data-date="${day.date}" data-area="${bookingArea}" data-time="${time}"`:'disabled'} aria-label="${day.date} ${round} ${label} ${open?(mark==='△'?'残りわずか・予約可能':'空きあり'):'予約不可'}">${mark}</button></div>`}}}$('calendar').innerHTML=html}
+async function load(){const start=$('start').value;const party=Number($('party').value);$('calendarStatus').textContent='空席を確認中です';try{const r=await fetch(`/api/public/availability?start=${encodeURIComponent(start)}&party_size=${party}${course?`&course=${encodeURIComponent(course)}`:''}`);const j=await r.json();if(!r.ok)throw Error(j.error||'空席を取得できません');availableDays=j.days;display(j.days);if(prefillPending){prefillPending=false;const day=j.days.find(d=>d.date===prefillDate),area=prefill.get('area'),clock=prefill.get('time');if(day&&['COUNTER','PRIVATE'].includes(area)&&times.includes(clock)){const room=area==='PRIVATE'?['PRIVATE1','PRIVATE2','PRIVATE3'].find(r=>day.slots[r][clock]):day.slots.COUNTER[clock]?'COUNTER':null;if(room)choose(day.date,room,clock);else{const notice=document.createElement('p');notice.textContent='LINEでご案内した枠は現在ご予約いただけません。別のお席をお選びください。';notice.className='message error';$('calendar').before(notice);}}}$('calendarStatus').textContent=`${start}から7日間・${party}名様の空席です`;return j.days}catch(e){$('calendarStatus').textContent=e.message;$('calendar').innerHTML='';return null}}
+function choose(date,area,time){if(window.TsukiyaCheckout&&!window.TsukiyaCheckout.canSelect())return;window.TsukiyaAttribution?.event("booking_start");const day=availableDays.find(d=>d.date===date);if(!day||!day.price_per_person)return;selected={date,seating_area:area,time,party_size:Number($('party').value),price_per_person:day.price_per_person};const selectedCourse=day.course_name;requestId=crypto.randomUUID();$('selection').textContent=`${date} ${time}　${areas.find(x=>x[0]===(area.startsWith('PRIVATE')?'PRIVATE':area))[1]}　${selected.party_size}名様\n${selectedCourse}　合計 ${yen(selected.party_size*selected.price_per_person)}（税込）`;$('selection').style.whiteSpace='pre-line';$('annexNotice').hidden=!area.startsWith('PRIVATE');$('octSnowNotice').hidden=!(date>='2026-10-22'&&date<='2026-11-09');$('details').hidden=false;$('result').textContent='';$('details').scrollIntoView({behavior:'smooth',block:'start'})}
+$('calendar').addEventListener('click',event=>{const button=event.target.closest('button[data-date]');if(button)choose(button.dataset.date,button.dataset.area,button.dataset.time)});
+$('previous').onclick=()=>{const candidate=shift($('start').value,-7);$('start').value=candidate<dateText(new Date())?dateText(new Date()):candidate;load()};$('next').onclick=()=>{$('start').value=shift($('start').value,7);load()};$('start').onchange=load;$('party').onchange=()=>{selected=null;$('details').hidden=true;load()};
 document.querySelectorAll('[name=celebration_items]').forEach(box=>box.addEventListener('change',()=>{const cake=[...document.querySelectorAll('[name=celebration_items]:checked')].some(item=>item.value.includes('ケーキ'));const field=document.querySelector('.plate-field');field.hidden=!cake;if(!cake)field.querySelector('input').value=''}));
-$('booking').onsubmit=async event=>{event.preventDefault();if(!selected)return;const button=$('submit'),result=$('result'),form=new FormData(event.target);button.disabled=true;result.className='message';result.textContent=form.get('bank_choice')==='on'?'振込希望を受け付けています…':'Square請求書を作成しています…';try{const r=await fetch('/api/public/reservations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...selected,course,request_id:requestId,attribution:window.TsukiyaAttribution?.data(),payment_method:form.get('bank_choice')==='on'?'BANK':'CARD',bank_payer:form.get('bank_payer'),guest_name:form.get('guest_name'),phone:form.get('phone'),email:form.get('email'),receipt_name:form.get('receipt_name')||'',guest_note:form.get('guest_note'),celebration_items:form.getAll('celebration_items'),plate_message:form.get('plate_message'),cancellation_policy_accepted:form.get('cancellation_policy_accepted')==='on'})});const j=await r.json();if(!r.ok)throw Error(j.error||'申し込みできませんでした');result.className='message success';result.textContent=`お申し込みを受け付けました（受付番号 ${j.reservation_id}）。Square請求書をメールでお送りします。全額決済後に予約確定となります。`;if(j.payment_method==='BANK'){result.textContent=`振込希望のお申込みを受け付けました（受付番号 ${j.reservation_id}）。現在は着金確認待ちです。\n振込金額：${Number(j.amount).toLocaleString()}円\n振込期限：${new Date(j.bank_due_at).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}（日本時間）\n${j.bank_account}\nこの案内を保存してください。メールでもご案内します。届かない場合は店舗へご連絡ください。`;result.style.whiteSpace='pre-line'}if(j.management_url&&j.management_url.startsWith('https://')){const link=document.createElement('a');link.href=j.management_url;link.textContent='人数変更（2名以上）';result.append(document.createElement('br'),link)}if(j.payment_url&&j.payment_url.startsWith('https://')){const a=document.createElement('a');a.href=j.payment_url;a.target='_blank';a.rel='noopener noreferrer';a.className='button primary';a.textContent='Squareで支払う';result.appendChild(document.createElement('br'));result.appendChild(a)}$('booking').hidden=true;load()}catch(e){result.className='message error';result.textContent=e.message;button.disabled=false}};
-function toggleBank(){const checked=$('bankChoice').checked;$('bankFields').hidden=!checked;$('bankPayer').required=checked;$('submit').textContent=checked?'振込案内を受け取る':'カード決済へ進む';}
+$('booking').onsubmit=async event=>{event.preventDefault();if(!selected)return;const button=$('submit'),result=$('result'),form=new FormData(event.target);button.disabled=true;result.className='message';result.textContent=form.get('bank_choice')==='on'?'振込希望を受け付けています…':'Square請求書を作成しています…';try{const r=await fetch('/api/public/reservations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...selected,course,request_id:requestId,attribution:window.TsukiyaAttribution?.data(),payment_method:form.get('bank_choice')==='on'?'BANK':'CARD',bank_payer:form.get('bank_payer'),guest_name:form.get('guest_name'),phone:form.get('phone'),email:form.get('email'),receipt_name:form.get('receipt_name')||'',guest_note:form.get('guest_note'),celebration_items:form.getAll('celebration_items'),plate_message:form.get('plate_message'),cancellation_policy_accepted:form.get('cancellation_policy_accepted')==='on'})});const j=await r.json();if(!r.ok)throw Error(j.error||'申し込みできませんでした');result.className='message success';result.textContent=`お申し込みを受け付けました（受付番号 ${j.reservation_id}）。Square請求書をメールでお送りします。全額決済後に予約確定となります。`;if(j.payment_method==='BANK'){result.textContent=`振込希望のお申込みを受け付けました（受付番号 ${j.reservation_id}）。現在は入金確認待ちです。\n振込金額：${Number(j.amount).toLocaleString()}円\n振込期限：${new Date(j.bank_due_at).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}（日本時間）\n${j.bank_account}\nこの案内を保存してください。メールでもご案内します。届かない場合は店舗へご連絡ください。`;result.style.whiteSpace='pre-line'}if(j.management_url&&j.management_url.startsWith('https://')){const link=document.createElement('a');link.href=j.management_url;link.textContent='人数変更（2名以上）';result.append(document.createElement('br'),link)}if(j.payment_url&&j.payment_url.startsWith('https://')){const a=document.createElement('a');a.href=j.payment_url;a.target='_blank';a.rel='noopener noreferrer';a.className='button primary';a.textContent='Squareで支払う';result.appendChild(document.createElement('br'));result.appendChild(a)}$('booking').hidden=true;load()}catch(e){result.className='message error';result.textContent=e.message;button.disabled=false}};
+function toggleBank(){const checked=$('bankChoice').checked;$('bankFields').hidden=!checked;$('bankPayer').required=checked;if($('cardInstructions'))$('cardInstructions').hidden=checked;}
 $('bankChoice').addEventListener('change',toggleBank);$('cardChoice').addEventListener('change',toggleBank);toggleBank();
 
 load();

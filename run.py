@@ -3059,12 +3059,10 @@ class Handler(
                             )[0]
                             slots[area][time_text] = available
                     priced = bookable_course(day)
-                    policy = booking_policy.details({"visit_at": day.isoformat()})
                     days.append({"date": day.isoformat(), "slots": slots,
                                  "marks": availability_display.marks(sys.modules[__name__], c, day, slots),
                                  "course_name": priced[0] if priced else None,
-                                 "price_per_person": priced[1] if priced else None,
-                                 "beverage_policy": policy["beverage_policy"] if priced else None})
+                                 "price_per_person": priced[1] if priced else None})
             finally:
                 c.close()
             return self.send_json({
@@ -4273,9 +4271,6 @@ class Handler(
                             "payment_url": existing["square_invoice_url"]
                         })
                     return self.send_json({"error": "申し込みを処理中です"}, 409)
-                if not test_booking and booking_language == "ja" and party >= booking_policy.PUBLIC_PHONE_PARTY_SIZE:
-                    c.rollback()
-                    return self.send_json({"error": booking_policy.PUBLIC_PHONE_PARTY_MESSAGE}, 400)
                 try:
                     booking_blocks.ensure_allowed(c, phone, email)
                 except booking_blocks.BookingBlocked as exc:

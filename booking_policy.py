@@ -2,10 +2,6 @@
 from datetime import date, datetime
 
 
-PUBLIC_PHONE_PARTY_SIZE = 8
-PUBLIC_PHONE_PARTY_MESSAGE = "8名以上のご予約はお電話にて承ります。"
-
-
 def main_restaurant_closure_reason(day, seating_area):
     """Owner-approved booking closures; inclusive dates, all counter sittings."""
     if seating_area != 'COUNTER':

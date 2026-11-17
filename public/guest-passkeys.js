@@ -37,9 +37,7 @@
       </form>
       <button type="button" data-forget>${t('登録したパスキーを解除する', 'Remove my passkey')}</button>
     </details>`;
-  const bookingPasskeys = document.getElementById('bookingPasskeys');
-  if (bookingPasskeys) bookingPasskeys.append(panel);
-  else document.querySelector('main').prepend(panel);
+  document.querySelector('main').prepend(panel);
   const receipt = document.createElement('label');
   receipt.textContent = t('領収書宛名（任意）', 'Receipt name (optional)');
   const receiptInput = document.createElement('input');
