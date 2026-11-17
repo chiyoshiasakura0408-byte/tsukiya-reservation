@@ -29,10 +29,10 @@ class PhoneInvoiceTest(unittest.TestCase):
         self.server.shutdown(); self.server.server_close()
         self.config.stop(); self.tmp.cleanup()
 
-    def post(self, path='/api/reservations/phone', body=None):
+    def post(self, path='/api/reservations/phone', body=None, **headers):
         req = urllib.request.Request(f'http://127.0.0.1:{self.server.server_port}'+path,
                 data=json.dumps(self.body if body is None else body).encode(),
-                headers={'x-admin-token':'test-secret','Content-Type':'application/json'})
+                headers={'x-admin-token':'test-secret','Content-Type':'application/json',**headers})
         with urllib.request.urlopen(req) as response:
             return json.load(response)
 
@@ -82,5 +82,57 @@ class PhoneInvoiceTest(unittest.TestCase):
             result=self.post('/api/reservations/direct')
             self.assertEqual(result['status'],'CONFIRMED')
             invoice.assert_not_called(); sms.assert_not_called()
+
+    def test_private3_split_tables_are_staff_only_and_exclude_the_whole_room(self):
+        path = '/api/reservations/direct'
+        approval = {'X-Tsukiya-Action': 'approve-private3-table'}
+        first = {**self.body, 'visit_at': '2099-12-05T18:00', 'seating_area': 'PRIVATE3',
+                 'approve_private3_table': True}
+        second = {**first, 'guest_name': 'Second guest', 'party_size': 4, 'request_id': str(uuid.uuid4())}
+
+        with self.assertRaises(urllib.error.HTTPError) as missing_approval:
+            self.post(path, first)
+        self.assertEqual(missing_approval.exception.code, 403)
+        with self.assertRaises(urllib.error.HTTPError) as need_two_to_split:
+            self.post(path, second, **approval)
+        self.assertEqual(need_two_to_split.exception.code, 409)
+
+        with patch.object(run, 'make_invoice') as invoice:
+            a = self.post(path, first, **approval)
+            b = self.post(path, second, **approval)
+            repeated = self.post(path, first, **approval)
+            invoice.assert_not_called()
+        self.assertEqual((a['status'], a['private3_table'], a['id']), ('CONFIRMED', 1, repeated['id']))
+        self.assertEqual((b['status'], b['private3_table'], b['amount']), ('CONFIRMED', 2, 264000))
+
+        third = {**first, 'guest_name': 'Third guest', 'request_id': str(uuid.uuid4())}
+        with self.assertRaises(urllib.error.HTTPError) as both_taken:
+            self.post(path, third, **approval)
+        self.assertEqual(both_taken.exception.code, 409)
+        with run.con() as db:
+            self.assertFalse(run.availability_check(db, 'PRIVATE3', first['visit_at'], 4)[0])
+            self.assertTrue(run.availability_check(db, 'PRIVATE3', '2099-12-05T20:30', 4)[0])
+
+    def test_move_paid_private_reservation_into_split_and_back(self):
+        target = {**self.body, 'visit_at': '2099-12-05T18:00'}
+        row = self.post('/api/reservations/direct', target)
+        with run.con() as db:
+            db.execute("UPDATE reservations SET source='WEB_CARD', payment_source='SQUARE', payment_confirmed_at='paid' WHERE id=?", (row['id'],))
+        path = f"/api/reservations/{row['id']}/room"
+        change = {'seating_area': 'PRIVATE3', 'expected_seating_area': 'PRIVATE1',
+                  'expected_visit_at': row['visit_at'], 'expected_party_size': 2, 'approve_private3_table': True}
+        with run.con() as db:
+            db.execute("INSERT INTO seat_blocks(visit_date,time_text,seating_area,created_at) VALUES('2099-12-05','18:00','PRIVATE3','test')")
+        with self.assertRaises(urllib.error.HTTPError):
+            self.post(path, change, **{'X-Tsukiya-Action': 'change-time'})
+        with run.con() as db:
+            db.execute("DELETE FROM seat_blocks")
+        self.assertEqual(self.post(path, change, **{'X-Tsukiya-Action': 'change-time'})['private3_table'], 1)
+        with run.con() as db:
+            saved = db.execute("SELECT * FROM reservations WHERE id=?", (row['id'],)).fetchone()
+            self.assertEqual((saved['visit_at'], saved['party_size'], saved['amount'], saved['payment_source']),
+                             (row['visit_at'], 2, 132000, 'SQUARE'))
+        change.update(seating_area='PRIVATE1', expected_seating_area='PRIVATE3', approve_private3_table=False)
+        self.assertIsNone(self.post(path, change, **{'X-Tsukiya-Action': 'change-time'})['private3_table'])
 
 if __name__=='__main__': unittest.main()

@@ -111,8 +111,8 @@ def move_owner_seat(app, c, rid, area):
     )
     if not ok:
         raise ValueError(reason)
-    c.execute("UPDATE reservations SET seating_area=?,counter_round=?,updated_at=? WHERE id=?",
-              (area, round_number, app.now_iso(), rid))
+    c.execute("UPDATE reservations SET seating_area=?,private3_table=CASE WHEN ?='PRIVATE3' THEN private3_table END,counter_round=?,updated_at=? WHERE id=?",
+              (area, area, round_number, app.now_iso(), rid))
     return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()), before, "change"
 
 
@@ -328,7 +328,7 @@ def perform(app,c,x,allow_room_exception=False):
     ts=app.now_iso(); amount=course[1]*(meals if special else party)
     if before:
         if when.date()==datetime.fromisoformat(before['visit_at']).date():amount=before['amount']//before['party_size']*party
-        c.execute('UPDATE reservations SET visit_at=?,party_size=?,amount=?,course_name=?,seating_area=?,counter_round=?,phone=?,guest_note=?,updated_at=?,staff_seen_at=NULL WHERE id=?',(visit,party,amount,course[0],area,rnd,base.get('phone',''),base.get('note') or before['guest_note'],ts,before['id']))
+        c.execute("UPDATE reservations SET visit_at=?,party_size=?,amount=?,course_name=?,seating_area=?,private3_table=CASE WHEN ?='PRIVATE3' THEN private3_table END,counter_round=?,phone=?,guest_note=?,updated_at=?,staff_seen_at=NULL WHERE id=?",(visit,party,amount,course[0],area,area,rnd,base.get('phone',''),base.get('note') or before['guest_note'],ts,before['id']))
         rid=before['id']
     else:
         booking_blocks.ensure_allowed(c, x['phone'], '', staff=True)

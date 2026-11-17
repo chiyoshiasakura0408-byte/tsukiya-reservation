@@ -338,6 +338,7 @@ def con():
         "invoice_sms_sent_at": "TEXT",
         "invoice_sms_error": "TEXT",
         "seating_area": "TEXT",
+        "private3_table": "INTEGER CHECK (private3_table IN (1, 2))",
         "counter_round": "INTEGER",
         "duration_minutes": "INTEGER DEFAULT 150",
         "special_meal_count": "INTEGER",
@@ -1460,7 +1461,8 @@ def availability_check(
     allow_room_exception=False,
     restore_existing=False,
     special_slot=False,
-    allow_closed_counter=False
+    allow_closed_counter=False,
+    private3_table=None,
 ):
     if not seating_area:
         return (
@@ -1564,7 +1566,13 @@ def availability_check(
         )
 
     if seating_area in ROOMS:
-        if not public_party_allowed(seating_area, party_size) and not (allow_room_exception and seating_area == "PRIVATE3" and 2 <= party_size <= 3):
+        if seating_area == "PRIVATE3" and exclude_id is not None and private3_table is None:
+            existing = c.execute("SELECT private3_table FROM reservations WHERE id=? AND seating_area='PRIVATE3'",
+                                 (exclude_id,)).fetchone()
+            private3_table = existing["private3_table"] if existing else None
+        if private3_table is not None and (seating_area != "PRIVATE3" or private3_table not in (1, 2) or not 2 <= party_size <= 4):
+            return False, "個室③のテーブル席は2〜4名で利用できます"
+        if private3_table is None and not public_party_allowed(seating_area, party_size) and not (allow_room_exception and seating_area == "PRIVATE3" and 2 <= party_size <= 3):
             return False, "この個室の利用人数の範囲外です"
         if c.execute("SELECT 1 FROM seat_blocks WHERE visit_date=? AND time_text=? AND seating_area=?", (visit.date().isoformat(), visit.strftime('%H:%M'), seating_area)).fetchone():
             return False, "この個室はブロックされています"
@@ -1586,7 +1594,7 @@ def availability_check(
             SELECT
                 id,
                 visit_at,
-                duration_minutes, vip_through
+            duration_minutes, vip_through, private3_table
             FROM reservations
             WHERE seating_area=?
             AND status IN (?,?,?,?)
@@ -1602,6 +1610,8 @@ def availability_check(
                 exclude_id is not None
                 and row["id"] == exclude_id
             ):
+                continue
+            if private3_table is not None and row["private3_table"] not in (None, private3_table):
                 continue
 
             other_start = parse_dt(
@@ -1644,6 +1654,22 @@ def availability_check(
         False,
         "席の指定が不正です"
     )
+
+
+def choose_private3_table(c, visit_at, party, duration, *, exclude_id=None, special_slot=False):
+    """Assign one of the two tables under the reservation write transaction."""
+    options = dict(exclude_id=exclude_id, special_slot=special_slot)
+    if party > 2 and availability_check(
+        c, "PRIVATE3", visit_at, party, None, duration, allow_room_exception=True, **options
+    )[0]:
+        raise SpecialSlotUnavailable("個室③をテーブル席に分ける最初の予約は2名です")
+    for table in (1, 2):
+        ok, reason = availability_check(
+            c, "PRIVATE3", visit_at, party, None, duration, private3_table=table, **options
+        )
+        if ok:
+            return table
+    raise SpecialSlotUnavailable("個室③のテーブル席を確保できません。"+reason)
 
 
 class ReservationNoteConflict(ValueError):
@@ -1724,23 +1750,42 @@ def change_reservation_note(c, rid, data):
 
 
 def change_direct_room(c, rid, data):
-    """Atomically move a confirmed direct booking without recreating it."""
+    """Atomically move an eligible private booking without recreating it."""
     r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
-    if not r or r["source"] != "DIRECT" or r["status"] != "CONFIRMED" or r["vip_through"] or r["special_meal_count"] is not None or r["square_invoice_id"]:
+    if not r or r["status"] != "CONFIRMED" or r["vip_through"] or r["seating_area"] not in ROOMS:
         raise ValueError("この予約は個室変更の対象外です")
     if (data.get("expected_seating_area") != r["seating_area"]
             or data.get("expected_visit_at") != r["visit_at"]
             or data.get("expected_party_size") != r["party_size"]):
         raise ValueError("予約が更新されています。再読み込みしてください")
     room = data.get("seating_area")
-    if r["seating_area"] not in ROOMS or room not in ROOMS or not public_party_allowed(room, r["party_size"]):
+    approved = data.get("approve_private3_table") is True
+    if approved and (not 2 <= r["party_size"] <= 4 or room != "PRIVATE3" or r["private3_table"] is not None):
+        raise ValueError("個室③のテーブル席への変更は、2〜4名が対象です")
+    leaving_exception_room = r["private3_table"] is not None and room in ("PRIVATE1", "PRIVATE2")
+    ordinary_move = r["source"] == "DIRECT" and r["special_meal_count"] is None and not r["square_invoice_id"]
+    if not (approved or leaving_exception_room or ordinary_move):
+        raise ValueError("この予約は個室変更の対象外です")
+    if room not in ROOMS or (not approved and not public_party_allowed(room, r["party_size"])):
         raise ValueError("人数に対応する個室を選択してください")
-    ok, message = availability_check(c, room, r["visit_at"], r["party_size"], None,
-                                     int(r["duration_minutes"] or 150), rid)
-    if not ok:
-        raise ValueError(message)
-    c.execute("UPDATE reservations SET seating_area=?,updated_at=? WHERE id=?", (room, now_iso(), rid))
-    return {"ok": True, "id": rid, "seating_area": room}
+    if (approved or leaving_exception_room) and parse_dt(r["visit_at"]) <= datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None):
+        raise ValueError("過去の予約は変更できません")
+    duration = int(r["duration_minutes"] or 150)
+    special_slot = r["special_meal_count"] is not None
+    table = None
+    if approved:
+        table = choose_private3_table(c, r["visit_at"], r["party_size"], duration,
+                                      exclude_id=rid, special_slot=special_slot)
+    else:
+        if room == r["seating_area"]:
+            return {"ok": True, "id": rid, "seating_area": room, "private3_table": r["private3_table"]}
+        ok, message = availability_check(c, room, r["visit_at"], r["party_size"], None,
+                                         duration, rid, special_slot=special_slot)
+        if not ok:
+            raise ValueError(message)
+    c.execute("UPDATE reservations SET seating_area=?,private3_table=?,updated_at=? WHERE id=?",
+              (room, table, now_iso(), rid))
+    return {"ok": True, "id": rid, "seating_area": room, "private3_table": table}
 
 
 def change_direct_time(c, rid, data):
@@ -4559,9 +4604,15 @@ class Handler(
                         or type(special_meals) is not int or not 1 <= special_meals <= int(x["party_size"])):
                     return self.send_json({"error": "例外枠の席・人数・料理数を確認してください"}, 400)
 
-            party = int(
-                x["party_size"]
-            )
+            party = int(x["party_size"])
+            approve_room3 = x.get("approve_private3_table") is True
+            if approve_room3:
+                if self.headers.get("X-Tsukiya-Action") != "approve-private3-table":
+                    return self.send_json({"error": "個室③の承認ボタンから操作してください"}, 403)
+                if (not direct or x["seating_area"] != "PRIVATE3" or type(x["party_size"]) is not int
+                        or not 2 <= party <= 4 or rnd is not None or x.get("time_specified") is True):
+                    return self.send_json({"error": "個室③のテーブル席は直接予約の2〜4名が対象です"}, 400)
+                area = "PRIVATE3"
 
             try:
                 day = parse_dt(x["visit_at"]).date()
@@ -4578,6 +4629,7 @@ class Handler(
             if not course or not 1 <= party <= 20:
                 return self.send_json({"error": "この来店日に予約可能なコース・人数がありません"}, 400)
             amount = course[1] * (special_meals if special else party)
+            table = None
 
             c = con()
 
@@ -4598,29 +4650,41 @@ class Handler(
                     if linked_customer is not None and not c.execute("SELECT id FROM customers WHERE id=?", (linked_customer,)).fetchone():
                         raise ValueError("顧客が見つかりません")
                 booking_blocks.ensure_allowed(c, x.get("phone"), x.get("email"), linked_customer, staff=True)
-                if special:
+                if special or approve_room3:
                     guest_key = line_reservations.norm(x["guest_name"])
                     existing_names = c.execute(
-                        "SELECT guest_name FROM reservations WHERE substr(visit_at,1,10)=? AND status IN (?,?,?,?)",
+                        "SELECT guest_name,customer_id FROM reservations WHERE substr(visit_at,1,10)=? AND status IN (?,?,?,?)",
                         (day.isoformat(), *ACTIVE_STATUSES),
                     )
-                    if any(line_reservations.norm(row["guest_name"]) == guest_key for row in existing_names):
-                        ok, msg = False, "同じ日に同名の予約があります。既存予約を確認してください"
-                    else:
-                        try:
-                            end = x.get("special_end_time")
-                            slot = (area, x["visit_at"], end, party)
-                            approved_closed_counter = False
-                            if slot == APPROVED_CLOSED_COUNTER_SLOT:
-                                key = "|".join((guest_key, area, x["visit_at"], end, str(party), str(special_meals)))
-                                approved_closed_counter = hashlib.sha256(key.encode()).hexdigest() == APPROVED_CLOSED_COUNTER_BOOKING
-                            area, rnd, dur, msg = special_slot_availability(
-                                c, area, x["visit_at"], end, party,
-                                allow_closed_counter=approved_closed_counter,
-                            )
-                            ok = True
-                        except SpecialSlotUnavailable as exc:
-                            ok, msg = False, str(exc)
+                    if any(line_reservations.norm(row["guest_name"]) == guest_key
+                           or (approve_room3 and linked_customer is not None and row["customer_id"] == linked_customer)
+                           for row in existing_names):
+                        c.rollback()
+                        c.close()
+                        return self.send_json({"error": "同じ日に同名の予約があります。既存予約を確認してください"}, 409)
+                if approve_room3:
+                    if special:
+                        dur = special_slot_duration(x["visit_at"], x.get("special_end_time"))
+                    try:
+                        table = choose_private3_table(c, x["visit_at"], party, dur, special_slot=special)
+                        ok, msg = True, ""
+                    except SpecialSlotUnavailable as exc:
+                        ok, msg = False, str(exc)
+                elif special:
+                    try:
+                        end = x.get("special_end_time")
+                        slot = (area, x["visit_at"], end, party)
+                        approved_closed_counter = False
+                        if slot == APPROVED_CLOSED_COUNTER_SLOT:
+                            key = "|".join((guest_key, area, x["visit_at"], end, str(party), str(special_meals)))
+                            approved_closed_counter = hashlib.sha256(key.encode()).hexdigest() == APPROVED_CLOSED_COUNTER_BOOKING
+                        area, rnd, dur, msg = special_slot_availability(
+                            c, area, x["visit_at"], end, party,
+                            allow_closed_counter=approved_closed_counter,
+                        )
+                        ok = True
+                    except SpecialSlotUnavailable as exc:
+                        ok, msg = False, str(exc)
                 elif time_specified and not october_private_time(x["visit_at"], area) and not approved_exception:
                     if time_text != "20:30" and not booking_policy.approved_customer(c, linked_customer):
                         raise ValueError("時間指定・通し予約は承認済みVIP顧客の選択が必要です。直接予約から顧客を選択してください。")
@@ -4630,7 +4694,8 @@ class Handler(
                 else:
                     if area == "PRIVATE":
                         area = next((room for room in ROOMS if public_party_allowed(room, party) and availability_check(c, room, x["visit_at"], party, None, dur, allow_custom_start=approved_exception)[0]), "PRIVATE")
-                    ok,msg = availability_check(c,area,x["visit_at"],party,rnd,dur,allow_custom_start=approved_exception)
+                    ok,msg = availability_check(c,area,x["visit_at"],party,rnd,dur,
+                                                allow_custom_start=approved_exception)
 
             except Exception as e:
                 c.rollback()
@@ -4704,7 +4769,8 @@ class Handler(
 
             if not same_day_direct:
                 payment_terms.register(c, cur.lastrowid, ts)
-            c.execute("UPDATE reservations SET confirmation_note=?,special_meal_count=? WHERE id=?", (confirmation_note, special_meals, cur.lastrowid))
+            c.execute("UPDATE reservations SET confirmation_note=?,special_meal_count=?,private3_table=? WHERE id=?",
+                      (confirmation_note, special_meals, table, cur.lastrowid))
             c.execute("UPDATE reservations SET vip_through=?,vip_booking=?,customer_id=? WHERE id=?",(int(through),int(booking_policy.approved_customer(c,linked_customer)),linked_customer,cur.lastrowid))
 
             if not direct and request_id:
