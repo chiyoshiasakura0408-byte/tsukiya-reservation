@@ -3376,7 +3376,16 @@ class Handler(
             c = con()
 
             try:
-                if "special_end_time" in q:
+                if "private3_table" in q:
+                    table_text = q["private3_table"][0]
+                    if area != "PRIVATE3" or table_text not in ("1", "2") or q.get("time_specified") == ["1"]:
+                        raise ValueError("個室③のテーブルAまたはBを選択してください")
+                    special = "special_end_time" in q
+                    if special:
+                        dur = special_slot_duration(visit, q["special_end_time"][0])
+                    choose_private3_table(c, visit, party, dur, special_slot=special, requested_table=int(table_text))
+                    ok, msg = True, f"テーブル{'A' if table_text == '1' else 'B'}に空きがあります"
+                elif "special_end_time" in q:
                     end = q["special_end_time"][0]
                     selected, _, _, message = special_slot_availability(
                         c, area, visit, end, party,
@@ -4748,6 +4757,9 @@ class Handler(
 
             party = int(x["party_size"])
             approve_room3 = x.get("approve_private3_table") is True
+            requested_table = x.get("private3_table")
+            if requested_table is not None and (not approve_room3 or type(requested_table) is not int or requested_table not in (1, 2)):
+                return self.send_json({"error": "個室③のテーブルAまたはBを選択してください"}, 400)
             if approve_room3:
                 if self.headers.get("X-Tsukiya-Action") != "approve-private3-table":
                     return self.send_json({"error": "個室③の承認ボタンから操作してください"}, 403)
@@ -4808,7 +4820,8 @@ class Handler(
                     if special:
                         dur = special_slot_duration(x["visit_at"], x.get("special_end_time"))
                     try:
-                        table = choose_private3_table(c, x["visit_at"], party, dur, special_slot=special)
+                        table = choose_private3_table(c, x["visit_at"], party, dur, special_slot=special,
+                                                      requested_table=requested_table)
                         ok, msg = True, ""
                     except SpecialSlotUnavailable as exc:
                         ok, msg = False, str(exc)
