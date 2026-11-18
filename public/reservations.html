@@ -173,17 +173,20 @@ function currentRoomChoice(r){
 }
 function roomEditor(r){
   const rooms=['PRIVATE1','PRIVATE2','PRIVATE3'];
-  if(r.status!=='CONFIRMED'||r.vip_through||!rooms.includes(r.seating_area))return '';
+  if(r.status!=='CONFIRMED'||r.vip_through||!['COUNTER',...rooms].includes(r.seating_area))return '';
   const ordinary=r.source==='DIRECT'&&!r.customer_party_change&&!r.square_invoice_id&&!r.payment_confirmed_at&&r.special_meal_count==null;
   const tableChoice=r.party_size>=2&&r.party_size<=4;
-  if(!ordinary&&!tableChoice&&!r.private3_table)return '';
-  const roomChoices=r.private3_table?rooms.slice(0,2):ordinary?rooms:[r.seating_area];
+  const counterChoice=r.party_size>=2&&r.party_size<=8&&['18:00','20:30'].includes(r.visit_at.slice(11,16))&&Number(r.duration_minutes||150)===150;
+  if(!ordinary&&!tableChoice&&!r.private3_table&&!counterChoice)return '';
+  const roomChoices=r.private3_table?rooms.slice(0,2):ordinary?rooms:rooms.filter(room=>room===r.seating_area);
   const choices=roomChoices.map(room=>[room,`個室${room.slice(-1)}`]);
   if(tableChoice){
     for(const table of [1,2])choices.push([`PRIVATE3_TABLE_${table}`,`個室③ ${tableLabel(table)}`]);
   }
   const current=currentRoomChoice(r);
-  return `<label for="changeRoom">個室を変更</label><select id="changeRoom" onchange="updateRoomMoveButton(${Number(r.id)})">${choices.map(([value,label])=>`<option value="${value}" ${value===current?'selected':''}>${label}</option>`).join('')}</select><button id="saveRoomMove" type="button" onclick="changeRoom(${Number(r.id)},this)" disabled>個室変更を保存</button><p role="status" id="changeRoomMessage"></p>`;
+  if(r.seating_area==='COUNTER'||counterChoice)choices.push(['COUNTER','カウンター']);
+  if(counterChoice&&!isCounterBuyout(r))choices.push(['COUNTER_BUYOUT','カウンター貸切（当日の他席・時間帯をブロック）']);
+  return `<label for="changeRoom">席を変更</label><select id="changeRoom" onchange="updateRoomMoveButton(${Number(r.id)})">${choices.map(([value,label])=>`<option value="${value}" ${value===current?'selected':''}>${label}</option>`).join('')}</select><button id="saveRoomMove" type="button" onclick="changeRoom(${Number(r.id)},this)" disabled>席変更を保存</button><p role="status" id="changeRoomMessage"></p>`;
 }
 function updateRoomMoveButton(id){
   const r=reservations.find(row=>Number(row.id)===id);
@@ -191,7 +194,7 @@ function updateRoomMoveButton(id){
   const destination=$('changeRoom').value;
   const table=destination.match(/^PRIVATE3_TABLE_([12])$/);
   $('saveRoomMove').disabled=destination===currentRoomChoice(r);
-  $('saveRoomMove').textContent=table?`${tableLabel(Number(table[1]))}への変更を承認`:'個室変更を保存';
+  $('saveRoomMove').textContent=destination==='COUNTER_BUYOUT'?'貸切に変更し、当日の残りをブロック':table?`${tableLabel(Number(table[1]))}への変更を承認`:'席変更を保存';
 }
 async function changeRoom(id,button){
   const r=reservations.find(row=>Number(row.id)===id);
@@ -199,7 +202,8 @@ async function changeRoom(id,button){
   const destination=$('changeRoom').value;
   const tableOption=destination.match(/^PRIVATE3_TABLE_([12])$/);
   const table=tableOption?Number(tableOption[1]):null;
-  const room=table?'PRIVATE3':destination;
+  const buyout=destination==='COUNTER_BUYOUT';
+  const room=buyout?'COUNTER':table?'PRIVATE3':destination;
   if(table&&!confirm(`${r.guest_name}様の${r.party_size}名予約を個室③の${tableLabel(table)}へ変更しますか？ 日時・人数・決済情報はそのままです。`))return;
   button.disabled=true;
   $('changeRoom').disabled=true;
@@ -207,15 +211,17 @@ async function changeRoom(id,button){
     const result=await api(`/api/reservations/${id}/room`,{method:'POST',headers:{'X-Tsukiya-Action':'change-time'},body:JSON.stringify({
       seating_area:room,expected_seating_area:r.seating_area,expected_visit_at:r.visit_at,
       expected_party_size:r.party_size,expected_private3_table:r.private3_table??null,
-      approve_private3_table:table!==null,private3_table:table
+      approve_private3_table:table!==null,private3_table:table,counter_buyout:buyout
     })});
+    if(buyout)await loadBlocks();
     await load();
     showSeatDetail(id);
-    $('changeRoomMessage').textContent=`${areaLabel(result)}に変更しました。`;
+    const message=result.counter_buyout?'カウンター貸切に変更し、当日の残りをブロックしました。':`${areaLabel(result)}に変更しました。`;
+    if($('changeRoomMessage'))$('changeRoomMessage').textContent=message;
+    $('boardMessage').textContent=message;
   }catch(e){
-    $('changeRoomMessage').textContent=e.message;
-    $('changeRoom').disabled=false;
-    updateRoomMoveButton(id);
+    if($('changeRoomMessage'))$('changeRoomMessage').textContent=e.message;
+    if($('changeRoom')){$('changeRoom').disabled=false;updateRoomMoveButton(id)}
   }
 }
 function reservationRoomWindow(r){
@@ -406,7 +412,8 @@ async function load(){loadOwnerNotices();try{reservations=await api('/api/reserv
 
 function showNewReservations(){$('newReservations').hidden=false;renderNewReservations();$('newReservations').scrollIntoView({behavior:'smooth',block:'start'})}
 function showOnline(){$('onlineList').hidden=false;renderOnline();$('onlineList').scrollIntoView({behavior:'smooth',block:'start'})}
-function areaLabel(r){if(r.seating_area==='PRIVATE3'&&r.private3_table)return '個室③ '+tableLabel(r.private3_table);return r.seating_area==='COUNTER'?'カウンター':({PRIVATE1:'個室1',PRIVATE2:'個室2',PRIVATE3:'個室3',UNASSIGNED:'未割当'}[r.seating_area]||'席未指定')}
+function isCounterBuyout(r){return r.seating_area==='COUNTER'&&blocks.some(block=>block.note===`カウンター貸切 #${r.id}`)}
+function areaLabel(r){if(r.seating_area==='PRIVATE3'&&r.private3_table)return '個室③ '+tableLabel(r.private3_table);return r.seating_area==='COUNTER'?(isCounterBuyout(r)?'カウンター貸切':'カウンター'):({PRIVATE1:'個室1',PRIVATE2:'個室2',PRIVATE3:'個室3',UNASSIGNED:'未割当'}[r.seating_area]||'席未指定')}
 function sourceLabel(r){return ({WEB:'オンライン',WEB_CARD:'オンライン・画面内カード決済',PHONE:'電話',DIRECT:'直接予約',SQUARE:'Square'}[r.source]||'その他')}
 function statusLabel(r){if(r.source==='WEB_CARD'&&r.status==='PENDING')return paymentLabel(r);if(r.status==='CANCELLED'&&r.cancellation_reason==='PAYMENT_EXPIRED')return '超過取消し';return ({PENDING:'決済待ち',INVOICED:'請求済み・未決済',CONFIRMED:'予約確定',CANCELLED:'キャンセル',ERROR:'要確認'}[r.status]||'要確認')}
 function statusBadge(r){const tone=r.cancellation_reason==='PAYMENT_EXPIRED'&&r.status==='CANCELLED'?'expired':({PENDING:'pending',INVOICED:'unpaid',CONFIRMED:'confirmed',CANCELLED:'cancelled',ERROR:'error'}[r.status]||'error');return `<span class="online-status ${tone}">${escapeHtml(statusLabel(r))}</span>`}

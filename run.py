@@ -1585,8 +1585,14 @@ def availability_check(
             )
         )
 
-        if special_slot or (visit.year == 2026 and visit.month == 10):
-            for block in c.execute("SELECT time_text FROM seat_blocks WHERE visit_date=? AND seating_area=?", (visit.date().isoformat(), seating_area)):
+        check_block_overlap = special_slot or (visit.year == 2026 and visit.month == 10)
+        if check_block_overlap or allow_custom_start:
+            room_blocks = c.execute("SELECT time_text,note FROM seat_blocks WHERE visit_date=? AND seating_area=?",
+                                    (visit.date().isoformat(), seating_area)).fetchall()
+            if ({block["time_text"] for block in room_blocks} >= {"18:00", "20:30"}
+                    and any((block["note"] or "").startswith("カウンター貸切 #") for block in room_blocks)):
+                return False, "当日は貸切のため、この個室はブロックされています"
+            for block in room_blocks if check_block_overlap else ():
                 block_start = parse_dt(visit.date().isoformat() + "T" + block["time_text"])
                 if visit < block_start + timedelta(minutes=150) and block_start < end:
                     return False, "この個室はブロックされています"
@@ -1744,11 +1750,48 @@ def change_reservation_note(c, rid, data):
     return {"ok": True, "id": rid, "guest_note": note}
 
 
+def move_to_counter(c, r, buyout):
+    """Move a confirmed reservation; the caller owns the write transaction."""
+    visit = parse_dt(r["visit_at"])
+    now = datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
+    if visit <= now:
+        raise ValueError("過去の予約は変更できません")
+    day, clock = visit.date().isoformat(), visit.strftime("%H:%M")
+    if clock not in ("18:00", "20:30") or not public_party_allowed("COUNTER", r["party_size"]):
+        raise ValueError("カウンターへの変更は18:00または20:30の2〜8名が対象です")
+    rid = r["id"]
+    round_number = 1 if clock == "18:00" else 2
+    ok, message = availability_check(c, "COUNTER", r["visit_at"], r["party_size"],
+                                     round_number, int(r["duration_minutes"] or 150), rid)
+    if not ok:
+        raise ValueError(message)
+    if buyout:
+        other = c.execute("SELECT id FROM reservations WHERE substr(visit_at,1,10)=? "
+                          "AND id<>? AND status IN (?,?,?,?) ORDER BY id LIMIT 1",
+                          (day, rid, *ACTIVE_STATUSES)).fetchone()
+        if other:
+            raise ValueError(f"当日に別の予約（#{other['id']}）があるため、貸切に変更できません")
+    ts = now_iso()
+    c.execute("UPDATE reservations SET seating_area='COUNTER',counter_round=?,private3_table=NULL,updated_at=? WHERE id=?",
+              (round_number, ts, rid))
+    if buyout:
+        note = f"カウンター貸切 #{rid}"
+        rows = []
+        assigned, _ = vip_slots.counter_assignments(sys.modules[__name__], c, day, clock)
+        for start in ("18:00", "20:30"):
+            rows.extend((day, start, area, 0, note, ts) for area in ROOMS)
+            rows.extend((day, start, "COUNTER", seat, note, ts)
+                        for seat in range(1, COUNTER_CAPACITY + 1) if start != clock or seat not in assigned)
+        c.executemany("INSERT INTO seat_blocks(visit_date,time_text,seating_area,seat_number,note,created_at) "
+                      "VALUES(?,?,?,?,?,?) ON CONFLICT(visit_date,time_text,seating_area,seat_number) DO NOTHING", rows)
+    return {"ok": True, "id": rid, "seating_area": "COUNTER", "private3_table": None, "counter_buyout": buyout}
+
+
 def change_direct_room(c, rid, data):
-    """Atomically move an eligible private booking without recreating it."""
+    """Atomically move a confirmed booking without recreating it."""
     r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
-    if not r or r["status"] != "CONFIRMED" or r["vip_through"] or r["seating_area"] not in ROOMS:
-        raise ValueError("この予約は個室変更の対象外です")
+    if not r or r["status"] != "CONFIRMED" or r["vip_through"] or r["seating_area"] not in ("COUNTER", *ROOMS):
+        raise ValueError("この予約は席変更の対象外です")
     if (data.get("expected_seating_area") != r["seating_area"]
             or data.get("expected_visit_at") != r["visit_at"]
             or data.get("expected_party_size") != r["party_size"]
@@ -1757,6 +1800,13 @@ def change_direct_room(c, rid, data):
     room = data.get("seating_area")
     approved = data.get("approve_private3_table") is True
     requested_table = data.get("private3_table")
+    buyout = data.get("counter_buyout") is True
+    if room == "COUNTER":
+        if approved or requested_table is not None:
+            raise ValueError("カウンターへの変更に個室のテーブルは指定できません")
+        return move_to_counter(c, r, buyout)
+    if buyout:
+        raise ValueError("貸切にはカウンターを選択してください")
     if requested_table is not None and (not approved or type(requested_table) is not int or requested_table not in (1, 2)):
         raise ValueError("変更先のテーブルAまたはBを選択してください")
     if approved and (not 2 <= r["party_size"] <= 4 or room != "PRIVATE3"):
@@ -1769,7 +1819,7 @@ def change_direct_room(c, rid, data):
         raise ValueError("この予約は個室変更の対象外です")
     if room not in ROOMS or (not approved and not public_party_allowed(room, r["party_size"])):
         raise ValueError("人数に対応する個室を選択してください")
-    if (approved or leaving_exception_room) and parse_dt(r["visit_at"]) <= datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None):
+    if (approved or leaving_exception_room or r["seating_area"] == "COUNTER") and parse_dt(r["visit_at"]) <= datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None):
         raise ValueError("過去の予約は変更できません")
     duration = int(r["duration_minutes"] or 150)
     special_slot = r["special_meal_count"] is not None or approved or leaving_exception_room
@@ -1785,8 +1835,9 @@ def change_direct_room(c, rid, data):
                                          duration, rid, special_slot=special_slot)
         if not ok:
             raise ValueError(message)
-    c.execute("UPDATE reservations SET seating_area=?,private3_table=?,updated_at=? WHERE id=?",
-              (room, table, now_iso(), rid))
+    round_number = None if r["seating_area"] == "COUNTER" else r["counter_round"]
+    c.execute("UPDATE reservations SET seating_area=?,private3_table=?,counter_round=?,updated_at=? WHERE id=?",
+              (room, table, round_number, now_iso(), rid))
     return {"ok": True, "id": rid, "seating_area": room, "private3_table": table}
 
 
