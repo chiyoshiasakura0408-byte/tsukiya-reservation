@@ -1,0 +1,13 @@
+:root{color-scheme:dark;background:#0e0f10;color:#eee9e1;font-family:system-ui,sans-serif;line-height:1.65}
+body{margin:0}
+main{max-width:40rem;margin:auto;padding:2.5rem 1.25rem 3rem}
+header,section{border-bottom:1px solid #39352e;padding-bottom:1rem;margin-bottom:1rem}
+h1,h2{font-family:"Yu Mincho","Hiragino Mincho ProN",Georgia,serif;font-weight:400;margin:0}
+h1{font-size:clamp(1.65rem,6vw,2.25rem)}
+h2{font-size:1.25rem}
+p{margin:.45rem 0}
+.brand{color:#d7bc91;margin-bottom:.65rem}
+.language-switch{display:flex;gap:.45rem;justify-content:flex-end;margin-bottom:1.1rem}
+.language-switch a,.language-switch [aria-current]{display:inline-block;padding:.35rem .7rem;border:1px solid #635847;border-radius:.3rem;color:#eee9e1}
+.language-switch a:hover,.language-switch a:focus-visible{border-color:#d7bc91}
+.language-switch [aria-current]{background:#d7bc91;border-color:#d7bc91;color:#0e0f10}

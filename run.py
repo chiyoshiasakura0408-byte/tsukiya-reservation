@@ -2826,7 +2826,7 @@ class Handler(
             self.wfile.write(content)
             return
 
-        if p in ("/attribution.js", "/web-checkout.js", "/guest-passkeys.js", "/guest-passkeys.css"):
+        if p in ("/attribution.js", "/web-checkout.js", "/guest-passkeys.js", "/guest-passkeys.css", "/free-flow-menu.css"):
             b = (BASE / "public" / p[1:]).read_bytes()
             self.send_response(200)
             mime = "text/css" if p.endswith(".css") else "application/javascript"
@@ -3012,7 +3012,9 @@ class Handler(
             return self.send_html((BASE / "public" / "passkey-enroll.html").read_text(encoding="utf-8"), loader=False)
 
         if p == "/free-flow-menu":
-            return self.send_html((BASE / "public" / "free-flow-menu.html").read_text(encoding="utf-8"), loader=False)
+            language = parse_qs(u.query).get("lang", ["ja"])[0]
+            filename = "free-flow-menu-en.html" if language == "en" else "free-flow-menu.html"
+            return self.send_html((BASE / "public" / filename).read_text(encoding="utf-8"), loader=False)
 
         if p in ("/book", "/book-test"):
             if p == "/book-test" and not self.auth():
