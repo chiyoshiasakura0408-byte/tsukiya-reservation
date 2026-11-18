@@ -3011,6 +3011,9 @@ class Handler(
                 return self.send_error(404)
             return self.send_html((BASE / "public" / "passkey-enroll.html").read_text(encoding="utf-8"), loader=False)
 
+        if p == "/free-flow-menu":
+            return self.send_html((BASE / "public" / "free-flow-menu.html").read_text(encoding="utf-8"), loader=False)
+
         if p in ("/book", "/book-test"):
             if p == "/book-test" and not self.auth():
                 return self.redirect("/login")
