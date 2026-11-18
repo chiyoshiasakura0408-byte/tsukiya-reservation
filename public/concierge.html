@@ -8,7 +8,7 @@
 提供日：2026-10-10</pre><p>下書きが作成され、グループへ受付結果を返します。下の一覧で写真と説明を登録し、確認して公開してください。同じ投稿の再受信では重複登録しません。通常の会話・領収書写真は在庫登録に使いません。</p></details><form id="premiumForm"><input name="id" type="hidden"><label>ご案内日<input name="day" type="date" required></label><label>銘柄・蔵元・特定に必要な名称<input name="name" maxlength="150" required></label><label>現在提供できる杯数<input name="stock" type="number" min="0" max="9999" value="0" required></label><label>つきやで撮影した商品写真<input id="premiumFile" type="file" accept="image/jpeg,image/png,image/webp"></label><input name="photo" type="hidden"><img id="premiumPreview" alt="登録した商品写真" hidden style="max-width:240px;max-height:220px"><p class="muted">写真はお客様へのLINE表示に使います。位置情報などの付帯情報を除いて保存します。</p><button type="button" id="researchSake" class="secondary">ウェブから説明案を作成</button><label>商品説明<textarea name="description" rows="4" maxlength="1500"></textarea></label><label>確認した参照元URL（1行に1件）<textarea name="sources" rows="3"></textarea></label><div id="researchSources"></div><label><input name="approved" type="checkbox"> 写真・商品説明・在庫を確認し、本日のおすすめとして公開する</label><button>保存する</button><button id="newSake" type="button" class="secondary">新規登録</button></form><div id="premiumList"></div></section>
 <section id="vipRequests" tabindex="-1"><h2>VIP担当へのご相談</h2><p class="muted">回答はお問い合わせ元のLINE・Instagram DM、または英語窓口へお届けします。web-で始まる受付は英語窓口に回答を掲載し、お客様が専用リンクから確認できます。英語のご相談には英語でご回答ください。対応可否・料金を確認したうえで回答してください。</p><div id="requests"></div></section></main><script>
 const $=id=>document.getElementById(id);
-async function checkConnections(){const b=$('checkConnections');b.disabled=true;$('connectionCheck').textContent='接続確認中…';try{const r=await fetch('/api/concierge/diagnostics',{cache:'no-store'});if(!r.ok)throw Error('接続点検を実行できません');const j=await r.json();$('connectionCheck').textContent='OpenAI：'+(j.openai.connected?'応答確認済み':j.openai.configured?'接続要確認':'未設定')+'\nお客様用LINE：'+(j.customer_line.connected?'接続正常 '+(j.customer_line.display_name||''):'未接続・要確認')+'\n業務通知LINE：'+(j.owner_line.connected?'接続正常':'未接続・要確認')+'\n公式サイトメニュー：'+(j.customer_line.default_menu?(j.customer_line.official_website_buttons||0)+'個':'要確認')+'\n最新英語通知：'+(j.latest_english_notice&&j.latest_english_notice.japanese_translation?'日本語訳あり':'日本語訳を要確認')+' ／ '+((j.latest_english_notice||{}).state||'履歴なし')+'\n一般予約受付：'+(j.booking_paused?'停止中':'受付中')}catch(e){$('connectionCheck').textContent=e.message}finally{b.disabled=false}}
+async function checkConnections(){const b=$('checkConnections');b.disabled=true;$('connectionCheck').textContent='接続確認中…';try{const r=await fetch('/api/concierge/diagnostics',{cache:'no-store'});if(!r.ok)throw Error('接続点検を実行できません');const j=await r.json();$('connectionCheck').textContent='OpenAI：'+(j.openai.connected?'応答確認済み':j.openai.configured?'接続要確認':'未設定')+'\nお客様用LINE：'+(j.customer_line.connected?'接続正常 '+(j.customer_line.display_name||''):'未接続・要確認')+'\n業務通知LINE：'+(j.owner_line.connected?'接続正常':'未接続・要確認')+'\n公式サイトメニュー：'+(j.customer_line.default_menu?(j.customer_line.official_website_buttons||0)+'個':'要確認')+'\n最新英語通知：'+(j.latest_english_notice&&j.latest_english_notice.japanese_translation?'日本語訳あり':'日本語訳を要確認')+' ／ '+((j.latest_english_notice||{}).state||'履歴なし')+'\n一般予約受付：'+(j.booking_paused?'停止中':'受付中')}catch(e){$('connectionCheck').textContent=japaneseError(e)}finally{b.disabled=false}}
 $('checkConnections').onclick=checkConnections;const labels={accepted:'送信先サービス受付済み',pending:'送信待ち',failed:'送信失敗',cancelled:'停止済み',unknown:'送信結果の確認が必要',held:'保留・確認が必要',sending:'送信処理中・結果未確認',queued:'キュー保存済み'};let initial=true;
 async function api(data){const r=await fetch('/api/concierge/configure',{method:'POST',headers:{'Content-Type':'application/json','X-Tsukiya-Action':'concierge'},body:JSON.stringify(data)});const j=await r.json();if(!r.ok)throw Error(j.error||'操作できませんでした');return j}
 function renderMembers(data) {
@@ -31,7 +31,7 @@ async function refresh(){const r=await fetch('/api/concierge/status');if(!r.ok)t
 function renderVipNotice(requests){const pending=requests.filter(q=>q.status==='未回答'||q.status.includes('確認待ち')||q.status==='回答送信失敗');$('vipNotice').hidden=!pending.length;$('vipNoticeButton').textContent=`VIP相談が${pending.length}件あります。タップして確認`;}
 $('vipNoticeButton').onclick=()=>run(async()=>{await refresh();$('vipRequests').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'start'});$('vipRequests').focus({preventScroll:true})});
 setInterval(async()=>{try{const r=await fetch('/api/concierge/status',{cache:'no-store'});if(r.ok){const j=await r.json();renderVipNotice(j.requests);renderMembers(j)}}catch(_){/* Keep the last known notification. */}},30000);
-async function run(fn,button){if(button)button.disabled=true;try{await fn()}catch(e){$('message').textContent=e.message}finally{if(button)button.disabled=false}}
+async function run(fn,button){if(button)button.disabled=true;try{await fn()}catch(e){$('message').textContent=japaneseError(e)}finally{if(button)button.disabled=false}}
 $('catalog').elements.course_id.onchange=()=>{const m=(window.courseMedia||{})[$('catalog').elements.course_id.value]||{};for(const k of ['photo','menu','menu_url'])$('catalog').elements[k].value=m[k]||''};
 $('catalog').onsubmit=e=>{e.preventDefault();run(async()=>{const f=new FormData(e.target);await api({...Object.fromEntries(f),action:'catalog',announce:f.get('announce')==='on'});$('message').textContent='保存しました。年間スケジュールから表示をご確認ください。';await refresh()},e.submitter)};
 for(const action of ['enable','disable','instagram-enable','instagram-disable'])$(action).onclick=()=>run(async()=>{await api({action});$('message').textContent=action.endsWith('enable')?'配信を有効にしました。':'配信を停止しました。';await refresh()},$(action));
@@ -86,9 +86,20 @@ async function prefillInviteCustomer() {
   }
 }
 prefillInviteCustomer();
-async function vipApi(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Tsukiya-Action':'vip-access'},body:JSON.stringify(data)});const j=await r.json();if(!r.ok)throw Error(j.error||'操作できませんでした');return j}
-async function issueVipInvite(){const b=$('issueInvite'),status=$('vipInviteStatus');b.disabled=true;clearTimeout(invitePoll);currentInviteToken='';$('vipInviteResult').hidden=true;try{const j=await vipApi('/api/vip-access/invite',{name:$('inviteName').value});currentInviteToken=j.command.split(' ')[1];$('vipInviteText').value=j.invitation_text;$('vipInviteQr').src=j.qr_url;$('vipInviteResult').hidden=false;await sendVipInvite()}catch(e){status.textContent=e.message}finally{b.disabled=false}}
-async function sendVipInvite(attempt=0){if(!currentInviteToken)return;const token=currentInviteToken,b=$('sendVipInvite');b.disabled=true;try{const j=await vipApi('/api/vip-access/invite-send',{token});if(token!==currentInviteToken)return;const states={accepted:'朝倉さんの個人LINE宛のQRコード・招待文をLINEが受け付けました。個人LINEをご確認ください。',pending:'朝倉さんの個人LINEへ送信待ちです。',failed:'送信に失敗しました。LINEの接続・配信状況を確認してください。',cancelled:'送信を停止しました。',unknown:'送信結果を確認できません。'};$('vipInviteStatus').textContent=states[j.state]||states.unknown;if(j.state==='pending'&&attempt<12)invitePoll=setTimeout(()=>sendVipInvite(attempt+1),5000)}catch(e){$('vipInviteStatus').textContent='招待は発行済みです。'+e.message}finally{b.disabled=false}}
+function japaneseError(error, fallback = '処理結果を確認できませんでした。') {
+  const message = error?.message;
+  return typeof message === 'string' && /^[^a-z]*[ぁ-んァ-ヶ一-龯]/i.test(message.replace(/SMS|LINE|VIP|QR/g, '')) && !/[a-z]{3}/i.test(message.replace(/SMS|LINE|VIP|QR/g, '')) ? message : fallback;
+}
+async function vipApi(path, data) {
+  const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json','X-Tsukiya-Action':'vip-access'}, body:JSON.stringify(data)});
+  if (response.status === 401 || response.redirected) throw Error('ログインし直してください。');
+  if (response.status === 403) throw Error('この操作を実行する権限がありません。');
+  const result = await response.json();
+  if (!response.ok) throw Error(result?.error);
+  return result;
+}
+async function issueVipInvite(){const b=$('issueInvite'),status=$('vipInviteStatus');b.disabled=true;clearTimeout(invitePoll);currentInviteToken='';$('vipInviteResult').hidden=true;try{const j=await vipApi('/api/vip-access/invite',{name:$('inviteName').value});currentInviteToken=j.command.split(' ')[1];$('vipInviteText').value=j.invitation_text;$('vipInviteQr').src=j.qr_url;$('vipInviteResult').hidden=false;await sendVipInvite()}catch(e){status.textContent=japaneseError(e)}finally{b.disabled=false}}
+async function sendVipInvite(attempt=0){if(!currentInviteToken)return;const token=currentInviteToken,b=$('sendVipInvite');b.disabled=true;try{const j=await vipApi('/api/vip-access/invite-send',{token});if(token!==currentInviteToken)return;const states={accepted:'朝倉さんの個人LINE宛のQRコード・招待文をLINEが受け付けました。個人LINEをご確認ください。',pending:'朝倉さんの個人LINEへ送信待ちです。',failed:'送信に失敗しました。LINEの接続・配信状況を確認してください。',cancelled:'送信を停止しました。',unknown:'送信結果を確認できません。'};$('vipInviteStatus').textContent=states[j.state]||states.unknown;if(j.state==='pending'&&attempt<12)invitePoll=setTimeout(()=>sendVipInvite(attempt+1),5000)}catch(e){$('vipInviteStatus').textContent='招待は発行済みです。'+japaneseError(e)}finally{b.disabled=false}}
 let smsRequestKey = '';
 for (const field of ['invitePhone','inviteName']) {
   $(field).addEventListener('input', () => { smsRequestKey = ''; $('inviteSmsStatus').textContent = ''; });
@@ -98,12 +109,14 @@ async function issueSmsInvite() {
   const name = $('inviteName').value.trim(), phone = $('invitePhone').value.trim();
   if (!name || !phone) { status.textContent = 'お名前とSMS送信先を入力してください。'; return; }
   button.disabled = true;
-  smsRequestKey ||= crypto.randomUUID();
+
   status.textContent = 'SMS送信中…';
   try {
-    await vipApi('/api/vip-access/invite-sms', {name, phone, request_id:smsRequestKey});
+    smsRequestKey ||= crypto.randomUUID();
+    const result = await vipApi('/api/vip-access/invite-sms', {name, phone, request_id:smsRequestKey});
+    if (result?.accepted !== true) throw Error();
     status.textContent = name+'様宛（'+phone+'）のVIP招待をSMS送信サービスが受け付けました。';
-  } catch (e) { status.textContent = e.message; }
+  } catch (e) { status.textContent = japaneseError(e, '招待の送信結果を確認できませんでした。再送前に送信履歴をご確認ください。'); }
   finally { button.disabled = false; }
 }
 async function copyVipInvite(){const t=$('vipInviteText');try{await navigator.clipboard.writeText(t.value);$('vipInviteStatus').textContent='招待文をコピーしました。'}catch(e){t.focus();t.select();$('vipInviteStatus').textContent='招待文を選択しました。長押ししてコピーしてください。'}}
