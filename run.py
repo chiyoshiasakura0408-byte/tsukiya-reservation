@@ -39,6 +39,7 @@ import os
 import re
 from functools import lru_cache
 import json
+import http.client
 import sqlite3
 import urllib.request
 import urllib.error
@@ -223,6 +224,12 @@ def now_iso():
 def con():
     c = sqlite3.connect(DB, timeout=30)
     c.row_factory = sqlite3.Row
+    c.execute("""CREATE TABLE IF NOT EXISTS sms_delivery_checks(
+        reservation_id INTEGER, kind TEXT, sid TEXT, attempts INTEGER NOT NULL,
+        next_check REAL NOT NULL, last_error TEXT,
+        PRIMARY KEY(reservation_id,kind,sid))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS sms_lookup_pause(
+        account TEXT PRIMARY KEY, until_time REAL NOT NULL)""")
     refunds.schema(c)
     reservation_changes.schema(c)
     customer_party.schema(c)
@@ -678,15 +685,19 @@ def send_invoice_sms(reservation):
             row = dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
             if row["status"] != "INVOICED" or not row.get("square_invoice_url"):
                 return row
-            if row.get("invoice_sms_status") in ("QUEUED", "SENDING", "ERROR"):
+            if row.get("invoice_sms_sid") or row.get("invoice_sms_status") not in (None, "", "NOT_CONFIGURED"):
                 return row
             if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER):
                 c.execute("UPDATE reservations SET invoice_sms_status='NOT_CONFIGURED',"
                           "invoice_sms_error=? WHERE id=?", ("TwilioのSMS送信設定が未完了です", rid))
                 c.commit()
             else:
-                c.execute("UPDATE reservations SET invoice_sms_status='SENDING',invoice_sms_error=NULL WHERE id=?", (rid,))
+                claimed = c.execute("UPDATE reservations SET invoice_sms_status='SENDING',invoice_sms_error=NULL "
+                                    "WHERE id=? AND coalesce(invoice_sms_sid,'')='' AND "
+                                    "coalesce(invoice_sms_status,'') IN ('','NOT_CONFIGURED')", (rid,)).rowcount
                 c.commit()
+                if not claimed:
+                    return dict(c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone())
                 try:
                     arrival_day = date.fromisoformat(row["visit_at"][:10])
                     received_day = parse_dt(row["created_at"]).astimezone(timezone(timedelta(hours=9))).date()
@@ -2503,21 +2514,95 @@ def deliver_confirmation(reservation, retry_failed=False):
             c.close()
 
 
+SMS_PENDING_STATES = ("QUEUED", "SENDING", "SENT")
+SMS_PROVIDER_STATES = {
+    "accepted": "QUEUED", "scheduled": "QUEUED", "queued": "QUEUED",
+    "sending": "SENDING", "sent": "SENT", "delivered": "DELIVERED",
+    "failed": "ERROR", "undelivered": "ERROR", "canceled": "ERROR",
+}
+
+
+def sms_error_code(value):
+    return str(value) if re.fullmatch(r"[0-9]{1,8}", str(value)) else "-"
+
+
 def refresh_sms_delivery(row):
-    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
-        return
-    for prefix in ("invoice_sms", "confirmation_sms"):
+    for prefix in ("invoice_sms", "confirmation_sms", "confirmation_sms_correction"):
         sid = row.get(prefix + "_sid")
-        if not sid or row.get(prefix + "_status") != "QUEUED":
-            continue
-        url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages/{sid}.json"
-        auth = base64.b64encode(f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()).decode()
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"Authorization": "Basic " + auth}), timeout=30) as response:
-            result = json.load(response)
-        if result.get("status") in ("failed", "undelivered", "canceled"):
-            c = con()
-            c.execute(f"UPDATE reservations SET {prefix}_status='ERROR',{prefix}_error=? WHERE id=?", ("SMS配信失敗。Twilioの送信履歴を確認してください", row["id"]))
-            c.commit(); c.close()
+        if sid and row.get(prefix + "_status") in SMS_PENDING_STATES:
+            check_sms_message(row["id"], prefix, sid)
+
+
+def check_sms_message(rid, prefix, sid):
+    key = (rid, prefix, sid)
+    c = con()
+    try:
+        now = time.time()
+        if c.execute("SELECT 1 FROM sms_lookup_pause WHERE account=? AND until_time>?",
+                     (TWILIO_ACCOUNT_SID, now)).fetchone():
+            return
+        with c:
+            # Reserve this lookup before network I/O, including across worker restarts.
+            claimed = c.execute("""
+                INSERT INTO sms_delivery_checks(reservation_id,kind,sid,attempts,next_check)
+                VALUES(?,?,?,1,?) ON CONFLICT(reservation_id,kind,sid) DO UPDATE SET
+                attempts=attempts+1,next_check=excluded.next_check
+                WHERE next_check<=?""", (*key, now + 120, now)).rowcount
+        if not claimed:
+            return
+        attempts = c.execute("SELECT attempts FROM sms_delivery_checks WHERE reservation_id=? AND kind=? AND sid=?", key).fetchone()[0]
+        delay = min(86400, 300 * 2 ** min(attempts - 1, 9))
+        pause = 0
+        state = None
+        issue = None
+        delivery_error = None
+        if not re.fullmatch(r"AC[0-9a-fA-F]{32}", TWILIO_ACCOUNT_SID or "") or not TWILIO_AUTH_TOKEN:
+            issue = "設定不備"
+        elif not re.fullmatch(r"(SM|MM)[0-9a-fA-F]{32}", sid):
+            issue = "メッセージ識別子の形式不正"
+        else:
+            url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages/{sid}.json"
+            auth = base64.b64encode(f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()).decode()
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, headers={"Authorization": "Basic " + auth}), timeout=8) as response:
+                    result = json.load(response)
+                if isinstance(result, dict) and result.get("sid") == sid and result.get("account_sid") == TWILIO_ACCOUNT_SID:
+                    state = SMS_PROVIDER_STATES.get(result.get("status"))
+                if not state:
+                    issue = "応答内容を確認できません"
+                elif state == "ERROR":
+                    delivery_error = "SMS配信失敗 コード " + sms_error_code(result.get("error_code"))
+            except urllib.error.HTTPError as exc:
+                with exc:
+                    try:
+                        detail = json.loads(exc.read(8192))
+                    except (ValueError, OSError):
+                        detail = {}
+                code = sms_error_code(detail.get("code") if isinstance(detail, dict) else None)
+                issue = f"HTTP {exc.code} Twilio {code}"
+                if exc.code in (401, 403, 404):
+                    delay = max(delay, 21600)
+                retry_after = (exc.headers or {}).get("Retry-After", "")
+                if re.fullmatch(r"[0-9]{1,8}", retry_after):
+                    delay = max(delay, int(retry_after))
+                if exc.code in (401, 403, 429):
+                    pause = max(300, min(delay, 21600))
+            except (OSError, ValueError, http.client.HTTPException) as exc:
+                issue = type(exc).__name__
+        if issue or delivery_error:
+            print(f"SMS配信照会 予約={rid} 種別={prefix} {issue or delivery_error}", flush=True)
+        with c:
+            if pause:
+                c.execute("INSERT INTO sms_lookup_pause VALUES(?,?) ON CONFLICT(account) DO UPDATE SET "
+                          "until_time=max(until_time,excluded.until_time)", (TWILIO_ACCOUNT_SID, time.time() + pause))
+            c.execute("UPDATE sms_delivery_checks SET next_check=?,last_error=? WHERE reservation_id=? AND kind=? AND sid=?",
+                      (time.time() + delay, issue, *key))
+            if state:
+                c.execute(f"UPDATE reservations SET {prefix}_status=?,{prefix}_error=? WHERE id=? "
+                          f"AND {prefix}_sid=? AND {prefix}_status IN ('QUEUED','SENDING','SENT')",
+                          (state, delivery_error, rid, sid))
+    finally:
+        c.close()
 
 
 def reconcile_reservations():
@@ -4601,7 +4686,7 @@ class Handler(
             finally:
                 c.close()
             result = deliver_confirmation(saved, retry_failed=True)
-            ok = bool(result.get("confirmation_sent_at") if result.get("email") else result.get("confirmation_sms_status") == "QUEUED")
+            ok = bool(result.get("confirmation_sent_at") if result.get("email") else result.get("confirmation_sms_status") in ("QUEUED", "SENT", "DELIVERED") or (result.get("confirmation_sms_status") == "SENDING" and result.get("confirmation_sms_sid")))
             return self.send_json({"ok": ok, "error": result.get("last_error") if result.get("email") else result.get("confirmation_sms_error")})
 
         if re.fullmatch(r"/api/reservations/\d+/restore-bank-payment", p):
