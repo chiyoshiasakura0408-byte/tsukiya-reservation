@@ -3697,6 +3697,46 @@ class Handler(
             except (ValueError,TypeError,AttributeError) as exc:return self.send_json({"error":str(exc)},400)
             finally:c.close()
 
+        if p == "/api/vip-access/invite-sms":
+            if not self.auth():return self.send_json({"error":"unauthorized"},401)
+            if self.headers.get("X-Tsukiya-Action")!="vip-access":return self.send_json({"error":"invalid request"},403)
+            data = self.read_json()
+            key = str(data.get("request_id", ""))
+            raw_phone = str(data.get("phone", "")).strip()
+            phone = normalize_jp_phone(raw_phone)
+            if not re.fullmatch(r"[0-9+() -]+", raw_phone) or not re.fullmatch(r"\+[1-9][0-9]{7,14}", phone):
+                return self.send_json({"error":"電話番号を確認してください。海外番号は国番号から入力してください。"},400)
+            if not re.fullmatch(r"[a-f0-9-]{36}", key):
+                return self.send_json({"error":"画面を更新してください。"},400)
+            c = concierge.connect(DB)
+            try:
+                with c:
+                    c.execute("BEGIN IMMEDIATE")
+                    c.execute("CREATE TABLE IF NOT EXISTS vip_sms_requests (request_id TEXT PRIMARY KEY, sid TEXT)")
+                    previous = c.execute("SELECT sid FROM vip_sms_requests WHERE request_id=?", (key,)).fetchone()
+                    if previous:
+                        if previous["sid"]:
+                            return self.send_json({"accepted":True})
+                        return self.send_json({"error":"SMS受付状況を確認中です。送信履歴をご確認ください。"},409)
+                    invite = vip_access.create_invite(c, data)
+                    c.execute("INSERT INTO vip_sms_requests(request_id) VALUES(?)", (key,))
+                body = (data["name"].strip()+"様\n西天満つきやのVIPコンシェルジュへご招待します。"
+                        "リンクからLINEを開き、表示された招待文を送信してください。\n"
+                        +invite["url"]+"\nご本人様専用・24時間有効・1回限り")
+                try:
+                    receipt = send_sms(phone, body=body)
+                except (RuntimeError, OSError, ValueError):
+                    return self.send_json({"error":"SMS受付を確認できません。送信履歴をご確認ください。"},502)
+                if not receipt.get("sid"):
+                    return self.send_json({"error":"SMS受付番号を確認できません。"},502)
+                with c:
+                    c.execute("UPDATE vip_sms_requests SET sid=? WHERE request_id=?", (receipt["sid"], key))
+                return self.send_json({"accepted":True})
+            except ValueError as exc:
+                return self.send_json({"error":str(exc)},400)
+            finally:
+                c.close()
+
         if p == "/api/vip-access/invite-send":
             if not self.auth():return self.send_json({"error":"unauthorized"},401)
             if self.headers.get("X-Tsukiya-Action")!="vip-access":return self.send_json({"error":"invalid request"},403)
