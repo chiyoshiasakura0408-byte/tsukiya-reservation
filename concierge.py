@@ -53,6 +53,9 @@ def connect(db):
     """)
     vip_access.schema(c)
     owner_notifications.schema(c)
+    configured_owner = os.getenv('VIP_OWNER_LINE_USER_ID', '').strip()
+    if owner_notifications.OWNER_ID.fullmatch(configured_owner):
+        c.execute("INSERT OR IGNORE INTO concierge_settings(key,value) VALUES ('owner',?)", (configured_owner,))
     c.commit()
     return c
 
@@ -586,8 +589,11 @@ def status(db):
                     'owner_token_configured': bool(os.getenv('LINE_CHANNEL_ACCESS_TOKEN')), 'catalog': catalog(c),
                     'owner_booking_notifications': {**owner_notifications.status(c), 'since': '2026-10-20', 'enabled': setting(c, 'owner_booking_notifications_enabled', '1') == '1'},
                     'subscribers': c.execute("SELECT count(*) FROM concierge_customers WHERE active=1 AND stopped=0 AND user_id NOT LIKE 'ig:%'").fetchone()[0], 'arrivals_pending': c.execute("SELECT count(*) FROM concierge_arrivals WHERE state='pending'").fetchone()[0],
-                    'requests': english_concierge.grouped_requests(c, [{**dict(r), 'customer_name': profile(c, r['user_id']).get('name', '')} for r in c.execute('SELECT id,user_id,body,created,status FROM concierge_requests ORDER BY created DESC LIMIT 100')]),
-                    'delivery': [dict(r) for r in c.execute('SELECT kind,state,count(*) AS count FROM concierge_outbox GROUP BY kind,state')]}
+                    'vip_roster': [r[0] for r in c.execute("""SELECT min(a.name) FROM vip_access a
+                        JOIN concierge_customers u ON u.user_id=a.user_id AND u.customer_id=a.customer_id
+                        WHERE a.status='approved' AND u.active=1 GROUP BY a.customer_id ORDER BY min(a.name)""")],
+                    'requests': english_concierge.grouped_requests(c, [{**dict(r), 'customer_name': profile(c, r['user_id']).get('name', '')} for r in c.execute("SELECT id,user_id,body,created,status FROM concierge_requests WHERE id NOT LIKE 'reservation-%' ORDER BY created DESC LIMIT 100")]),
+                    'delivery': [dict(r) for r in c.execute("SELECT kind,state,count(*) AS count FROM concierge_outbox WHERE channel!='owner' GROUP BY kind,state")]}
         finally:
             c.close()
 
