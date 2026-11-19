@@ -28,8 +28,8 @@ main{max-width:1450px;margin:auto;padding:16px}.pages{display:flex;flex-wrap:wra
 .online-status{display:inline-block;padding:5px 10px;border-radius:8px;font-weight:700}.online-status.pending{background:#fff0d6;color:#854800}.online-status.confirmed{background:#e4f4ec;color:#1f7a5a}.online-status.unpaid,.online-status.error{background:#ffe5e5;color:#a32424}.online-status.cancelled{background:#eceef1;color:#4b5563}.online-status.expired{background:#f1e8f8;color:#713b89}.read-action{min-height:44px;margin:8px 0}.read-state{display:block;font-size:13px;margin-top:6px}.online-detail-heading{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.online-detail-heading h3{margin:0}.online-detail-heading .read-action{margin:0;white-space:nowrap}
 /* Keep the online notification count inside its button on tablet widths. */
 .day-card .toolbar>*{flex-shrink:0}
-.day-card .online-button{appearance:none;-webkit-appearance:none;display:inline-grid;grid-auto-flow:column;grid-auto-columns:max-content;align-items:center;justify-content:center;gap:6px;white-space:nowrap;flex:none;width:max-content;min-width:max-content;max-width:none}
-.day-card .online-button .online-count{flex:0 0 auto;margin-left:0;width:auto;min-width:22px}
+.day-card .online-button{display:inline-block;appearance:none;-webkit-appearance:none;flex:0 0 auto;min-width:9.5em;width:auto;white-space:nowrap;text-align:center;padding:10px 14px;line-height:1.5}
+.day-card .online-button .online-count{display:inline-block;position:static;min-width:2em;width:auto;height:auto;margin:0 0 0 .45em;padding:.25em .55em;line-height:1.25;vertical-align:middle}
 .day-card .online-button .online-count[hidden]{display:none}
 .direct-entry #phoneForm:not([hidden]){height:100%;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
 .direct-entry #entryFields{overflow-y:auto;overscroll-behavior:contain;scroll-padding:8px;padding-inline-end:4px}
