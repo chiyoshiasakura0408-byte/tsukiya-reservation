@@ -50,6 +50,7 @@ main{max-width:1450px;margin:auto;padding:16px}.pages{display:flex;flex-wrap:wra
 .entry-modes{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px}
 .entry-modes button{flex:1;min-height:44px}
 .entry-modes button[aria-pressed="true"]{background:var(--navy);color:#fff}
+#rooms .busy.confirmed{touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none}#rooms .drag-source{opacity:.65}#rooms .drop-target{outline:3px solid var(--navy);outline-offset:-3px}
 </style>
 
 <style id="phoneScriptStyles">
@@ -92,12 +93,72 @@ function paymentLabel(r){if(r.customer_party_change?.state==='OPEN')return r.cus
 let blocks=[],selectedBlocks=new Set(),selectedBlockedId=null,blockArea='COUNTER';
 const blockKey=(time,area,num)=>`${time}|${area}|${num}`;
 function blockFor(time,area,num){return blocks.find(b=>b.time_text===time&&b.seating_area===area&&Number(b.seat_number)===num)}
-function seat(r,time,area,num,table=null){const block=blockFor(time,area,num),key=blockKey(time,area,num),chosen=block?selectedBlockedId===Number(block.id):selectedBlocks.has(key);if(block)return `<button class="seat blocked ${chosen?'selected':''}" onclick="selectBlock('${time}','${area}',${num})" aria-label="${time} ${area} ブロック解除を選択">ブロック中${block.note?`<div class="meta">${escapeHtml(block.note)}</div>`:''}</button>`;if(!r)return emptyBoardSeat(time,area,num,chosen,table);return `<button class="seat busy ${r.status==='CONFIRMED'?'confirmed':''}" onclick="showSeatDetail(${Number(r.id)})" aria-label="${escapeHtml(r.guest_name)}様の予約詳細"><div class="name">${requestItems(r).length?'<span class="request-marker" aria-label="花束・ケーキのリクエストあり">✅</span>':''}${escapeHtml(r.guest_name)}</div>${r.vip_through?'<div class="meta">通し '+escapeHtml(r.visit_at.slice(11,16))+'〜23:00</div>':r.special_meal_count!=null?'<div class="meta">時間指定予約 '+escapeHtml(r.visit_at.slice(11,16))+'</div>':!['18:00','20:30'].includes(r.visit_at.slice(11,16))?'<div class="meta">開始 '+escapeHtml(r.visit_at.slice(11,16))+'</div>':''}<div class="meta">${escapeHtml(r.party_size)}名 · ¥${Number(r.amount||0).toLocaleString()}</div><span class="badge ${escapeHtml(r.status)}">${paymentLabel(r)}</span></button>`}
+function roomDropAttributes(area,table,id){
+ if(!area.startsWith('PRIVATE'))return '';
+ return `data-room-choice="${table?'PRIVATE3_TABLE_'+Number(table):area}" data-booking="${Number(id)||0}"`;
+}
+async function dropRoomReservation(source,target){
+ const targetId=Number(target.dataset.booking);
+ if(targetId===Number(source.id))return;
+ const partner=targetId?reservations.find(r=>Number(r.id)===targetId):null;
+ if(targetId&&partner?.status!=='CONFIRMED')throw Error('入れ替え先は確定済みの予約を選択してください。');
+ let choice=target.dataset.roomChoice;
+ if(!partner&&choice==='PRIVATE3'&&source.party_size<4&&!source.vip_through)choice='PRIVATE3_TABLE_1';
+ if(choice===currentRoomChoice(source))return;
+ const moves=[[source,choice]];
+ if(partner)moves.push([partner,currentRoomChoice(source)]);
+ const changes=moves.map(([row,value])=>({id:Number(row.id),expected:roomReservationSnapshot(row),...roomBatchSeat(value)}));
+ const request=preview=>api(`/api/reservations/${Number(source.id)}/room-batch`,{method:'POST',headers:{'X-Tsukiya-Action':'change-time'},body:JSON.stringify({changes,preview})});
+ await request(true);
+ const summary=moves.map(([row,value])=>`${row.guest_name}様（${row.visit_at.slice(11,16)}） ${roomBatchLabel(row)} → ${roomBatchLabel(roomBatchSeat(value))}`).join('\n');
+ if(!confirm(summary+'\n'+(partner?'この2件の席を入れ替えますか？':'この席に移動しますか？')))return;
+ await request(false);
+ await load();
+ $('boardMessage').textContent=partner?'席を入れ替えました。':'席を移動しました。';
+}
+function enableRoomDragging(){
+ const board=$('rooms');
+ let drag=null,highlight=null,suppressClick=false,saving=false;
+ const mark=el=>{highlight?.classList.remove('drop-target');highlight=el;el?.classList.add('drop-target')};
+ const hit=e=>document.elementFromPoint(e.clientX,e.clientY)?.closest('#rooms [data-room-choice]');
+ board.addEventListener('pointerdown',e=>{
+   const seat=e.target.closest('.seat.busy.confirmed[data-booking]');
+   if(!seat||!e.isPrimary||e.button!==0||saving||!$('blockCard').hidden)return;
+   const source=reservations.find(r=>Number(r.id)===Number(seat.dataset.booking));
+   if(!source)return;
+   suppressClick=false;
+   drag={source,seat,id:e.pointerId,x:e.clientX,y:e.clientY,active:false};
+ });
+ window.addEventListener('pointermove',e=>{
+   if(!drag||e.pointerId!==drag.id)return;
+   if(!drag.active){
+     if(Math.hypot(e.clientX-drag.x,e.clientY-drag.y)<8)return;
+     drag.active=true;board.setPointerCapture(e.pointerId);drag.seat.classList.add('drag-source');
+   }
+   mark(hit(e));
+ });
+ function end(e){
+   if(!drag||drag.id!==e.pointerId)return;
+   const {source,seat,active}=drag;drag=null;
+   seat.classList.remove('drag-source');mark(null);
+   if(!active)return;
+   suppressClick=true;setTimeout(()=>{suppressClick=false},350);
+   const target=e.type==='pointerup'&&hit(e);
+   if(!target||!seat.isConnected)return;
+   saving=true;
+   dropRoomReservation(source,target).catch(err=>{$('boardMessage').textContent=err.message;alert(err.message)}).finally(()=>{saving=false});
+ }
+ window.addEventListener('pointerup',end);
+ window.addEventListener('pointercancel',end);
+ board.addEventListener('click',e=>{if(suppressClick){e.preventDefault();e.stopImmediatePropagation()}},true);
+}
+enableRoomDragging();
+function seat(r,time,area,num,table=null){const block=blockFor(time,area,num),key=blockKey(time,area,num),chosen=block?selectedBlockedId===Number(block.id):selectedBlocks.has(key);if(block)return `<button class="seat blocked ${chosen?'selected':''}" onclick="selectBlock('${time}','${area}',${num})" aria-label="${time} ${area} ブロック解除を選択">ブロック中${block.note?`<div class="meta">${escapeHtml(block.note)}</div>`:''}</button>`;if(!r)return emptyBoardSeat(time,area,num,chosen,table);return `<button ${roomDropAttributes(area,r.private3_table,r.id)} class="seat busy ${r.status==='CONFIRMED'?'confirmed':''}" onclick="showSeatDetail(${Number(r.id)})" aria-label="${escapeHtml(r.guest_name)}様の予約詳細"><div class="name">${requestItems(r).length?'<span class="request-marker" aria-label="花束・ケーキのリクエストあり">✅</span>':''}${escapeHtml(r.guest_name)}</div>${r.vip_through?'<div class="meta">通し '+escapeHtml(r.visit_at.slice(11,16))+'〜23:00</div>':r.special_meal_count!=null?'<div class="meta">時間指定予約 '+escapeHtml(r.visit_at.slice(11,16))+'</div>':!['18:00','20:30'].includes(r.visit_at.slice(11,16))?'<div class="meta">開始 '+escapeHtml(r.visit_at.slice(11,16))+'</div>':''}<div class="meta">${escapeHtml(r.party_size)}名 · ¥${Number(r.amount||0).toLocaleString()}</div><span class="badge ${escapeHtml(r.status)}">${paymentLabel(r)}</span></button>`}
 function emptyBoardSeat(time,area,num,chosen=false,table=null){
   const mode=!$('blockCard').hidden&&blockArea===(area==='COUNTER'?'COUNTER':'PRIVATE');
   const label=area==='COUNTER'?`カウンター${num}番`:areaLabel({seating_area:area,private3_table:table});
   const action=mode?(table?'個室全体をブロック選択':'ブロック対象を選択'):'直接予約';
-  return `<button type="button" class="seat empty ${chosen?'selected':''}" onclick="chooseBoardSeat('${time}','${area}',${num},${table??'null'})" aria-label="${time} ${label} 空き ${action}">空き${table&&!mode?'<div class="meta">管理画面受付</div>':''}</button>`;
+  return `<button type="button" ${roomDropAttributes(area,table,0)} class="seat empty ${chosen?'selected':''}" onclick="chooseBoardSeat('${time}','${area}',${num},${table??'null'})" aria-label="${time} ${label} 空き ${action}">空き${table&&!mode?'<div class="meta">管理画面受付</div>':''}</button>`;
 }
 function chooseBoardSeat(time,area,num,table){
   const group=area==='COUNTER'?'COUNTER':'PRIVATE';
