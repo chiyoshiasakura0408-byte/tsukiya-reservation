@@ -1773,7 +1773,8 @@ def move_to_counter(c, r, buyout):
     rid = r["id"]
     round_number = 1 if clock == "18:00" else 2
     ok, message = availability_check(c, "COUNTER", r["visit_at"], r["party_size"],
-                                     round_number, int(r["duration_minutes"] or 150), rid)
+                                     round_number, int(r["duration_minutes"] or 150), rid,
+                                     private3_table=r["private3_table"], allow_room_exception=r["private3_table"] is not None)
     if not ok:
         raise ValueError(message)
     if buyout:
@@ -1992,11 +1993,11 @@ def swap_private_rooms(c, rid, data):
 
 
 def change_direct_time(c, rid, data):
-    """Change only the clock of an unpaid direct reservation, retaining its identity."""
+    """Change the start time of a confirmed regular reservation."""
     r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
     if not r:
         raise ValueError("予約が見つかりません")
-    if r["source"] != "DIRECT" or r["status"] != "CONFIRMED" or r["vip_through"] or r["special_meal_count"] is not None or r["square_invoice_id"] or r["payment_confirmed_at"]:
+    if r["status"] != "CONFIRMED" or r["vip_through"] or r["special_meal_count"] is not None:
         raise ValueError("この予約は時刻変更の対象外です")
     if data.get("expected_visit_at") != r["visit_at"]:
         raise ValueError("予約が更新されています。再読み込みしてください")
