@@ -1370,6 +1370,7 @@ def expiry_loop():
         except Exception as exc:
             print(f"Cancellation email worker failed: {type(exc).__name__}")
         try:
+            process_time_notices()
             email_sms.process(sys.modules[__name__])
         except Exception as exc:
             print(f"Guest email SMS worker failed: {type(exc).__name__}")
@@ -1992,6 +1993,70 @@ def swap_private_rooms(c, rid, data):
     return {"ok": True, "id": rid, "other_id": other_id}
 
 
+def queue_time_notice(c, r, visit):
+    c.execute("""CREATE TABLE IF NOT EXISTS time_change_notices (
+        id INTEGER PRIMARY KEY, reservation_id INTEGER NOT NULL, channel TEXT NOT NULL,
+        recipient TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'PENDING', provider_id TEXT)""")
+    old = r["visit_at"].replace("T", " ")[:16]
+    new = visit.replace("T", " ")[:16]
+    if r["booking_language"] == "en":
+        subject = "Nishitenma Tsukiya | Reservation time changed"
+        body = f"Dear {r['guest_name']},\nYour reservation time has changed (Japan time).\nPrevious: {old}\nNew: {new}\nWe look forward to welcoming you.\nNishitenma Tsukiya"
+    else:
+        subject = "【西天満つきや】ご予約時間変更のご案内"
+        body = f"{r['guest_name']}様\n西天満つきやです。ご予約の開始時刻を変更いたしました。\n変更前：{old}\n変更後：{new}\n当日のご来店を心よりお待ちしております。"
+    ids = []
+    for channel, field in (("メール", "email"), ("SMS", "phone")):
+        recipient = (r[field] or "").strip()
+        if recipient:
+            row = c.execute("INSERT INTO time_change_notices (reservation_id,channel,recipient,subject,body) VALUES(?,?,?,?,?)",
+                            (r["id"], channel, recipient, subject, body))
+            ids.append(row.lastrowid)
+    return ids
+
+
+def dispatch_time_notice(c, notice_id):
+    with c:
+        claimed = c.execute("UPDATE time_change_notices SET state='SENDING' WHERE id=? AND state='PENDING'", (notice_id,)).rowcount
+    row = c.execute("SELECT * FROM time_change_notices WHERE id=?", (notice_id,)).fetchone()
+    if claimed:
+        provider_id = None
+        try:
+            if row["channel"] == "SMS":
+                result = send_sms(row["recipient"], body=row["body"])
+                provider_id = result.get("sid")
+                if not provider_id or result.get("status") in ("failed", "undelivered", "canceled"):
+                    raise ValueError("SMS rejected")
+            else:
+                msg = EmailMessage()
+                msg["From"], msg["To"], msg["Subject"] = mail_sender(), row["recipient"], row["subject"]
+                msg.set_content(row["body"])
+                with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
+                    smtp.starttls()
+                    smtp.login(SMTP_USER, SMTP_PASS)
+                    smtp.send_message(msg)
+            state = "ACCEPTED"
+        except Exception as exc:
+            print("Time change notice requires review:", notice_id, type(exc).__name__)
+            state = "REVIEW"
+        with c:
+            c.execute("UPDATE time_change_notices SET state=?,provider_id=? WHERE id=?", (state, provider_id, notice_id))
+    else:
+        state = row["state"]
+    return row["channel"] + ("送信受付済み" if state == "ACCEPTED" else "送信結果を要確認")
+
+
+def process_time_notices():
+    c = con()
+    try:
+        if c.execute("SELECT 1 FROM sqlite_master WHERE name='time_change_notices'").fetchone():
+            for row in c.execute("SELECT id FROM time_change_notices WHERE state='PENDING' ORDER BY id LIMIT 20").fetchall():
+                dispatch_time_notice(c, row["id"])
+    finally:
+        c.close()
+
+
 def change_direct_time(c, rid, data):
     """Change the start time of a confirmed regular reservation."""
     r = c.execute("SELECT * FROM reservations WHERE id=?", (rid,)).fetchone()
@@ -2011,10 +2076,11 @@ def change_direct_time(c, rid, data):
     ok, message = availability_check(c, r["seating_area"], visit, r["party_size"], rnd, int(r["duration_minutes"] or 150), rid)
     if not ok:
         raise ValueError(message)
-    if visit != r["visit_at"]:
+    if parse_dt(visit) != parse_dt(r["visit_at"]):
         note = (r["guest_note"] or "") + "\n【開始時刻変更】" + r["visit_at"] + " → " + visit
         c.execute("UPDATE reservations SET visit_at=?,counter_round=?,guest_note=?,updated_at=? WHERE id=?", (visit, rnd, note, now_iso(), rid))
-    return {"ok": True, "visit_at": visit}
+        return {"ok": True, "visit_at": visit, "notice_ids": queue_time_notice(c, r, visit)}
+    return {"ok": True, "visit_at": visit, "notification": "同じ時刻のため変更はありません。"}
 
 
 def change_direct_party(c, rid, data):
@@ -4224,6 +4290,10 @@ class Handler(
                 result = {"time": change_direct_time, "party": change_direct_party, "room": change_direct_room,
                           "room-swap": swap_private_rooms, "room-batch": change_private_rooms_together}[time_change[2]](c, int(time_change[1]), data)
                 c.commit()
+                if "notice_ids" in result:
+                    ids = result.pop("notice_ids")
+                    states = [dispatch_time_notice(c, ident) for ident in ids]
+                    result["notification"] = "時間変更を保存しました。" + ("・".join(states) if states else "通知先が未登録です。お客様に直接ご連絡ください。")
                 return self.send_json(result)
             except (ValueError, TypeError) as exc:
                 c.rollback()
