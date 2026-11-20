@@ -1434,6 +1434,10 @@ APPROVED_CLOSED_COUNTER_SLOT = ("COUNTER", "2026-11-18T21:00", "23:00", 4)
 APPROVED_CLOSED_COUNTER_BOOKING = "3c48012cd3747bf2ae6b4aceca59261062ef8bf73085339270e6e20914a45a8e"
 
 
+def direct_whole_room3(direct, area, party):
+    return direct and area == "PRIVATE3" and party == 3
+
+
 def special_slot_availability(c, area, visit_at, end_time, party, *, allow_room_exception=False,
                               allow_closed_counter=False):
     duration = special_slot_duration(visit_at, end_time)
@@ -3584,6 +3588,7 @@ class Handler(
             c = con()
 
             try:
+                whole_room3 = direct_whole_room3(q.get("entry_mode") == ["direct"], area, party)
                 if "private3_table" in q:
                     table_text = q["private3_table"][0]
                     if area != "PRIVATE3" or table_text not in ("1", "2") or q.get("time_specified") == ["1"]:
@@ -3597,6 +3602,7 @@ class Handler(
                     end = q["special_end_time"][0]
                     selected, _, _, message = special_slot_availability(
                         c, area, visit, end, party,
+                        allow_room_exception=whole_room3,
                         allow_closed_counter=(area, visit, end, party) == APPROVED_CLOSED_COUNTER_SLOT,
                     )
                     ok = True
@@ -3605,7 +3611,7 @@ class Handler(
                     room, _, _ = vip_slots.staff_slot(sys.modules[__name__],c,area,visit,party)
                     ok, msg = True, f"個室{room[-1]}に空きがあります（23:00まで）"
                 else:
-                    ok, msg = availability_check(c,area,visit,party,rnd,dur)
+                    ok, msg = availability_check(c,area,visit,party,rnd,dur, allow_room_exception=whole_room3)
 
             except Exception as e:
                 ok = False
@@ -5087,6 +5093,7 @@ class Handler(
                             approved_closed_counter = hashlib.sha256(key.encode()).hexdigest() == APPROVED_CLOSED_COUNTER_BOOKING
                         area, rnd, dur, msg = special_slot_availability(
                             c, area, x["visit_at"], end, party,
+                            allow_room_exception=direct_whole_room3(direct, area, party),
                             allow_closed_counter=approved_closed_counter,
                         )
                         ok = True
@@ -5102,7 +5109,8 @@ class Handler(
                     if area == "PRIVATE":
                         area = next((room for room in ROOMS if public_party_allowed(room, party) and availability_check(c, room, x["visit_at"], party, None, dur, allow_custom_start=approved_exception)[0]), "PRIVATE")
                     ok,msg = availability_check(c,area,x["visit_at"],party,rnd,dur,
-                                                allow_custom_start=approved_exception)
+                                                allow_custom_start=approved_exception,
+                                                allow_room_exception=direct_whole_room3(direct, area, party))
 
             except Exception as e:
                 c.rollback()
