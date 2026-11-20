@@ -15,6 +15,9 @@ FIELDS = ('id', 'source', 'guest_name', 'phone', 'email', 'visit_at', 'party_siz
           'course_name', 'amount', 'seating_area', 'counter_round', 'duration_minutes',
           'status', 'payment_method', 'guest_note', 'celebration_items', 'plate_message',
           'customer_id', 'special_meal_count', 'confirmation_note', 'created_at', 'updated_at')
+SPECIAL_LIST_FIELDS = ('id', 'guest_name', 'visit_at', 'duration_minutes', 'seating_area',
+                       'party_size', 'special_meal_count', 'status', 'amount')
+SPECIAL_DETAIL_FIELDS = SPECIAL_LIST_FIELDS + ('course_name', 'payment_method', 'customer_id')
 CREATE_FIELDS = {'mode', 'request_id', 'guest_name', 'phone', 'email', 'visit_at',
                  'party_size', 'seating_area', 'customer_id', 'guest_note',
                  'celebration_items', 'plate_message', 'confirmation_note',
@@ -79,7 +82,8 @@ def handle_get(h, app, path, query):
     if not (path == PREFIX or path.startswith(PREFIX + '/')):
         return False
     scope = auth_scope(h)
-    if not scope or (scope == 'special' and path not in
+    detail_match = re.fullmatch(PREFIX + r'/reservations/(\d+)', path)
+    if not scope or (scope == 'special' and not detail_match and path not in
                      (PREFIX + '/reservations', PREFIX + '/availability')):
         reject(h)
         return True
@@ -90,10 +94,10 @@ def handle_get(h, app, path, query):
             return True
         c = app.con()
         try:
-            match = re.fullmatch(PREFIX + r'/reservations/(\d+)', path)
-            if match:
-                row = c.execute('SELECT * FROM reservations WHERE id=?', (int(match[1]),)).fetchone()
-                h.send_json(clean(dict(row)) if row else {'error': '予約が見つかりません'}, 200 if row else 404)
+            if detail_match:
+                row = c.execute('SELECT * FROM reservations WHERE id=?', (int(detail_match[1]),)).fetchone()
+                fields = SPECIAL_DETAIL_FIELDS if scope == 'special' else FIELDS
+                h.send_json({field: row[field] for field in fields if field in row.keys()} if row else {'error': '予約が見つかりません'}, 200 if row else 404)
             elif path == PREFIX + '/reservations':
                 start = date.fromisoformat(query.get('from_date', [''])[0])
                 end = date.fromisoformat(query.get('to_date', [start.isoformat()])[0])
@@ -107,9 +111,7 @@ def handle_get(h, app, path, query):
                     AND id>? ORDER BY id LIMIT ?''', (start.isoformat(), end.isoformat(), after_id, limit + 1)).fetchall()
                 reservations = [clean(dict(row)) for row in rows[:limit]]
                 if scope == 'special':
-                    fields = ('id', 'guest_name', 'visit_at', 'duration_minutes', 'seating_area',
-                              'party_size', 'special_meal_count', 'status', 'amount')
-                    reservations = [{field: row[field] for field in fields} for row in reservations]
+                    reservations = [{field: row[field] for field in SPECIAL_LIST_FIELDS} for row in reservations]
                 h.send_json({'reservations': reservations,
                              'next_after_id': rows[limit - 1]['id'] if len(rows) > limit else None,
                              'timezone': 'Asia/Tokyo'})
