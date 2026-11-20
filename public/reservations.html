@@ -611,6 +611,7 @@ function onTimeChange(){
 }
 function canApproveRoom3(){
   const area=$('area').value,table=roomBatchSeat(area).private3_table;
+  if(entryMode==='direct'&&area==='PRIVATE3'&&$('party').value==='3')return false;
   return (table||(entryMode==='direct'&&['PRIVATE','PRIVATE3'].includes(area)))&&['2','3','4'].includes($('party').value)&&$('visitTime').value!=='custom';
 }
 function updateEntryButtons(){
@@ -633,7 +634,7 @@ if(special&&!timeError)$('specialTimeSummary').textContent=`${selectedTime()}〜
 const seq=++availabilitySeq;const date=$('visitDate').value,party=Number($('party').value);$('suggestions').hidden=true;updateCourse();if(!date||party<1||!selectedTime()){
   $('availability').textContent='';
   return;
-}const at=`${date}T${selectedTime()}`;const seat=roomBatchSeat($('area').value);const q=new URLSearchParams({time_specified:$('visitTime').value==='custom'?'1':'0',visit_at:at,seating_area:seat.seating_area,party_size:party,counter_round:$('area').value==='COUNTER'?($('visitTime').value==='18:00'?'1':'2'):''});if(seat.private3_table)q.set('private3_table',seat.private3_table);if(special){
+}const at=`${date}T${selectedTime()}`;const seat=roomBatchSeat($('area').value);const q=new URLSearchParams({time_specified:$('visitTime').value==='custom'?'1':'0',visit_at:at,seating_area:seat.seating_area,party_size:party,counter_round:$('area').value==='COUNTER'?($('visitTime').value==='18:00'?'1':'2'):''});if(entryMode==='direct')q.set('entry_mode','direct');if(seat.private3_table)q.set('private3_table',seat.private3_table);if(special){
   if(timeError){$('availability').textContent=timeError[1];return}
   q.set('special_end_time',$('specialEndTime').value);
 }
