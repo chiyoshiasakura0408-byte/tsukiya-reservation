@@ -94,7 +94,10 @@ def receive(db, raw, signature):
             staff_ids.discard(None)
             staff_ids.discard('')
             # Existing booking, inventory and shift workflows always take priority.
-            claimed |= line_reservations.ingest(c, raw, signature, payload)
+            import vip_liff
+            vip_events = {e["webhookEventId"] for e in new_events if vip_liff.owner_reply(c,e)}
+            claimed |= vip_events
+            claimed |= line_reservations.ingest(c, raw, signature, {"events":[e for e in new_events if e["webhookEventId"] not in vip_events]})
             claimed |= supplies.ingest(c, events, os.getenv('APP_BASE_URL', '').strip().rstrip('/'))
             faq_events = []
             for e in new_events:

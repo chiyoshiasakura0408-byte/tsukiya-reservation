@@ -7,7 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import concierge
 import concierge_menu
 import vip_access
@@ -128,7 +128,108 @@ def handle(db, action, data, base_url):
             if note.strip():body+='\n\nご要望：'+note.strip()
             c.execute('INSERT INTO concierge_requests(id,user_id,body,created) VALUES(?,?,?,?)',(request_id,user,body,time.time()))
             c.execute('INSERT INTO vip_liff_requests VALUES(?,?,?,?,?)',(user,nonce,request_id,payload,time.time()))
-            concierge.enqueue(c,owner,[concierge.text_message(body+'\n\n受付：'+request_id+'\n管理画面：'+base_url+'/concierge',False)],channel='owner',kind='request')
+            notice = concierge.enqueue(c,owner,[concierge.text_message(body+'\n\n受付：'+request_id+'\nこの通知に「確定」とリプライすると予約登録、それ以外の文章はお客様へ送信されます。\n管理画面：'+base_url+'/concierge',False)],channel='owner',kind='request')
+            c.execute('INSERT INTO vip_notice_links VALUES (?,?)',(notice,request_id))
         return {'request_id':request_id,'status':'requested','confirmed':False}
     finally:c.close()
 
+
+
+def remember_notice(c, row, response_body):
+    if row['kind'] != 'request' or row['channel'] != 'owner':
+        return
+    link = c.execute('SELECT request_id FROM vip_notice_links WHERE outbox_id=?',(row['id'],)).fetchone()
+    if link:
+        for message in json.loads(response_body or b'{}').get('sentMessages', []):
+            mid = str(message.get('id', ''))
+            if re.fullmatch(r'\d{1,30}', mid):
+                c.execute('INSERT OR IGNORE INTO vip_message_links VALUES(?,?,?)',(mid,link[0],row['user_id']))
+
+
+def owner_reply(c,event):
+    src = event.get('source', {})
+    msg = event.get('message', {})
+    owner = concierge.setting(c,'owner')
+    if not owner or src.get('type') != 'user' or src.get('userId') != owner or msg.get('type') != 'text':
+        return False
+    quoted = msg.get('quotedMessageId')
+    command = (msg.get('text') or '').strip()
+    if quoted:
+        link = c.execute('SELECT request_id FROM vip_message_links WHERE message_id=? AND destination=?',(quoted,owner)).fetchone()
+        if not link:
+            if command in ('予約確定','確定'):
+                concierge.enqueue(c,owner,[concierge.text_message('引用元をVIP受付に照合できません。VIP予約は「確定 受付番号」と送信してください。',False)],channel='owner')
+                return True
+            return False
+        request_id = link[0]
+        customer_message = None if command in ('確定','予約確定') else command
+    else:
+        match = re.fullmatch(r'(?:予約)?確定\s+([a-f0-9]{12})',command)
+        reply = re.fullmatch(r'返信\s+([a-f0-9]{12})\s+([\s\S]+)',command)
+        if not match and not reply:
+            return False
+        request_id = (match or reply)[1]
+        customer_message = reply[2] if reply else None
+    schema(c)
+    request = c.execute('SELECT l.*,r.status FROM vip_liff_requests l JOIN concierge_requests r ON r.id=l.request_id WHERE l.request_id=?',(request_id,)).fetchone()
+    try:
+        if customer_message is None:
+            import run
+            result = confirm_booking(run,c,request)
+        else:
+            if not request or not vip_access.approved(c,request['user_id']):
+                raise ValueError('受付番号とVIP利用状況をご確認ください。')
+            if not customer_message or len(customer_message.encode('utf-16-le'))//2 > 5000:
+                raise ValueError('送信する本文は1〜5000文字で入力してください。')
+            delivery = concierge.enqueue(c,request['user_id'],[{'type':'text','text':customer_message}],kind='vip-owner-message')
+            c.execute('INSERT INTO vip_reply_deliveries VALUES(?,?,?)',(delivery,request_id,owner))
+            result = 'お客様へのLINE送信を受け付けました。'
+    except ValueError as exc:
+        result = str(exc)
+    concierge.enqueue(c,owner,[concierge.text_message('受付 '+request_id+'\n'+result,False)],channel='owner')
+    return True
+
+
+def confirm_booking(app,c,request):
+    if not request:
+        raise ValueError('VIP予約リクエストが見つかりません。')
+    key = 'vip-request:'+request['request_id']
+    existing = c.execute('SELECT id,status FROM reservations WHERE public_request_id=?',(key,)).fetchone()
+    if existing:
+        return f"登録済み予約 #{existing['id']}（{existing['status']}）"
+    if request['status'] != '未回答' or not vip_access.approved(c,request['user_id']):
+        raise ValueError('回答状況・VIP承認状況を管理画面で確認してください。')
+    x = json.loads(request['payload'])
+    cid = c.execute('SELECT customer_id FROM vip_access WHERE user_id=?',(request['user_id'],)).fetchone()[0]
+    customer = c.execute('SELECT phone,email FROM customers WHERE id=?',(cid,)).fetchone()
+    if not customer:
+        raise ValueError('連携顧客を確認してください。')
+    app.booking_blocks.ensure_allowed(c,customer['phone'],customer['email'],cid,staff=True)
+    visit = x['date']+'T'+x['time']
+    when = datetime.fromisoformat(visit)
+    duration = x.get('duration_minutes') or 120
+    end = when + timedelta(minutes=duration)
+    course = app.bookable_course(when.date())
+    if not course or end.date()!=when.date():
+        raise ValueError('コース・利用時間を確認してください。')
+    rows = c.execute('SELECT guest_name,customer_id FROM reservations WHERE substr(visit_at,1,10)=? AND status IN (?,?,?,?)',(x['date'],*app.ACTIVE_STATUSES))
+    if any(r['customer_id']==cid or app.line_reservations.norm(r['guest_name'])==app.line_reservations.norm(x['name']) for r in rows):
+        raise ValueError('同日の既存予約を確認してください。')
+    through = x['venue']=='annex' and (x['time'] not in ('18:00','20:30') or duration!=120)
+    requested_area = 'COUNTER' if x['venue']=='main' else 'PRIVATE'
+    if through:
+        requested_area = next((room for room in app.ROOMS if app.vip_slots.choose(app,c,x['date'],room,x['party']) is not None and app.availability_check(c,room,visit,x['party'],None,duration,special_slot=True)[0]),None)
+        if not requested_area:
+            raise ValueError('通しで利用できる個室に空きがありません。')
+    area,rnd,_,_ = app.special_slot_availability(c,requested_area,visit,end.strftime('%H:%M'),x['party'])
+    items = [v for v in ({'whole':'ホールケーキ','cut':'カットケーキ'}.get(x.get('cake_type')), '花束' if x.get('bouquet') else None) if v]
+    ts = app.now_iso()
+    rid = c.execute("""INSERT INTO reservations(source,status,public_request_id,customer_id,guest_name,phone,email,visit_at,
+        party_size,course_name,amount,seating_area,counter_round,duration_minutes,vip_booking,vip_through,guest_note,
+        celebration_items,plate_message,created_at,updated_at) VALUES('DIRECT','CONFIRMED',?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)""",
+        (key,cid,x['name'],customer['phone'],customer['email'],visit,x['party'],course[0],course[1]*x['party'],area,rnd,duration,
+         int(through),x.get('note',''),','.join(items),x.get('plate_name',''),ts,ts)).lastrowid
+    detail = f"{x['name']}様　{x['date']} {x['time']}　{x['party']}名様"
+    delivery = concierge.enqueue(c,request['user_id'],[concierge.text_message(detail+'\nご予約を承りました。',False)],kind='answer')
+    c.execute("UPDATE concierge_requests SET status='回答送信待ち',delivery_id=? WHERE id=?",(delivery,request['request_id']))
+    return f'予約 #{rid} を確定しました。\n'+detail

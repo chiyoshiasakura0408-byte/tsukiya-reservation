@@ -34,6 +34,9 @@ def connect(db):
     CREATE TABLE IF NOT EXISTS concierge_requests (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,body TEXT NOT NULL,created REAL NOT NULL,status TEXT NOT NULL DEFAULT '未回答',delivery_id TEXT);
     CREATE TABLE IF NOT EXISTS concierge_outbox (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,channel TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',created REAL NOT NULL,next_try REAL NOT NULL,attempts INTEGER DEFAULT 0,error TEXT);
     CREATE TABLE IF NOT EXISTS english_notice_links(outbox_id TEXT PRIMARY KEY,request_id TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS vip_reply_deliveries(outbox_id TEXT PRIMARY KEY,request_id TEXT NOT NULL,owner TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS vip_notice_links(outbox_id TEXT PRIMARY KEY,request_id TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS vip_message_links(message_id TEXT PRIMARY KEY,request_id TEXT NOT NULL,destination TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS english_message_links(message_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,request_id TEXT NOT NULL,destination TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS reservation_notice_links(outbox_id TEXT PRIMARY KEY,reservation_id INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS reservation_message_links(message_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,reservation_id INTEGER NOT NULL,destination TEXT NOT NULL);
@@ -559,9 +562,16 @@ def deliver(db):
                         error, retryable = 'LINE connection failed', True
                 with c:
                     if accepted:
+                        import vip_liff
+                        vip_liff.remember_notice(c,row,response_body)
                         remember_reservation_messages(c,row,response_body)
                         import english_concierge
                         english_concierge.remember_messages(c,row,response_body)
+                    if row['kind'] == 'vip-owner-message' and (accepted or not retryable):
+                        reply = c.execute('SELECT * FROM vip_reply_deliveries WHERE outbox_id=?',(row['id'],)).fetchone()
+                        if reply:
+                            status = 'LINEがメッセージを受け付けました。' if accepted else 'お客様へのLINE送信に失敗しました。'
+                            enqueue(c,reply['owner'],[text_message('受付 '+reply['request_id']+'\n'+status,False)],channel='owner')
                     if row['kind'] == 'answer' and (accepted or not retryable):
                         c.execute('UPDATE concierge_requests SET status=? WHERE delivery_id=?', ('回答LINE受付済み' if accepted else '回答送信失敗', row['id']))
                     c.execute('UPDATE concierge_outbox SET state=?,error=?,attempts=attempts+1,next_try=? WHERE id=?',
