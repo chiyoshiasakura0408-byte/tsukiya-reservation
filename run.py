@@ -1496,6 +1496,14 @@ def availability_check(
 
     visit = parse_dt(visit_at)
 
+    if (
+        seating_area == "COUNTER"
+        and date(2026, 11, 24) <= visit.date() <= date(2027, 3, 20)
+        and (visit.hour, visit.minute) == (20, 30)
+        and not restore_existing
+    ):
+        return False, "2027年3月20日まで、本店第2部（20:30）の新規予約受付を停止しております。"
+
     closure_reason = booking_policy.main_restaurant_closure_reason(visit.date(), seating_area)
     if closure_reason and not (restore_existing or (special_slot and allow_closed_counter)):
         return False, closure_reason
@@ -5500,7 +5508,6 @@ if __name__ == "__main__":
         ),
         Handler
     ).serve_forever()
-
 
 
 
