@@ -1,13 +1,15 @@
 (function () {
   let loading = false;
   const money = n => '¥' + Number(n).toLocaleString('ja-JP');
+  const editing = () => window.editingReservation?.() === true;
   async function refresh() {
-    if (loading || document.hidden) return;
+    if (loading || document.hidden || editing()) return;
     loading = true;
     try {
       const response = await fetch('/api/customer-party-changes', {cache: 'no-store', credentials: 'same-origin'});
       if (!response.ok) return;
       const {changes} = await response.json();
+      if (editing()) return;
       let panel = document.getElementById('customerPartyAdjustments');
       if (!changes.length && !panel) return;
       if (!panel) {
