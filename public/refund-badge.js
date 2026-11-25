@@ -12,13 +12,15 @@
     return badge;
   });
   let busy = false;
+  const editing = () => window.editingReservation?.() === true;
   async function refresh() {
-    if (busy) return;
+    if (busy || editing()) return;
     busy = true;
     try {
       const response = await fetch('/api/refunds', {cache: 'no-store'});
       if (!response.ok) throw new Error('unavailable');
       const data = await response.json();
+      if (editing()) return;
       const count = data.action_required_count;
       if (!Number.isInteger(count) || count < 0) throw new Error('invalid count');
       for (const badge of badges) {
@@ -28,6 +30,7 @@
         badge.title = `返金対応 ${count}件`;
       }
     } catch (_) {
+      if (editing()) return;
       for (const badge of badges) {
         badge.hidden = false;
         badge.textContent = '!';
