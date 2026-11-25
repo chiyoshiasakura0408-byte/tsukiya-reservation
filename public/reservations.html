@@ -236,7 +236,7 @@ function renderPrivate3Tables(rows,time){
 function updateBoardDate(){const day=$('day').value,label=$('boardDate');label.hidden=!$('dayCard').hidden||!day;label.dateTime=day;if(!day){label.textContent='';return}const date=new Date(day+'T12:00:00+09:00');label.textContent=new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Tokyo',year:'numeric',month:'long',day:'numeric',weekday:'short'}).format(date)}
 function updateBoardLayout(){updateBoardDate();const layout=$('topLayout');layout.classList.toggle('phone-hidden',$('phoneCard').hidden);layout.classList.toggle('board-only',$('phoneCard').hidden&&$('dayCard').hidden)}
 function toggleDay(show){$('dayCard').hidden=!show;$('openDay').hidden=show;updateBoardLayout()}
-function togglePhone(show){$('phoneCard').hidden=!show;$('openPhone').hidden=show;if(show){$('phoneForm').hidden=false;$('reservationDetail').hidden=true}updateBoardLayout()}
+function togglePhone(show){entryEditing=show;$('phoneCard').hidden=!show;$('openPhone').hidden=show;if(show){$('phoneForm').hidden=false;$('reservationDetail').hidden=true}updateBoardLayout()}
 function showBlockControls(area){blockArea=area;$('blockCard').hidden=false;$('blockTitle').textContent=(area==='COUNTER'?'カウンター':'個室')+'の席ブロック';render();$('blockCard').scrollIntoView({behavior:'smooth',block:'nearest'})}
 function closeBlockControls(){
   $('blockCard').hidden=true;
@@ -669,9 +669,10 @@ if(approveRoom3){
   body.approve_private3_table=true;
   headers['X-Tsukiya-Action']='approve-private3-table';
 }
-try{phoneSubmitting=true;updateEntryButtons();const r=await api(entryMode==='direct'?'/api/reservations/direct':'/api/reservations/phone',{method:'POST',headers,body:JSON.stringify(body)});if(entryMode==='direct'||r.source==='DIRECT'){directSubmitted=true;$('submitPhone').textContent='登録済み';const sent=!!r.confirmation_sent_at;$('notice').textContent=`${r.guest_name}様の直接予約 #${r.id} を${r.private3_table?'個室③ '+tableLabel(r.private3_table)+'で':''}確定しました。${sent?'確定メールを送信しました。':!r.email?'メール未登録のため通知は送信していません。':'確定メールは未送信または送信要確認です。決済管理で送信状況を確認してください。'}前受け請求は送信していません。`;$('boardMessage').textContent=$('notice').textContent;await load();return;}$('notice').textContent=`${r.guest_name}様の電話予約 #${r.id} を登録しました。`+(r.status==='INVOICED'?(r.email?'Square請求書を発行し、メール送信を手配しました。':r.invoice_sms_status==='QUEUED'?'Square請求書を発行し、SMS送信を受け付けました。':'Square請求書は発行済みですが、SMS送信は要確認です。決済管理で確認してください。'):r.status==='ERROR'?'請求書の自動発行に失敗しました。予約は保存済みです。決済管理でこの予約のSquare請求を再試行してください。':'請求処理中です。決済管理でこの予約を確認してください。');$('boardMessage').textContent=$('notice').textContent;directRequestId=null;for(const id of ['name','phone','email','phoneNote','confirmationNote','plateMessage'])$(id).value='';document.querySelectorAll('[data-celebration].active').forEach(b=>toggleCelebration(b));await load()}catch(e){$('notice').textContent=e.message;checkAvailability()}finally{phoneSubmitting=false;updateEntryButtons()}}
+try{phoneSubmitting=true;updateEntryButtons();const r=await api(entryMode==='direct'?'/api/reservations/direct':'/api/reservations/phone',{method:'POST',headers,body:JSON.stringify(body)});entryEditing=false;if(entryMode==='direct'||r.source==='DIRECT'){directSubmitted=true;$('submitPhone').textContent='登録済み';const sent=!!r.confirmation_sent_at;$('notice').textContent=`${r.guest_name}様の直接予約 #${r.id} を${r.private3_table?'個室③ '+tableLabel(r.private3_table)+'で':''}確定しました。${sent?'確定メールを送信しました。':!r.email?'メール未登録のため通知は送信していません。':'確定メールは未送信または送信要確認です。決済管理で送信状況を確認してください。'}前受け請求は送信していません。`;$('boardMessage').textContent=$('notice').textContent;await load();return;}$('notice').textContent=`${r.guest_name}様の電話予約 #${r.id} を登録しました。`+(r.status==='INVOICED'?(r.email?'Square請求書を発行し、メール送信を手配しました。':r.invoice_sms_status==='QUEUED'?'Square請求書を発行し、SMS送信を受け付けました。':'Square請求書は発行済みですが、SMS送信は要確認です。決済管理で確認してください。'):r.status==='ERROR'?'請求書の自動発行に失敗しました。予約は保存済みです。決済管理でこの予約のSquare請求を再試行してください。':'請求処理中です。決済管理でこの予約を確認してください。');$('boardMessage').textContent=$('notice').textContent;directRequestId=null;for(const id of ['name','phone','email','phoneNote','confirmationNote','plateMessage'])$(id).value='';document.querySelectorAll('[data-celebration].active').forEach(b=>toggleCelebration(b));await load()}catch(e){$('notice').textContent=e.message;checkAvailability()}finally{phoneSubmitting=false;updateEntryButtons()}}
 
 async function logout(){await fetch('/api/logout',{method:'POST',credentials:'same-origin'});location.href='/login'}
+let entryEditing=false;
 const snapshotParams=new URLSearchParams(location.search),snapshotMode=snapshotParams.get('snapshot')==='1';const japanToday=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());const requestedDay=snapshotParams.get('date');$('day').value=snapshotMode&&/^\d{4}-\d{2}-\d{2}$/.test(requestedDay||'')?requestedDay:japanToday;$('visitDate').value=$('day').value;if(snapshotMode){document.body.classList.add('snapshot');document.body.dataset.snapshotReady='false';toggleDay(false);togglePhone(false)}load();
 
 let entryMode='phone',linkedCustomerId=null,directRequestId=null,directSubmitted=false,directCustomers=[],phoneSubmitting=false,specialEndEdited=false,seatEntryActive=false;
@@ -733,7 +734,23 @@ function searchDirectCustomers(){const q=$('customerSearch').value.trim().toLowe
 async function selectDirectCustomer(id){try{const {customer:c}=await api('/api/customers/'+Number(id));linkedCustomerId=Number(c.id);$('name').value=c.name||'';$('phone').value=c.phone||'';$('email').value=c.email||'';$('customerSearch').value=c.name||'';$('customerMatches').innerHTML='';$('linkedCustomer').textContent=`${c.name}様の顧客情報に紐付きます。アレルギー：${c.allergies||'未登録'}／苦手食材：${c.disliked_foods||'未登録'}／好みの席：${c.preferred_seat||'未登録'}`;if(!c.email)$('notice').textContent='メール未登録でも当日精算で予約を確定できます。通知は送信しません。'}catch(e){$('notice').textContent=e.message}}
 const entryParams=new URLSearchParams(location.search);if(entryParams.get('mode')==='direct')startDirect('COUNTER',Number(entryParams.get('customer_id'))||null);else refreshEntryMode();
 let notificationPollBusy=false;
-async function pollOnlineReservations(){if(snapshotMode||document.hidden||notificationPollBusy)return;notificationPollBusy=true;try{const latest=await api('/api/reservations');reservations=latest;renderNotifications();renderNewReservations();renderOnline();render()}catch(e){/* Keep the last successful display on temporary network failures. */}finally{notificationPollBusy=false}}
+for(const event of ['focusin','input','change']){
+  $('phoneForm').addEventListener(event,()=>{entryEditing=true});
+}
+function editingReservation(){
+  return (entryEditing||phoneSubmitting)&&!$('phoneCard').hidden&&!$('phoneForm').hidden;
+}
+async function pollOnlineReservations(){
+  if(snapshotMode||document.hidden||notificationPollBusy||editingReservation())return;
+  notificationPollBusy=true;
+  try{
+    const latest=await api('/api/reservations');
+    if(editingReservation())return;
+    reservations=latest;
+    renderNotifications();renderNewReservations();renderOnline();render();
+  }catch(e){/* Keep the last successful display on temporary network failures. */}
+  finally{notificationPollBusy=false}
+}
 if(!snapshotMode)setInterval(pollOnlineReservations,30000);
 </script>
 
@@ -753,7 +770,16 @@ const phoneDayMode=()=>{const d=value('visitDate');if(!d)return 'standard';const
 function complete(id){if(id==='visitDate')return !!value(id);if(id==='party')return Number(value(id))>=1;if(id==='name')return !!value(id);if(id==='phone')return value(id).replace(/[^0-9]/g,'').length>=10;return !!value(id)}
 function update(scroll=false){const direct=typeof entryMode!=='undefined'&&entryMode==='direct';root.classList.toggle('script-mode',!direct);if(direct){stages.forEach(s=>s.hidden=false);extra.forEach(s=>s.hidden=false);payment.hidden=true;return}let next=ids.findIndex(id=>!complete(id));if(next<0)next=ids.length;stages.forEach((s,i)=>s.hidden=i>next);extra.forEach(s=>s.hidden=next<ids.length);payment.hidden=next<ids.length;const mode=phoneDayMode();const info=payment.querySelector('.script-guide');const title=payment.querySelector('strong');const label=payment.querySelector('label');if(mode==='same-day'){title.textContent='⑥ 当日精算のご案内';info.textContent='📞 「当日のご予約は事前決済なしで承っております。お料理代金はご来店当日にお支払いをお願いいたします。」';label.lastChild.textContent=' 当日精算をお客様にご案内済み'}else if(mode==='prior-day'){title.textContent='⑥ 事前決済のご案内';info.textContent='📞 「前日のご予約につきましては、お料理代金を事前決済で頂戴しております。決済のご案内をお送りしますので、請求発行から24時間以内にお支払いをお願いいたします。期限までに決済を確認できない場合、ご予約は取り消しとなります。決済完了後にご予約確定となります。」';label.lastChild.textContent=' 事前決済・期限をお客様にご案内済み'}else{title.textContent='⑥ 事前決済のご案内';info.textContent='📞 「ご予約ですが、お料理代金を事前決済で頂戴しておりまして、ご連絡先の電話番号宛てに決済のご案内をお送りさせていただきます。決済のお手続きが完了した時点で、ご予約確定となります。」\n※決済期限24時間（未決済の場合は取消し）';label.lastChild.textContent=' 事前決済・期限をお客様にご案内済み'};
 const ack=document.getElementById('phoneScriptAcknowledged');const summary=document.getElementById('phoneScriptSummary');summary.hidden=!ack.checked;if(ack.checked){const d=value('visitDate');const day=d?['日','月','火','水','木','金','土'][new Date(d+'T12:00:00').getDay()]:'';summary.textContent=['⑦ 最終確認','📞 「ご予約内容を確認させていただきます。」','','日にち：'+(d?d+'（'+day+'）':''),'時間：'+(typeof selectedTime==='function'?selectedTime():value('visitTime'))+'より','名前：'+value('name')+'様','人数：'+value('party')+'名様','',''+(mode==='same-day'?'📞 「当日はご来店時のお支払いとなります。お気をつけてお越しくださいませ。」':mode==='prior-day'?'📞 「決済のご案内をお送りします。請求発行から24時間以内のお支払いをお願いいたします。お支払い完了をもちましてご予約確定となります。」':'📞 「こちらの内容で決済のご案内をお送りいたします。お支払いの完了をもちまして、ご予約確定となります。」')+''].join(String.fromCharCode(10));summary.style.whiteSpace='pre-line'}if(scroll){const target=next<ids.length?stages[next]:payment;if(target&&!target.hidden){setTimeout(()=>{const panel=document.getElementById('phoneCard');const top=target.getBoundingClientRect().top-panel.getBoundingClientRect().top+panel.scrollTop-8;panel.scrollTo({top:Math.max(0,top),behavior:'smooth'})},120)}}}
-ids.forEach(id=>{const input=document.getElementById(id);input.addEventListener('change',()=>update(true));if(id==='name'||id==='phone'||id==='party')input.addEventListener('blur',()=>update(true))});document.getElementById('phoneScriptAcknowledged').addEventListener('change',()=>update(false));const obs=new MutationObserver(()=>update(false));obs.observe(document.getElementById('directContext'),{attributes:true,attributeFilter:['hidden']});update(false);
+ids.forEach(id=>{
+  const input=document.getElementById(id);
+  if(id==='name'||id==='phone'){
+    input.addEventListener('input',()=>update(false));
+    input.addEventListener('change',()=>update(false));
+  }else{
+    input.addEventListener('change',()=>update(true));
+  }
+});
+document.getElementById('phoneScriptAcknowledged').addEventListener('change',()=>update(false));const obs=new MutationObserver(()=>update(false));obs.observe(document.getElementById('directContext'),{attributes:true,attributeFilter:['hidden']});update(false);
 })();
 </script>
 </body>
