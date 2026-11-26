@@ -42,7 +42,9 @@ def auth_scope(h):
     supplied = values[0].encode()
     for scope, expected in (
         ('gpt', key()),
-        ('special', os.getenv('TSUKIYA_MCP_KEY', '')),
+        # The owner reservation connector uses the same complete booking
+        # workflow as the dedicated GPT, including counter reservations.
+        ('gpt', os.getenv('TSUKIYA_MCP_KEY', '')),
     ):
         if len(expected) >= 40 and hmac.compare_digest(supplied, ('Bearer ' + expected).encode()):
             return scope
