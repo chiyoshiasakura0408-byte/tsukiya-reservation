@@ -2716,7 +2716,12 @@ def reconcile_reservations():
         c = con()
         try:
             sync_customers(c)
-            rows = [dict(r) for r in c.execute("SELECT * FROM reservations WHERE status IN ('INVOICED','CONFIRMED') ORDER BY id")]
+            rows = [dict(r) for r in c.execute("""
+                SELECT * FROM reservations WHERE status IN ('INVOICED','CONFIRMED')
+                OR (status='CANCELLED' AND invoice_sms_sid IS NOT NULL
+                    AND invoice_sms_status IN ('QUEUED','SENDING','SENT')
+                    AND datetime(invoice_sms_sent_at) >= datetime('now','-30 days'))
+                ORDER BY id""")]
         finally:
             c.close()
         for row in rows:
