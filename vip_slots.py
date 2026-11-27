@@ -11,10 +11,10 @@ def counter_assignments(app,c,day,clock):
     rows=c.execute("SELECT * FROM reservations WHERE substr(visit_at,1,10)=? AND seating_area='COUNTER' AND (counter_round=? OR substr(visit_at,12,5)=? OR vip_through=1) AND status IN (?,?,?,?) ORDER BY id",(day,round_number,clock,*app.ACTIVE_STATUSES)).fetchall()
     assigned={}
     for row in rows:
-        if row['vip_through']:
+        if row['vip_through'] or row['counter_charter']:
             for n in json.loads(row['vip_seats'] or '[]'):assigned[n]=row['id']
     for row in rows:
-        if not row['vip_through']:
+        if not (row['vip_through'] or row['counter_charter']):
             free=[n for n in range(1,9) if n not in blocked and n not in assigned]
             for n in free[:row['party_size']]:assigned[n]=row['id']
     return assigned,blocked

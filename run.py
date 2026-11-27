@@ -350,6 +350,7 @@ def con():
         "duration_minutes": "INTEGER DEFAULT 150",
         "special_meal_count": "INTEGER",
         "vip_through": "INTEGER NOT NULL DEFAULT 0",
+        "counter_charter": "INTEGER NOT NULL DEFAULT 0",
         "vip_booking": "INTEGER NOT NULL DEFAULT 0",
         "vip_seats": "TEXT NOT NULL DEFAULT '[]'",
         "square_booking_id": "TEXT",
@@ -1438,6 +1439,27 @@ def direct_whole_room3(direct, area, party):
     return direct and area == "PRIVATE3" and party == 3
 
 
+def counter_charter_slot(c, visit_at, end_time, party):
+    duration = special_slot_duration(visit_at, end_time)
+    if not public_party_allowed("COUNTER", party):
+        raise ValueError("カウンターは2〜8名です")
+    start = visit_at[11:]
+    rounds = []
+    if start < "20:30":
+        rounds.append(1)
+    if end_time > "20:30":
+        rounds.append(2)
+    for number in rounds:
+        clock = "18:00" if number == 1 else "20:30"
+        assigned, blocked = vip_slots.counter_assignments(sys.modules[__name__], c, visit_at[:10], clock)
+        if assigned or blocked:
+            raise SpecialSlotUnavailable("対象の部に予約または席ブロックがあります")
+    if c.execute("SELECT 1 FROM seat_blocks WHERE visit_date=? AND seating_area='COUNTER' "
+                 "AND time_text>=? AND time_text<? LIMIT 1", (visit_at[:10], start, end_time)).fetchone():
+        raise SpecialSlotUnavailable("指定時間に席ブロックがあります")
+    return rounds[0], duration, len(rounds) == 2
+
+
 def special_slot_availability(c, area, visit_at, end_time, party, *, allow_room_exception=False,
                               allow_closed_counter=False):
     duration = special_slot_duration(visit_at, end_time)
@@ -1548,7 +1570,7 @@ def availability_check(
         sql = """
             SELECT
                 COALESCE(
-                    SUM(party_size),
+                    SUM(CASE WHEN counter_charter=1 THEN 8 ELSE party_size END),
                     0
                 ) n
             FROM reservations
@@ -5016,6 +5038,9 @@ class Handler(
             dur = 150
             special_meals = x.get("special_meal_count")
             special = special_meals is not None or "special_end_time" in x
+            charter = x.get("counter_charter", False)
+            if type(charter) is not bool or (charter and not (direct and special and area == "COUNTER")):
+                return self.send_json({"error": "貸切はカウンターの直接予約・時間指定で選択してください"}, 400)
             if special:
                 if (not direct or area not in ("COUNTER", "PRIVATE", *ROOMS) or rnd is not None
                         or type(special_meals) is not int or not 1 <= special_meals <= int(x["party_size"])):
@@ -5088,6 +5113,12 @@ class Handler(
                     try:
                         table = choose_private3_table(c, x["visit_at"], party, dur, special_slot=special,
                                                       requested_table=requested_table)
+                        ok, msg = True, ""
+                    except SpecialSlotUnavailable as exc:
+                        ok, msg = False, str(exc)
+                elif charter:
+                    try:
+                        rnd, dur, through = counter_charter_slot(c, x["visit_at"], x.get("special_end_time"), party)
                         ok, msg = True, ""
                     except SpecialSlotUnavailable as exc:
                         ok, msg = False, str(exc)
@@ -5196,6 +5227,9 @@ class Handler(
                       (confirmation_note, special_meals, table, cur.lastrowid))
             c.execute("UPDATE reservations SET vip_through=?,vip_booking=?,customer_id=? WHERE id=?",(int(through),int(booking_policy.approved_customer(c,linked_customer)),linked_customer,cur.lastrowid))
 
+            if charter:
+                c.execute("UPDATE reservations SET counter_charter=1,vip_seats=? WHERE id=?",
+                          (json.dumps(list(range(1, COUNTER_CAPACITY + 1))), cur.lastrowid))
             if not direct and request_id:
                 c.execute("UPDATE reservations SET public_request_id=? WHERE id=?", ("phone:" + request_id, cur.lastrowid))
             if direct:

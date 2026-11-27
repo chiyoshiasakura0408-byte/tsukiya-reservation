@@ -75,6 +75,20 @@ class GPTAPITest(unittest.TestCase):
         self.assertEqual(c.execute('SELECT count(*) FROM reservations').fetchone()[0], 1)
         self.assertEqual(c.execute('SELECT count(*) FROM gpt_api_audit').fetchone()[0], 2)
         c.close()
+    def test_counter_charter_crosses_rounds_at_actual_party_price(self):
+        self.body.update(mode='special', seating_area='COUNTER', visit_at='2099-12-06T20:00',
+                         special_end_time='23:00', special_meal_count=6, party_size=6, counter_charter=True)
+        row = self.create()
+        self.assertEqual(self.create(), row)
+        self.assertEqual((row['counter_charter'], row['party_size'], row['amount'], row['duration_minutes']),
+                         (1, 6, 396000, 180))
+        with run.con() as c:
+            for clock in ('18:00', '20:30'):
+                seats, _ = run.vip_slots.counter_assignments(run, c, '2099-12-06', clock)
+                self.assertEqual(list(seats.values()), [row['id']] * 8)
+        other = dict(self.body, request_id=str(uuid.uuid4()), guest_name='Other')
+        self.assertEqual(self.call('/api/gpt/reservations', other)[0], 409)
+
     def test_special_room_booking_uses_total_capacity_and_meal_price(self):
         self.body.update(mode='special', seating_area='PRIVATE3', visit_at='2099-12-05T17:00',
                          special_end_time='19:00', special_meal_count=4, party_size=7)
