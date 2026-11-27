@@ -236,7 +236,7 @@ function renderPrivate3Tables(rows,time){
 function updateBoardDate(){const day=$('day').value,label=$('boardDate');label.hidden=!$('dayCard').hidden||!day;label.dateTime=day;if(!day){label.textContent='';return}const date=new Date(day+'T12:00:00+09:00');label.textContent=new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Tokyo',year:'numeric',month:'long',day:'numeric',weekday:'short'}).format(date)}
 function updateBoardLayout(){updateBoardDate();const layout=$('topLayout');layout.classList.toggle('phone-hidden',$('phoneCard').hidden);layout.classList.toggle('board-only',$('phoneCard').hidden&&$('dayCard').hidden)}
 function toggleDay(show){$('dayCard').hidden=!show;$('openDay').hidden=show;updateBoardLayout()}
-function togglePhone(show){entryEditing=show;$('phoneCard').hidden=!show;$('openPhone').hidden=show;if(show){$('phoneForm').hidden=false;$('reservationDetail').hidden=true}updateBoardLayout()}
+function togglePhone(show){entryEditing=show;$('phoneCard').hidden=!show;$('openPhone').hidden=show;if(show){if(!$('visitDate').value){$('visitDate').value=$('day').value;$('visitTime').value='18:00';checkAvailability()}$('phoneForm').hidden=false;$('reservationDetail').hidden=true}updateBoardLayout()}
 function showBlockControls(area){blockArea=area;$('blockCard').hidden=false;$('blockTitle').textContent=(area==='COUNTER'?'カウンター':'個室')+'の席ブロック';render();$('blockCard').scrollIntoView({behavior:'smooth',block:'nearest'})}
 function closeBlockControls(){
   $('blockCard').hidden=true;
@@ -669,7 +669,52 @@ if(approveRoom3){
   body.approve_private3_table=true;
   headers['X-Tsukiya-Action']='approve-private3-table';
 }
-try{phoneSubmitting=true;updateEntryButtons();const r=await api(entryMode==='direct'?'/api/reservations/direct':'/api/reservations/phone',{method:'POST',headers,body:JSON.stringify(body)});entryEditing=false;if(entryMode==='direct'||r.source==='DIRECT'){directSubmitted=true;$('submitPhone').textContent='登録済み';const sent=!!r.confirmation_sent_at;$('notice').textContent=`${r.guest_name}様の直接予約 #${r.id} を${r.private3_table?'個室③ '+tableLabel(r.private3_table)+'で':''}確定しました。${sent?'確定メールを送信しました。':!r.email?'メール未登録のため通知は送信していません。':'確定メールは未送信または送信要確認です。決済管理で送信状況を確認してください。'}前受け請求は送信していません。`;$('boardMessage').textContent=$('notice').textContent;await load();return;}$('notice').textContent=`${r.guest_name}様の電話予約 #${r.id} を登録しました。`+(r.status==='INVOICED'?(r.email?'Square請求書を発行し、メール送信を手配しました。':r.invoice_sms_status==='QUEUED'?'Square請求書を発行し、SMS送信を受け付けました。':'Square請求書は発行済みですが、SMS送信は要確認です。決済管理で確認してください。'):r.status==='ERROR'?'請求書の自動発行に失敗しました。予約は保存済みです。決済管理でこの予約のSquare請求を再試行してください。':'請求処理中です。決済管理でこの予約を確認してください。');$('boardMessage').textContent=$('notice').textContent;directRequestId=null;for(const id of ['name','phone','email','phoneNote','confirmationNote','plateMessage'])$(id).value='';document.querySelectorAll('[data-celebration].active').forEach(b=>toggleCelebration(b));await load()}catch(e){$('notice').textContent=e.message;checkAvailability()}finally{phoneSubmitting=false;updateEntryButtons()}}
+  let r;
+  phoneSubmitting=true;
+  updateEntryButtons();
+  try{
+    r=await api(entryMode==='direct'?'/api/reservations/direct':'/api/reservations/phone',{
+      method:'POST',headers,body:JSON.stringify(body)
+    });
+    if(!r.id)throw Error('登録結果を確認できません。予約表で登録状況をご確認ください。');
+  }catch(e){
+    $('notice').textContent=e.message;
+    checkAvailability();
+    return;
+  }finally{
+    phoneSubmitting=false;
+    updateEntryButtons();
+  }
+  if(entryMode==='direct'||r.source==='DIRECT'){
+    const sent=!!r.confirmation_sent_at;
+    $('boardMessage').textContent=`${r.guest_name}様の直接予約 #${r.id} を${r.private3_table?'個室③ '+tableLabel(r.private3_table)+'で':''}確定しました。${sent?'確定メールを送信しました。':!r.email?'メール未登録のため通知は送信していません。':'確定メールは未送信または送信要確認です。決済管理で送信状況を確認してください。'}前受け請求は送信していません。`;
+  }else{
+    $('boardMessage').textContent=`${r.guest_name}様の電話予約 #${r.id} を登録しました。`+(r.status==='INVOICED'?(r.email?'Square請求書を発行し、メール送信を手配しました。':r.invoice_sms_status==='QUEUED'?'Square請求書を発行し、SMS送信を受け付けました。':'Square請求書は発行済みですが、SMS送信は要確認です。決済管理で確認してください。'):r.status==='ERROR'?'請求書の自動発行に失敗しました。予約は保存済みです。決済管理でこの予約のSquare請求を再試行してください。':'請求処理中です。決済管理でこの予約を確認してください。');
+  }
+  $('day').value=body.visit_at.slice(0,10);
+  togglePhone(false);
+  clearDirectCustomer();
+  for(const field of $('entryFields').querySelectorAll('input,textarea,select')){
+    if(field.type==='checkbox')field.checked=false;
+    else if(field.tagName==='SELECT')field.selectedIndex=0;
+    else field.value=field.defaultValue;
+  }
+  document.querySelectorAll('[data-celebration].active').forEach(toggleCelebration);
+  $('phoneScriptSummary').textContent='';
+  $('phoneScriptSummary').hidden=true;
+  specialEndEdited=false;
+  seatEntryActive=false;
+  entryMode='phone';
+  directRequestId=null;
+  showSpecialTimeOption(false);
+  refreshEntryMode();
+  onTimeChange();
+  if(r.id&&r.visit_at){
+    reservations=reservations.filter(row=>row.id!==r.id).concat(r);
+    render();
+  }
+  await load();
+}
 
 async function logout(){await fetch('/api/logout',{method:'POST',credentials:'same-origin'});location.href='/login'}
 let entryEditing=false;
