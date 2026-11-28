@@ -4957,7 +4957,34 @@ class Handler(
             finally:
                 c.close()
 
-        if p in ("/api/reservations/phone", "/api/reservations/direct"):
+        if p == "/api/reservations/phone":
+            return self.send_json({"error": "電話予約の受付は終了しました。予約URLをご案内ください。"}, 410)
+
+        if p == "/api/booking-link-sms":
+            if not self.auth():
+                return self.send_json({"error": "unauthorized"}, 401)
+            if self.headers.get_content_type() != "application/json":
+                return self.send_json({"error": "入力形式が不正です"}, 415)
+            try:
+                data = self.read_json()
+                phone = re.sub(r"[\s()\-]", "", str(data.get("phone") or ""))
+                phone = normalize_jp_phone(phone) if re.fullmatch(r"\+?[0-9]+", phone) else ""
+                if not re.fullmatch(r"\+[1-9][0-9]{7,14}", phone) or (
+                    phone.startswith("+81") and not re.fullmatch(r"\+81[789]0[0-9]{8}", phone)
+                ):
+                    raise ValueError()
+            except (ValueError, AttributeError):
+                return self.send_json({"error": "SMSを受け取れる携帯電話番号を入力してください。"}, 400)
+            url = (APP_BASE_URL or "https://tsukiya-reservation.onrender.com") + "/book"
+            try:
+                message = send_sms(phone, body=f"西天満つきやです。お電話ありがとうございます。下記よりご予約をお願いいたします。\n{url}")
+                if not message.get("sid") or message.get("status") in ("failed", "undelivered"):
+                    raise RuntimeError()
+            except Exception:
+                return self.send_json({"error": "SMSの送信受付を確認できませんでした。"}, 502)
+            return self.send_json({"accepted": True})
+
+        if p == "/api/reservations/direct":
             direct = p.endswith("/direct")
             if not self.auth():
                 return self.send_json(
