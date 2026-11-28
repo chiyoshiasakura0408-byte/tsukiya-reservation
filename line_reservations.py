@@ -174,7 +174,7 @@ def ingest(c,raw,signature,payload):
         if not image and not (m.get('type')=='text' and (PREFIX.match(text) or EXCEPTION_ADD.match(text) or ROOM_EXCEPTION.fullmatch(text) or quoted or text=='追加' or dialog)):continue
         ident=hashlib.sha256(e['webhookEventId'].encode()).hexdigest()[:16]
         c.execute('INSERT OR IGNORE INTO line_booking_jobs(id,event_id,actor,origin,group_id,text,message_id,created,raw,signature,quoted_message_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-                  (ident,e['webhookEventId'],actor,'line',destination,text[:6000],mid if image else None,time.time(),raw if image else None,signature if image else None,quoted))
+                  (ident,e['webhookEventId'],actor,'line',destination,(m.get('text','').strip() if quoted else text)[:6000],mid if image else None,time.time(),raw if image else None,signature if image else None,quoted))
         # Booking text, like booking images, belongs exclusively to this queue.
         # Otherwise an owner DM can also receive a policy answer from staff FAQ.
         claimed.add(e['webhookEventId'])
@@ -418,7 +418,54 @@ def apply_item(app,ident):
         notify(c,text,item['group_id'],command=command,reservation_id=done_item[0]);c.commit()
     finally:c.close()
 
-def append_note(app,c,rid,note,job):
+def reply_to_consultation(app,c,job):
+    quoted = job.get('quoted_message_id')
+    if not quoted or not c.execute("SELECT 1 FROM pragma_table_info('booking_consultations') WHERE name='delivery_id'").fetchone():
+        return False
+    c.execute('BEGIN IMMEDIATE')
+    link = c.execute("""SELECT l.reservation_id,b.request_id FROM reservation_message_links l
+                        JOIN booking_consultations b ON b.delivery_id=l.outbox_id
+                        WHERE l.message_id=? AND l.destination=?""",(quoted,job['group_id'])).fetchone()
+    if not link:
+        c.rollback()
+        return False
+    rid,qid = link
+    if not c.execute("UPDATE line_booking_jobs SET state='sending' WHERE id=? AND state='pending'",(job['id'],)).rowcount:
+        c.rollback()
+        return True
+    row = c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone()
+    body = job['text'].strip()
+    email = (row['email'] or '').strip() if row else ''
+    phone = (row['phone'] or '').strip() if row else ''
+    if not row or row['status'] not in app.ACTIVE_STATUSES or not (email or phone) or not 1 <= len(body) <= 2000 or len((row['guest_note'] or '')) + len(body) + 12 > 20000:
+        notify(c,f'【お客様へ未送信】予約 #{rid} の状態・連絡先・回答の長さをご確認ください。',job['group_id'])
+        c.execute("UPDATE line_booking_jobs SET state='needs_info' WHERE id=?",(job['id'],))
+        c.commit()
+        return True
+    channel = 'メール' if email else 'SMS'
+    append_note(app,c,rid,body,job,guest_channel=channel)
+    c.execute("UPDATE concierge_requests SET status='お客様への送信結果確認待ち' WHERE id=?",(qid,))
+    c.commit()
+    try:
+        message = f"{row['guest_name']}様\n\n{body}\n\n西天満つきや"
+        if email:
+            import guest_service
+            guest_service.send_email(app,email,message,subject='【西天満つきや】ご予約に関するお問い合わせへの回答')
+        else:
+            result = app.send_sms(phone,body=message)
+            if not result.get('sid') or result.get('status') in ('failed','undelivered'):
+                raise RuntimeError('SMS submission failed')
+    except Exception:
+        state,status = 'unknown',f'{channel}送信結果要確認（自動再送なし）'
+    else:
+        state,status = 'done',f'お客様宛て{channel}送信受付済み'
+    with c:
+        c.execute("UPDATE line_booking_jobs SET state=? WHERE id=?",(state,job['id']))
+        c.execute("UPDATE concierge_requests SET status=? WHERE id=?",(status,qid))
+        notify(c,f'【相談への返信】予約 #{rid} {status}',job['group_id'])
+    return True
+
+def append_note(app,c,rid,note,job,guest_channel=None):
     """Preserve owner wording; never infer purchases, prices or reservation changes."""
     if not isinstance(note,str) or not 1<=len(note.strip())<=2000:
         raise ValueError('追記内容は1〜2000文字で送信してください')
@@ -435,6 +482,8 @@ def append_note(app,c,rid,note,job):
     after=dict(c.execute('SELECT * FROM reservations WHERE id=?',(rid,)).fetchone())
     sync,done=sync_state(c,after)
     result=f"【予約への追記完了】\n予約ID：{rid}\n{row['guest_name']}様\n{row['visit_at'].replace('T',' ')}\n\n{note}\n\n返答を受け付け、予約の備考へ記録しました。お客様への送信は行っていません。手配・購入の完了を示すものではありません。\nGoogleカレンダー：{sync}"
+    if guest_channel:
+        result=f"【相談への返信】予約 #{rid} の備考に記録しました。お客様宛て{guest_channel}の送信結果確認待ちです。"
     c.execute("INSERT INTO line_booking_items(id,job_id,payload,state,reservation_id,result,sync_notice) VALUES(?,?,?,'done',?,?,?)",(ident,job['id'],json.dumps({'action':'note','note':note},ensure_ascii=False),rid,result,int(done)))
     c.execute('INSERT INTO line_booking_audit(job_id,item_id,actor,action,reservation_id,before_json,after_json,created) VALUES(?,?,?,?,?,?,?,?)',(job['id'],ident,job['actor'],'note',rid,json.dumps(before,ensure_ascii=False),json.dumps(after,ensure_ascii=False),time.time()))
     notify(c,result,job['group_id'],reservation_id=rid)
@@ -566,6 +615,7 @@ def process_job(app,job):
     try:
         schema(c)
         if job['origin']=='line' and job['actor']!=owner(c):raise ValueError('LINE送信者の認証が変わりました')
+        if job['origin']=='line' and reply_to_consultation(app,c,job):return
         exception=ROOM_EXCEPTION.fullmatch(unicodedata.normalize('NFKC',text).strip())
         if exception:
             ident=exception[1]
