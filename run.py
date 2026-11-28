@@ -2124,7 +2124,9 @@ def change_direct_party(c, rid, data):
     pending_bank = bool(r and r["payment_method"] == "BANK" and r["status"] == "PENDING"
                         and not r["payment_source"] and not r["square_order_id"])
     direct = bool(r and r["source"] == "DIRECT" and r["status"] == "CONFIRMED")
-    if not r or not (direct or pending_bank) or r["vip_through"] or r["special_meal_count"] is not None or r["square_invoice_id"] or r["payment_confirmed_at"] or r["source"] == web_checkout.SOURCE:
+    charter = bool(direct and r["counter_charter"] and r["seating_area"] == "COUNTER"
+                  and r["special_meal_count"] == r["party_size"])
+    if not r or not (direct or pending_bank) or (not charter and (r["vip_through"] or r["special_meal_count"] is not None)) or r["square_invoice_id"] or r["payment_confirmed_at"] or r["source"] == web_checkout.SOURCE:
         raise ValueError("この予約は人数変更の対象外です")
     if data.get("expected_party_size") != r["party_size"] or data.get("expected_visit_at") != r["visit_at"] or data.get("expected_amount") != r["amount"]:
         raise ValueError("予約が更新されています。再読み込みしてください")
@@ -2135,14 +2137,18 @@ def change_direct_party(c, rid, data):
         raise ValueError("過去の予約は変更できません")
     if not r["party_size"] or int(r["amount"]) % r["party_size"]:
         raise ValueError("1名様の料金を確認してください")
-    ok, message = availability_check(c, r["seating_area"], r["visit_at"], party, r["counter_round"], int(r["duration_minutes"] or 150), rid,
-                                     allow_custom_start=bool(r["seating_area"] in ROOMS), restore_existing=pending_bank)
-    if not ok:
-        raise ValueError(message)
+    if charter:
+        if not 2 <= party <= COUNTER_CAPACITY:
+            raise ValueError("カウンター貸切の人数は2〜8名で入力してください")
+    else:
+        ok, message = availability_check(c, r["seating_area"], r["visit_at"], party, r["counter_round"], int(r["duration_minutes"] or 150), rid,
+                                         allow_custom_start=bool(r["seating_area"] in ROOMS), restore_existing=pending_bank)
+        if not ok:
+            raise ValueError(message)
     amount = int(r["amount"]) // r["party_size"] * party
     if party != r["party_size"]:
         note = (r["guest_note"] or "") + f"\n【人数変更】{r['party_size']}名 → {party}名（料理代 {r['amount']}円 → {amount}円）"
-        c.execute("UPDATE reservations SET party_size=?,amount=?,guest_note=?,updated_at=? WHERE id=?", (party, amount, note, now_iso(), rid))
+        c.execute("UPDATE reservations SET party_size=?,special_meal_count=?,amount=?,guest_note=?,updated_at=? WHERE id=?", (party, party if charter else r["special_meal_count"], amount, note, now_iso(), rid))
     return {"ok": True, "party_size": party, "amount": amount}
 
 
