@@ -51,8 +51,17 @@ def auth_scope(h):
     return None
 
 
+def reservation_detail(row, fields):
+    details = {field: row[field] for field in fields if field in row}
+    if 'phone' in row:
+        details['confirmation_sms_status'] = row.get('confirmation_sms_status') or (
+            'NO_PHONE' if not row.get('phone') else 'NO_SEND_RECORD')
+        details['confirmation_sms_sent_at'] = row.get('confirmation_sms_sent_at')
+    return details
+
+
 def clean(row):
-    return {field: row.get(field) for field in FIELDS if field in row}
+    return reservation_detail(row, FIELDS)
 
 
 def schema(c):
@@ -99,7 +108,7 @@ def handle_get(h, app, path, query):
             if detail_match:
                 row = c.execute('SELECT * FROM reservations WHERE id=?', (int(detail_match[1]),)).fetchone()
                 fields = SPECIAL_DETAIL_FIELDS if scope == 'special' else FIELDS
-                h.send_json({field: row[field] for field in fields if field in row.keys()} if row else {'error': '予約が見つかりません'}, 200 if row else 404)
+                h.send_json(reservation_detail(dict(row), fields) if row else {'error': '予約が見つかりません'}, 200 if row else 404)
             elif path == PREFIX + '/reservations':
                 start = date.fromisoformat(query.get('from_date', [''])[0])
                 end = date.fromisoformat(query.get('to_date', [start.isoformat()])[0])
@@ -234,7 +243,7 @@ def handle_post(h, app, path):
         if not isinstance(data, dict):
             raise ValueError('JSONオブジェクトを指定してください')
         if scope == 'special' and (data.get('mode') != 'special' or set(data) - {
-                'mode', 'request_id', 'guest_name', 'guest_note', 'visit_at', 'party_size',
+                'mode', 'request_id', 'guest_name', 'guest_note', 'phone', 'visit_at', 'party_size',
                 'seating_area', 'special_end_time', 'special_meal_count'}):
             reject(h)
             return True
