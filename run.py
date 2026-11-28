@@ -1862,11 +1862,12 @@ def change_direct_room(c, rid, data):
         raise ValueError("変更先のテーブルAまたはBを選択してください")
     leaving_exception_room = r["private3_table"] is not None and room in ("PRIVATE1", "PRIVATE2")
     ordinary_move = r["source"] == "DIRECT" and r["special_meal_count"] is None and not r["square_invoice_id"]
-    if not (approved or leaving_exception_room or ordinary_move):
+    whole_room3 = room == "PRIVATE3" and r["seating_area"] in ("PRIVATE1", "PRIVATE2") and public_party_allowed(room, r["party_size"])
+    if not (approved or leaving_exception_room or ordinary_move or whole_room3):
         raise ValueError("この予約は個室変更の対象外です")
     if room not in ROOMS or (not approved and not public_party_allowed(room, r["party_size"])):
         raise ValueError("人数に対応する個室を選択してください")
-    if (approved or leaving_exception_room or r["seating_area"] == "COUNTER") and parse_dt(r["visit_at"]) <= datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None):
+    if (approved or leaving_exception_room or whole_room3 or r["seating_area"] == "COUNTER") and parse_dt(r["visit_at"]) <= datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None):
         raise ValueError("過去の予約は変更できません")
     duration = int(r["duration_minutes"] or 150)
     special_slot = r["special_meal_count"] is not None or approved or leaving_exception_room
