@@ -4975,9 +4975,15 @@ class Handler(
                     raise ValueError()
             except (ValueError, AttributeError):
                 return self.send_json({"error": "SMSを受け取れる携帯電話番号を入力してください。"}, 400)
-            url = (APP_BASE_URL or "https://tsukiya-reservation.onrender.com") + "/book"
             try:
-                message = send_sms(phone, body=f"西天満つきやです。お電話ありがとうございます。下記よりご予約をお願いいたします。\n{url}")
+                visit_date = date.fromisoformat(data.get("date", ""))
+                if visit_date < datetime.now(ZoneInfo("Asia/Tokyo")).date():
+                    raise ValueError()
+            except (TypeError, ValueError):
+                return self.send_json({"error": "本日以降の予約日を選択してください。"}, 400)
+            url = (APP_BASE_URL or "https://tsukiya-reservation.onrender.com") + "/book" + "?" + urlencode({"date": visit_date.isoformat()})
+            try:
+                message = send_sms(phone, body=f"西天満つきやです。お電話ありがとうございます。{visit_date.month}月{visit_date.day}日の空席確認・ご予約はこちらからお願いいたします。\n{url}")
                 if not message.get("sid") or message.get("status") in ("failed", "undelivered"):
                     raise RuntimeError()
             except Exception:
