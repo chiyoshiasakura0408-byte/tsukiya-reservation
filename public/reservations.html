@@ -298,7 +298,8 @@ function roomEditor(r){
   const tableChoice=r.party_size>=2&&r.party_size<=4;
   const counterChoice=r.party_size>=2&&r.party_size<=8&&['18:00','20:30'].includes(r.visit_at.slice(11,16))&&Number(r.duration_minutes||150)===150;
   if(!ordinary&&!tableChoice&&!r.private3_table&&!counterChoice)return '';
-  const roomChoices=r.private3_table?rooms.slice(0,2):ordinary?rooms:rooms.filter(room=>room===r.seating_area);
+  const wholeRoom3=['PRIVATE1','PRIVATE2'].includes(r.seating_area)&&r.party_size>=4&&r.party_size<=8;
+  const roomChoices=r.private3_table?rooms.slice(0,2):ordinary?rooms:rooms.filter(room=>room===r.seating_area||(wholeRoom3&&room==='PRIVATE3'));
   const choices=roomChoices.map(room=>[room,`個室${room.slice(-1)}`]);
   if(tableChoice){
     for(const table of [1,2])choices.push([`PRIVATE3_TABLE_${table}`,`個室③ ${tableLabel(table)}`]);
