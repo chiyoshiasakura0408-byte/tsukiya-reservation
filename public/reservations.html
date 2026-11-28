@@ -72,12 +72,12 @@ main{max-width:1450px;margin:auto;padding:16px}.pages{display:flex;flex-wrap:wra
   min-width: 0;
 }
 #bookingLinkForm label { font-size: 17px; font-weight: 600; }
-#bookingLinkPhone, #sendBookingLinkButton {
+#bookingLinkDate, #bookingLinkPhone, #sendBookingLinkButton {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
 }
-#bookingLinkPhone {
+#bookingLinkDate, #bookingLinkPhone {
   min-height: 62px;
   padding: 10px 14px;
   font-size: 26px;
@@ -96,6 +96,8 @@ main{max-width:1450px;margin:auto;padding:16px}.pages{display:flex;flex-wrap:wra
 <section class="card" id="roomCard"><div class="section-heading"><h2>個室 3室</h2><div class="section-actions"><button onclick="showBlockControls('PRIVATE')">席ブロック</button><button onclick="startDirect('PRIVATE')">＋ 直接予約</button></div></div><p class="summary" id="roomSummary"></p><div class="board-scroll"><div id="rooms" class="matrix rooms"></div></div></section>
 </div><section class="card block-card" id="blockCard" hidden><div class="toolbar"><strong id="blockTitle">席ブロック</strong><span id="blockSelection" class="hint">空席をタップまたはドラッグして選択</span><button id="createBlock" onclick="createBlocks()" disabled>登録</button><button id="removeBlock" onclick="removeBlock()" hidden>ブロック解除</button><button type="button" onclick="closeBlockControls()">席ブロックを終了</button></div><input id="blockNote" placeholder="理由・メモ（任意）" maxlength="200" aria-label="ブロックの理由"></section></div>
 <section class="card phone-card" id="phoneCard"><div id="reservationDetail" hidden></div><div id="phoneForm"><div class="section-heading"><h2 id="entryTitle">予約URLのSMS送信</h2><button onclick="togglePhone(false)" aria-label="予約URLのSMS送信を閉じる">✕</button></div><div id="entryFields"><div class="entry-modes" role="group" aria-label="予約方法"><button type="button" id="directEntryMode" aria-pressed="false" onclick="switchEntryMode('direct')">直接予約</button><button type="button" id="phoneEntryMode" aria-pressed="true" onclick="switchEntryMode('phone')">予約URLをSMS送信</button></div><form id="bookingLinkForm" onsubmit="sendBookingLink(event)">
+<label for="bookingLinkDate">予約日</label>
+<input id="bookingLinkDate" type="date" required>
 <label for="bookingLinkPhone">お客様の携帯電話番号</label>
 <input id="bookingLinkPhone" type="tel" autocomplete="off" required>
 <button id="sendBookingLinkButton" type="submit">予約URLをSMSで送信</button>
@@ -748,7 +750,7 @@ if(approveRoom3){
 
 async function logout(){await fetch('/api/logout',{method:'POST',credentials:'same-origin'});location.href='/login'}
 let entryEditing=false;
-const snapshotParams=new URLSearchParams(location.search),snapshotMode=snapshotParams.get('snapshot')==='1';const japanToday=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());const requestedDay=snapshotParams.get('date');$('day').value=snapshotMode&&/^\d{4}-\d{2}-\d{2}$/.test(requestedDay||'')?requestedDay:japanToday;$('visitDate').value=$('day').value;if(snapshotMode){document.body.classList.add('snapshot');document.body.dataset.snapshotReady='false';toggleDay(false);togglePhone(false)}load();
+const snapshotParams=new URLSearchParams(location.search),snapshotMode=snapshotParams.get('snapshot')==='1';const japanToday=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());$('bookingLinkDate').min=japanToday;const requestedDay=snapshotParams.get('date');$('day').value=snapshotMode&&/^\d{4}-\d{2}-\d{2}$/.test(requestedDay||'')?requestedDay:japanToday;$('visitDate').value=$('day').value;if(snapshotMode){document.body.classList.add('snapshot');document.body.dataset.snapshotReady='false';toggleDay(false);togglePhone(false)}load();
 
 let entryMode='phone',linkedCustomerId=null,directRequestId=null,directSubmitted=false,directCustomers=[],phoneSubmitting=false,specialEndEdited=false,seatEntryActive=false;
 function clearDirectCustomer(){linkedCustomerId=null;for(const id of ['name','phone','email','customerSearch'])$(id).value='';$('customerMatches').innerHTML='';$('linkedCustomer').textContent='新しいお客様は登録時に顧客情報を作成します。'}
@@ -758,15 +760,18 @@ async function sendBookingLink(event){
   const button=$('sendBookingLinkButton'), input=$('bookingLinkPhone'), status=$('bookingLinkStatus');
   if(button.disabled||entryMode!=='phone')return;
   button.disabled=true;
+  const dateInput=$('bookingLinkDate'), visitDate=dateInput.value;
+  dateInput.disabled=true;
   input.readOnly=true;
   status.textContent='送信中…';
   try{
-    const result=await api('/api/booking-link-sms',{method:'POST',body:JSON.stringify({phone:input.value.trim()})});
+    const result=await api('/api/booking-link-sms',{method:'POST',body:JSON.stringify({phone:input.value.trim(),date:visitDate})});
     if(!result.accepted)throw Error('SMSの送信受付を確認できませんでした。');
-    status.textContent='予約URLのSMS送信を受け付けました。';
+    status.textContent=`${visitDate}の予約URLのSMS送信を受け付けました。`;
+    dateInput.value='';
     input.value='';
   }catch(error){status.textContent=error.message}
-  finally{button.disabled=false;input.readOnly=false}
+  finally{button.disabled=false;input.readOnly=false;dateInput.disabled=false}
 }
 function refreshEntryMode(){
   const direct=entryMode==='direct';
