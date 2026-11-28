@@ -367,7 +367,7 @@ def sync_requests(app):
             if owner:
                 for row in c.execute('SELECT b.id,r.body FROM booking_consultations b JOIN concierge_requests r ON r.id=b.request_id WHERE b.notified=0').fetchall():
                     match=re.match(r'予約番号 (\d+) ／',row['body'])
-                    delivery_id=bot.enqueue(c,owner,[bot.text_message('【予約ページからのご相談】\n'+row['body']+'\n\nこの通知をLINEの「リプライ」で選び、回答を送信してください。予約備考へ記録し、受付確認を返します。お客様への送信は行いません。',False)],channel='owner',kind='request',reservation_id=int(match[1]) if match else None)
+                    delivery_id=bot.enqueue(c,owner,[bot.text_message('【予約ページからのご相談】\n'+row['body']+'\n\nこの通知を長押しして「リプライ」を選び、お客様にお送りする回答をご入力ください。予約の登録メール宛（メール未登録時はSMS）に送信し、備考にも記録します。',False)],channel='owner',kind='request',reservation_id=int(match[1]) if match else None)
                     c.execute('UPDATE booking_consultations SET notified=1,delivery_id=? WHERE id=?',(delivery_id,row['id']))
     finally:c.close()
 
