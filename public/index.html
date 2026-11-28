@@ -25,7 +25,7 @@
 </form>
 <p id="paymentHistoryStatus" role="status" hidden></p><div class="tablewrap"><table><thead><tr><th>お客様・ID</th><th>状況</th><th>来店日時</th><th id="paymentConfirmedHeading" hidden>決済確認日時</th><th>席・人数</th><th>金額</th></tr></thead><tbody id="rows"></tbody></table></div></div></div>
 <aside class="side"><div class="card bank-card"><div id="reservationDetail" class="detail-panel" aria-live="polite" hidden></div><div id="bankSummary"><h2>未決済・銀行振込の入金確認</h2><p style="font-size:12px;color:var(--muted)">カード未決済と銀行振込待ちの予約です。銀行の入金明細で全額の着金を確認した場合のみ、予約を選び、詳細で着金確認のチェックを入れてください。</p><button class="ghost" onclick="reconcileNow()">Squareの状況を更新</button><div id="unpaidList" class="unpaid-scroll">読み込み中</div></div></div>
-<div class="card"><h2>現在の自動化</h2><div class="log">① 予約登録 → 席数チェック<br><span id="smsSetting">SMS設定を確認中…</span><br>② Webカード決済（有効化後）／電話予約はSquare請求書・SMS<br>③ 入金Webhook → 予約確定<br>④ 確定メール自動送信<br>⑤ Square booking.created / updated も受信可能</div></div></aside></section></main>
+<div class="card"><h2>現在の自動化</h2><div class="log">① 予約登録 → 席数チェック<br><span id="smsSetting">SMS設定を確認中…</span><br>② Webカード決済（有効化後）／電話のお問い合わせは予約URLをSMSでご案内<br>③ 入金Webhook → 予約確定<br>④ 確定メール自動送信<br>⑤ Square booking.created / updated も受信可能</div></div></aside></section></main>
 <script>
 let data=[],unpaid=[],selectedReservationId=null,selectedUnpaidId=null; const $=id=>document.getElementById(id); const yen=n=>'¥'+Number(n||0).toLocaleString();
 const japanDay = new Intl.DateTimeFormat('sv-SE', {
